@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.env
+data/
+uploads/
+*.tar.gz
+backend_app/
+frontend_app/
+player_app/
