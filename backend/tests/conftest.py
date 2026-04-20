@@ -3,7 +3,13 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from db import init_db
 from main import app
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_schema() -> None:
+    init_db()
 
 
 @pytest.fixture
