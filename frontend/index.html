@@ -3,15 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Signage Admin Dashboard</title>
+    <title>Signage Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="styles.css" />
     <script src="config.js"></script>
   </head>
   <body>
+    <div id="toast-container"></div>
+
     <header>
-      <h1>Signage Admin Dashboard</h1>
-      <div class="header-row">
-        <nav>
+      <div class="header-top">
+        <h1>◈ Signage Admin</h1>
+        <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+      <div class="header-row" id="header-row">
+        <nav id="main-nav">
           <button data-section="sites">Sites</button>
           <button data-section="screens">Screens</button>
           <button data-section="media">Media</button>
@@ -19,226 +28,192 @@
           <button data-section="users">Users</button>
         </nav>
         <div class="auth-status">
-          <button id="connection-toggle" class="secondary-btn">Connection</button>
+          <button id="connection-toggle" class="secondary-btn">⚙ Connection</button>
           <span id="auth-user"></span>
-          <button id="logout-btn" class="secondary-btn">Logout</button>
+          <button id="logout-btn" class="secondary-btn hidden">Sign Out</button>
         </div>
       </div>
     </header>
 
     <main>
       <section id="auth-panel" class="panel">
-        <h2>Login</h2>
+        <h2>Sign In</h2>
         <form id="login-form">
-          <input type="text" id="login-username" placeholder="Username" required />
-          <input type="password" id="login-password" placeholder="Password" required />
+          <input type="text" id="login-username" placeholder="Username" required autocomplete="username" />
+          <input type="password" id="login-password" placeholder="Password" required autocomplete="current-password" />
           <button type="submit">Sign In</button>
         </form>
         <div class="helper-text">
-          Default admin: <strong>admin</strong> / <strong>admin123</strong>
+          Default: <strong>admin</strong> / <strong>admin123</strong> — change after first login.
         </div>
       </section>
 
       <div id="dashboard" class="hidden">
-      <section id="connection-panel" class="panel hidden">
-        <h2>Connection Settings</h2>
-        <form id="connection-form">
-          <select id="connection-mode">
-            <option value="local">Local / Tailscale</option>
-            <option value="external">Cloudflare</option>
-          </select>
-          <input
-            type="text"
-            id="connection-api"
-            placeholder="API Base (e.g. https://screenapi.fromniu.com)"
-          />
-          <input
-            type="text"
-            id="connection-player"
-            placeholder="Player Base (e.g. https://player.fromniu.com)"
-          />
-          <button type="submit">Save</button>
-          <button type="button" id="connection-reset" class="secondary-btn">Reset</button>
-        </form>
-        <div class="helper-text">
-          Use external mode to test Cloudflare without changing local settings.
-        </div>
-      </section>
-      <section id="sites" class="panel">
-        <h2>Sites</h2>
-        <form id="site-form">
-          <input type="text" id="site-name" placeholder="Site name" required />
-          <input type="text" id="site-slug" placeholder="Slug (optional)" />
-          <button type="submit">Add Site</button>
-        </form>
-        <div id="sites-list" class="list"></div>
-      </section>
+        <section id="connection-panel" class="panel hidden">
+          <h2>Connection Settings</h2>
+          <form id="connection-form">
+            <select id="connection-mode">
+              <option value="local">Local / Tailscale</option>
+              <option value="external">Cloudflare</option>
+            </select>
+            <input type="text" id="connection-api"    placeholder="API Base URL" />
+            <input type="text" id="connection-player" placeholder="Player Base URL" />
+            <button type="submit">Save</button>
+            <button type="button" id="connection-reset" class="secondary-btn">Reset</button>
+          </form>
+          <div class="helper-text">Changes take effect after page reload.</div>
+        </section>
 
-      <section id="screens" class="panel hidden">
-        <h2>Screens</h2>
-        <form id="screen-form">
-          <input type="text" id="screen-name" placeholder="Screen name" required />
-          <input type="text" id="screen-location" placeholder="Location" />
-          <select id="screen-resolution">
-            <option value="">Resolution</option>
-            <option value="2560x1440">2K (2560x1440)</option>
-            <option value="3840x2160">4K UHD (3840x2160)</option>
-            <option value="4096x2160">4K DCI (4096x2160)</option>
-            <option value="custom">Custom...</option>
-          </select>
-          <input
-            type="text"
-            id="screen-resolution-custom"
-            placeholder="Custom resolution (e.g. 1920x1080)"
-            class="hidden"
-          />
-          <select id="screen-orientation">
-            <option value="">Orientation</option>
-            <option value="landscape">Landscape</option>
-            <option value="portrait">Portrait</option>
-          </select>
-          <select id="screen-site">
-            <option value="">Site</option>
-          </select>
-          <button type="submit">Add Screen</button>
-        </form>
-        <div id="screens-list" class="list"></div>
-        <div id="screen-access-panel" class="panel hidden">
-          <h3>Screen Access</h3>
-          <div class="screen-access-fields">
-            <label>
-              Owner
-              <select id="screen-owner-select">
-                <option value="">Unassigned</option>
-              </select>
-            </label>
-            <label>
-              Groups
-              <div id="screen-groups-list"></div>
-            </label>
-          </div>
-          <div class="zones-footer">
-            <button type="button" class="save-btn" id="screen-access-save">Save Access</button>
-            <button type="button" class="secondary-btn" id="screen-access-cancel">Close</button>
-          </div>
-        </div>
-        <div id="zones-editor" class="panel zones-panel hidden">
-          <div class="zones-header">
-            <h3>Screen Zones</h3>
-            <div class="zones-actions">
-              <button type="button" class="secondary-btn" id="zone-add">
-                Add Zone
-              </button>
-              <label class="checkbox">
-                <input type="checkbox" id="zone-snap" checked />
-                Snap to grid
+        <section id="sites" class="panel">
+          <h2>Sites</h2>
+          <form id="site-form">
+            <input type="text" id="site-name" placeholder="Site name" required />
+            <input type="text" id="site-slug" placeholder="Slug (optional)" />
+            <button type="submit">Add Site</button>
+          </form>
+          <div id="sites-list" class="list"></div>
+        </section>
+
+        <section id="screens" class="panel hidden">
+          <h2>Screens</h2>
+          <form id="screen-form">
+            <input type="text" id="screen-name"     placeholder="Screen name" required />
+            <input type="text" id="screen-location" placeholder="Location" />
+            <select id="screen-resolution">
+              <option value="">Resolution</option>
+              <option value="1920x1080">FHD (1920×1080)</option>
+              <option value="2560x1440">2K (2560×1440)</option>
+              <option value="3840x2160">4K UHD (3840×2160)</option>
+              <option value="4096x2160">4K DCI (4096×2160)</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input type="text" id="screen-resolution-custom" placeholder="e.g. 1280x720" class="hidden" />
+            <select id="screen-orientation">
+              <option value="">Orientation</option>
+              <option value="landscape">Landscape</option>
+              <option value="portrait">Portrait</option>
+            </select>
+            <select id="screen-site">
+              <option value="">Site</option>
+            </select>
+            <button type="submit">Add Screen</button>
+          </form>
+          <div id="screens-list" class="list"></div>
+
+          <div id="screen-access-panel" class="panel hidden">
+            <h3>Screen Access</h3>
+            <div class="screen-access-fields">
+              <label>
+                Owner
+                <select id="screen-owner-select">
+                  <option value="">Unassigned</option>
+                </select>
               </label>
-              <select id="zone-grid">
-                <option value="0.05">Grid 5%</option>
-                <option value="0.1">Grid 10%</option>
-                <option value="0.02">Grid 2%</option>
-              </select>
-              <button type="button" class="secondary-btn" data-zone-preset="columns-2">
-                2 Columns
-              </button>
-              <button type="button" class="secondary-btn" data-zone-preset="columns-3">
-                3 Columns
-              </button>
-              <button type="button" class="secondary-btn" data-zone-preset="rows-2">
-                2 Rows
-              </button>
-              <button type="button" class="secondary-btn" data-zone-preset="hero-side">
-                Hero + Side
-              </button>
-            <button type="button" class="secondary-btn" data-zone-preset="single">
-              Single Zone
-            </button>
+              <label>
+                Groups
+                <div id="screen-groups-list"></div>
+              </label>
+            </div>
+            <div class="zones-footer">
+              <button type="button" class="save-btn" id="screen-access-save">Save Access</button>
+              <button type="button" class="secondary-btn" id="screen-access-cancel">Close</button>
             </div>
           </div>
-          <div class="zones-templates">
-            <input type="text" id="zone-template-name" placeholder="Template name" />
-            <button type="button" class="secondary-btn" id="zone-template-save">Save Template</button>
-            <select id="zone-template-select">
-              <option value="">Apply template</option>
+
+          <div id="zones-editor" class="panel zones-panel hidden">
+            <div class="zones-header">
+              <h3>Screen Zones</h3>
+              <div class="zones-actions">
+                <button type="button" class="secondary-btn" id="zone-add">+ Zone</button>
+                <label class="checkbox">
+                  <input type="checkbox" id="zone-snap" checked />
+                  Snap
+                </label>
+                <select id="zone-grid">
+                  <option value="0.05">Grid 5%</option>
+                  <option value="0.1">Grid 10%</option>
+                  <option value="0.02">Grid 2%</option>
+                </select>
+                <button type="button" class="secondary-btn" data-zone-preset="single">Full</button>
+                <button type="button" class="secondary-btn" data-zone-preset="columns-2">2 Col</button>
+                <button type="button" class="secondary-btn" data-zone-preset="columns-3">3 Col</button>
+                <button type="button" class="secondary-btn" data-zone-preset="rows-2">2 Row</button>
+                <button type="button" class="secondary-btn" data-zone-preset="hero-side">Hero+Side</button>
+              </div>
+            </div>
+            <div class="zones-templates">
+              <input type="text" id="zone-template-name" placeholder="Template name" />
+              <button type="button" class="secondary-btn" id="zone-template-save">Save Template</button>
+              <select id="zone-template-select"><option value="">Apply template…</option></select>
+              <button type="button" class="secondary-btn" id="zone-template-apply">Apply</button>
+            </div>
+            <div id="zones-canvas"></div>
+            <div id="zones-list"></div>
+            <div class="zones-footer">
+              <button type="button" class="save-btn" id="zones-save">Save Zones</button>
+              <button type="button" class="secondary-btn" id="zones-cancel">Close</button>
+            </div>
+          </div>
+
+          <div id="preview-panel" class="panel preview-panel hidden">
+            <h3>Live Preview</h3>
+            <div id="preview-meta"></div>
+            <iframe id="preview-frame" title="Screen preview"></iframe>
+          </div>
+        </section>
+
+        <section id="media" class="panel hidden">
+          <h2>Media Library</h2>
+          <form id="media-url-form" class="media-url-form">
+            <input type="text" id="media-url-name" placeholder="Website name" required />
+            <input type="url"  id="media-url"      placeholder="https://example.com" required />
+            <button type="submit">Add Website</button>
+          </form>
+          <form id="media-form" class="dropzone">
+            <input type="file" id="media-file" />
+            <div class="dropzone-content">
+              <div class="dropzone-title">Drag &amp; drop files here</div>
+              <div class="dropzone-subtitle">or click to select — images &amp; video</div>
+            </div>
+            <button type="submit" class="secondary-btn">Upload</button>
+          </form>
+          <div id="media-list" class="list"></div>
+        </section>
+
+        <section id="playlists" class="panel hidden">
+          <h2>Playlists</h2>
+          <form id="playlist-form">
+            <input type="text" id="playlist-name" placeholder="Playlist name" required />
+            <button type="submit">Create</button>
+          </form>
+          <div class="playlist-controls">
+            <select id="playlist-select"><option value="">Select playlist</option></select>
+            <select id="playlist-media"><option value="">Select media</option></select>
+            <input type="number" id="playlist-duration" placeholder="Duration (s)" min="1" max="3600" value="10" />
+            <button id="playlist-add-item" type="button" class="save-btn">Add Item</button>
+          </div>
+          <div id="playlists-list" class="list"></div>
+        </section>
+
+        <section id="users" class="panel hidden">
+          <h2>Users &amp; Groups</h2>
+          <form id="user-form">
+            <input type="text"     id="user-username" placeholder="Username" required />
+            <input type="password" id="user-password" placeholder="Password" required />
+            <select id="user-role">
+              <option value="viewer">Viewer</option>
+              <option value="editor">Editor</option>
+              <option value="admin">Admin</option>
             </select>
-            <button type="button" class="secondary-btn" id="zone-template-apply">Apply</button>
-          </div>
-          <div id="zones-canvas"></div>
-          <div id="zones-list"></div>
-          <div class="zones-footer">
-            <button type="button" class="save-btn" id="zones-save">Save Zones</button>
-            <button type="button" class="secondary-btn" id="zones-cancel">Close</button>
-          </div>
-        </div>
-        <div id="preview-panel" class="panel preview-panel hidden">
-          <h3>Live Preview</h3>
-          <div id="preview-meta"></div>
-          <iframe id="preview-frame" title="Screen preview"></iframe>
-        </div>
-      </section>
-
-      <section id="media" class="panel hidden">
-        <h2>Media Library</h2>
-        <form id="media-url-form" class="media-url-form">
-          <input type="text" id="media-url-name" placeholder="Website name" required />
-          <input type="url" id="media-url" placeholder="https://example.com" required />
-          <button type="submit">Add Website</button>
-        </form>
-        <form id="media-form" class="dropzone">
-          <input type="file" id="media-file" required />
-          <div class="dropzone-content">
-            <div class="dropzone-title">Drag files here</div>
-            <div class="dropzone-subtitle">or click to upload</div>
-          </div>
-          <button type="submit">Upload</button>
-        </form>
-        <div id="media-list" class="list"></div>
-      </section>
-
-      <section id="playlists" class="panel hidden">
-        <h2>Playlists</h2>
-        <form id="playlist-form">
-          <input type="text" id="playlist-name" placeholder="Playlist name" required />
-          <button type="submit">Add Playlist</button>
-        </form>
-        <div class="playlist-controls">
-          <select id="playlist-select">
-            <option value="">Select playlist</option>
-          </select>
-          <select id="playlist-media">
-            <option value="">Select media</option>
-          </select>
-          <input
-            type="number"
-            id="playlist-duration"
-            placeholder="Duration (seconds)"
-            min="1"
-            max="3600"
-            value="10"
-          />
-          <button id="playlist-add-item" type="button">Add Item</button>
-        </div>
-        <div id="playlists-list" class="list"></div>
-      </section>
-      <section id="users" class="panel hidden">
-        <h2>Users</h2>
-        <form id="user-form">
-          <input type="text" id="user-username" placeholder="Username" required />
-          <input type="password" id="user-password" placeholder="Password" required />
-          <select id="user-role">
-            <option value="viewer">Viewer</option>
-            <option value="editor">Editor</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button type="submit">Create User</button>
-        </form>
-        <form id="group-form" class="group-form">
-          <input type="text" id="group-name" placeholder="Group name" required />
-          <button type="submit">Create Group</button>
-        </form>
-        <div id="users-list" class="list"></div>
-        <div id="groups-list" class="list"></div>
-      </section>
+            <button type="submit">Create User</button>
+          </form>
+          <form id="group-form">
+            <input type="text" id="group-name" placeholder="Group name" required />
+            <button type="submit">Create Group</button>
+          </form>
+          <div id="users-list"  class="list"></div>
+          <div id="groups-list" class="list" style="margin-top:16px"></div>
+        </section>
       </div>
     </main>
 
