@@ -589,3 +589,176 @@ a:hover { color: var(--peach-deep); }
 @media (max-width: 1080px) { .pricing-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px)  { .pricing-grid { grid-template-columns: 1fr; } }
 @media (max-width: 1080px) { .pricing-card--popular { transform: none; } }
+
+/* ─────────────────────────────────────────────────────────────
+   AI spotlight
+   ───────────────────────────────────────────────────────────── */
+.ai-card {
+  background: linear-gradient(135deg, var(--lavender) 0%, var(--rose) 100%);
+  border: 2px solid var(--plum);
+  border-radius: var(--r-card);
+  padding: 56px;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 40px;
+  align-items: center;
+  box-shadow: var(--shadow-card);
+}
+
+.ai-copy h2 { margin-top: 18px; margin-bottom: 18px; }
+.ai-copy p  { font-size: 17px; margin-bottom: 28px; }
+
+.ai-visual {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: center;
+}
+
+.ai-chip {
+  background: var(--cream);
+  border: 1.5px solid var(--plum);
+  border-radius: var(--r-btn);
+  padding: 10px 16px;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 14px;
+  box-shadow: 2px 2px 0 var(--plum);
+}
+
+.ai-arrow {
+  font-size: 32px;
+  color: var(--plum);
+}
+
+.ai-mini-tv {
+  background: var(--cream);
+  border: 1.5px solid var(--plum);
+  border-radius: 10px;
+  padding: 12px;
+  width: 140px;
+  display: grid;
+  gap: 8px;
+  box-shadow: 2px 2px 0 var(--plum);
+}
+
+.ai-mini-hero { height: 60px; background: var(--peach); border-radius: 6px; }
+.ai-mini-line { height: 8px;  background: var(--plum); border-radius: 4px; }
+.ai-mini-line.short { width: 60%; }
+
+@media (max-width: 880px) {
+  .ai-card { grid-template-columns: 1fr; padding: 36px; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   FAQ
+   ───────────────────────────────────────────────────────────── */
+.faq-wrap { max-width: 720px; margin: 0 auto; }
+
+.faq-list { display: grid; gap: 12px; }
+
+.faq-item {
+  background: var(--cream);
+  border: 1.5px solid var(--cream-border);
+  border-radius: var(--r-card);
+  padding: 18px 24px;
+}
+
+.faq-item summary {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--plum);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.faq-item summary::-webkit-details-marker { display: none; }
+
+.faq-item summary::after {
+  content: '+';
+  font-size: 24px;
+  color: var(--peach-deep);
+  transition: transform var(--t-fast);
+}
+
+.faq-item[open] summary::after { transform: rotate(45deg); }
+
+.faq-item p {
+  margin-top: 12px;
+  font-size: 15px;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Final CTA
+   ───────────────────────────────────────────────────────────── */
+.section-cta {
+  text-align: center;
+  padding: 80px 0;
+}
+
+.section-cta-inner h2 { margin-bottom: 12px; }
+
+.section-cta-inner p {
+  font-size: 17px;
+  margin-bottom: 32px;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Footer
+   ───────────────────────────────────────────────────────────── */
+.footer {
+  background: var(--plum);
+  color: var(--cream);
+  padding: 48px 0;
+}
+
+.footer a { color: var(--cream); opacity: 0.8; }
+.footer a:hover { color: var(--peach); opacity: 1; }
+
+.footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.footer-brand .nav-mark {
+  background: var(--peach);
+  color: var(--plum);
+}
+
+.footer-wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 22px;
+  color: var(--cream);
+}
+
+.footer-tag {
+  color: var(--rose);
+  font-size: 14px;
+}
+
+.footer-links { display: flex; gap: 24px; font-size: 14px; }
+
+.footer-copy {
+  color: var(--cream);
+  opacity: 0.55;
+  font-size: 13px;
+  width: 100%;
+  text-align: center;
+  border-top: 1px solid rgba(232, 220, 198, 0.15);
+  padding-top: 24px;
+  margin-top: 8px;
+}
