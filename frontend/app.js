@@ -1079,6 +1079,49 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
   }
 });
 
+/* ── Auth tabs (Sign In ⇄ Create Account) ───────────────────── */
+function showAuthTab(which) {
+  const loginTab   = document.getElementById("auth-tab-login");
+  const signupTab  = document.getElementById("auth-tab-signup");
+  const loginForm  = document.getElementById("login-form");
+  const signupForm = document.getElementById("signup-form");
+  const isSignup   = which === "signup";
+  loginTab .classList.toggle("active", !isSignup);
+  signupTab.classList.toggle("active",  isSignup);
+  loginTab .setAttribute("aria-selected", String(!isSignup));
+  signupTab.setAttribute("aria-selected", String( isSignup));
+  loginForm .classList.toggle("hidden",  isSignup);
+  signupForm.classList.toggle("hidden", !isSignup);
+  const firstInput = isSignup ? "signup-business" : "login-username";
+  document.getElementById(firstInput)?.focus();
+}
+
+document.getElementById("auth-tab-login") .addEventListener("click", () => showAuthTab("login"));
+document.getElementById("auth-tab-signup").addEventListener("click", () => showAuthTab("signup"));
+
+/* ── Signup ──────────────────────────────────────────────────── */
+document.getElementById("signup-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn          = e.target.querySelector("button[type=submit]");
+  const business_name = document.getElementById("signup-business").value.trim();
+  const email        = document.getElementById("signup-email").value.trim();
+  const password     = document.getElementById("signup-password").value;
+  try {
+    await withLoading(btn, async () => {
+      const data = await api("/auth/signup", {
+        method: "POST",
+        body: JSON.stringify({ business_name, email, password }),
+      });
+      setAuth(data.token, data.user);
+      showDashboard();
+      await bootData();
+      toast(`Welcome to Sawwii, ${business_name}! Your 14-day trial is active.`, "success", 6000);
+    });
+  } catch (err) {
+    toast(err.message || "Sign-up failed.", "error");
+  }
+});
+
 document.getElementById("logout-btn").addEventListener("click", async () => {
   if (authToken) await api("/auth/logout", { method: "POST" }).catch(() => {});
   setAuth(null, null);
