@@ -1102,3 +1102,45 @@ form select option {
   background: rgba(34,211,238,0.25);
   color: var(--text-primary);
 }
+
+/* ── Plan card ───────────────────────────────────────────────── */
+.plan-card { border: 1px solid var(--border-accent); }
+
+.plan-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.plan-card-head h2 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.plan-card-sub {
+  display: flex;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.plan-card-dot { color: var(--text-muted); }
+
+.plan-status {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+
+.plan-status-trialing { color: var(--cyan);   border-color: var(--border-accent); }
+.plan-status-active   { color: var(--green);  border-color: rgba(52, 211, 153, 0.35); }
+.plan-status-past_due { color: var(--orange); border-color: rgba(249, 115, 22, 0.4);  }
+.plan-status-canceled { color: var(--red);    border-color: rgba(239, 68, 68, 0.4);   }

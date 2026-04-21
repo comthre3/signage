@@ -1194,9 +1194,55 @@ connectionReset?.addEventListener("click", () => {
 
 /* ── Boot ────────────────────────────────────────────────────── */
 async function bootData() {
-  await Promise.all([loadSites(), loadPlaylists(), loadMedia(), loadUsers()]);
+  await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadMedia(), loadUsers()]);
   await loadScreens();
   showSection("sites");
+}
+
+async function loadOrganization() {
+  try {
+    const org = await api("/organization");
+    renderPlanCard(org);
+  } catch (err) {
+    console.error("Failed to load organization", err);
+  }
+}
+
+function renderPlanCard(org) {
+  const card    = document.getElementById("plan-card");
+  const biz     = document.getElementById("plan-card-business");
+  const tier    = document.getElementById("plan-card-tier");
+  const usage   = document.getElementById("plan-card-usage");
+  const status  = document.getElementById("plan-card-status");
+  const trial   = document.getElementById("plan-card-trial");
+
+  const planLabels = {
+    starter: "Starter", growth: "Growth", business: "Business",
+    pro: "Pro", enterprise: "Enterprise",
+  };
+  const tierLabel  = planLabels[org.plan] || org.plan || "—";
+  const used       = Number.isFinite(org.screens_used)  ? org.screens_used  : 0;
+  const limit      = Number.isFinite(org.screen_limit) ? org.screen_limit : 0;
+
+  biz.textContent   = org.name || "Your organization";
+  tier.textContent  = `${tierLabel} plan`;
+  usage.textContent = `${used} / ${limit} screens`;
+
+  status.textContent = org.subscription_status || "—";
+  status.className   = `plan-status plan-status-${(org.subscription_status || "unknown").toLowerCase()}`;
+
+  if (org.subscription_status === "trialing" && org.trial_ends_at) {
+    const endsAt  = new Date(org.trial_ends_at);
+    const daysLeft = Math.max(0, Math.ceil((endsAt.getTime() - Date.now()) / 86400000));
+    trial.textContent = daysLeft > 0
+      ? `Trial ends in ${daysLeft} day${daysLeft === 1 ? "" : "s"} (${endsAt.toLocaleDateString()}).`
+      : `Trial ended on ${endsAt.toLocaleDateString()}. Upgrade to keep your screens live.`;
+    trial.classList.remove("hidden");
+  } else {
+    trial.classList.add("hidden");
+  }
+
+  card.classList.remove("hidden");
 }
 
 async function boot() {
