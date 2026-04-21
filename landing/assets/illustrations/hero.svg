@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 440" role="img" aria-label="Retro display with peach and mint shapes">
+  <!-- Butter back-card (tilted) -->
+  <rect x="60" y="60" width="400" height="300" rx="24" fill="#FDF3D6" stroke="#3E2B4F" stroke-width="3" transform="rotate(-3 260 210)"/>
+
+  <!-- Main display -->
+  <rect x="80" y="80" width="360" height="260" rx="20" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="3"/>
+
+  <!-- Top status bar -->
+  <rect x="96" y="96" width="328" height="20" rx="10" fill="#C9B8E0"/>
+
+  <!-- Big hero tile -->
+  <rect x="96" y="128" width="200" height="150" rx="14" fill="#F4B9A1"/>
+  <circle cx="196" cy="180" r="26" fill="#FFF8F0"/>
+  <rect x="120" y="220" width="110" height="12" rx="6" fill="#3E2B4F"/>
+  <rect x="120" y="240" width="80"  height="10" rx="5" fill="#3E2B4F" opacity="0.6"/>
+
+  <!-- Side tile 1 -->
+  <rect x="308" y="128" width="116" height="70" rx="12" fill="#B5DABD"/>
+  <circle cx="340" cy="163" r="14" fill="#3E2B4F"/>
+  <rect x="362" y="156" width="50" height="8" rx="4" fill="#3E2B4F"/>
+  <rect x="362" y="170" width="38" height="6" rx="3" fill="#3E2B4F" opacity="0.6"/>
+
+  <!-- Side tile 2 -->
+  <rect x="308" y="208" width="116" height="70" rx="12" fill="#E8B4C6"/>
+  <path d="M328 243 L348 223 L368 243 L388 228" stroke="#3E2B4F" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Bottom ticker -->
+  <rect x="96" y="290" width="328" height="36" rx="10" fill="#FDF3D6" stroke="#3E2B4F" stroke-width="2"/>
+  <circle cx="114" cy="308" r="6" fill="#F4B9A1"/>
+  <rect x="130" y="302" width="200" height="12" rx="6" fill="#3E2B4F" opacity="0.8"/>
+
+  <!-- Floating accents -->
+  <circle cx="40" cy="110" r="18" fill="#B5DABD" stroke="#3E2B4F" stroke-width="2"/>
+  <circle cx="480" cy="380" r="26" fill="#C9B8E0" stroke="#3E2B4F" stroke-width="2"/>
+  <path d="M470 60 L490 40 L490 80 Z" fill="#E8B4C6" stroke="#3E2B4F" stroke-width="2" stroke-linejoin="round"/>
+</svg>

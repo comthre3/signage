@@ -11,15 +11,54 @@
     <script src="config.js"></script>
   </head>
   <body>
-    <div class="container" style="padding-top: 80px; padding-bottom: 80px;">
-      <span class="pill">Foundation ready</span>
-      <h1 style="margin-top: 16px;">Sawwii — <em>make it</em> today</h1>
-      <p style="max-width: 520px; margin-top: 16px;">Digital signage for cafés, clinics, and kiosks across the Gulf. Lovingly built, priced fairly, bilingual by design.</p>
-      <div style="margin-top: 32px; display: flex; gap: 12px; flex-wrap: wrap;">
-        <a class="btn btn-primary btn-lg" href="#">Start free trial</a>
-        <a class="btn btn-ghost btn-lg" href="#">See it live</a>
+    <!-- ── Nav ──────────────────────────────────────────────── -->
+    <header class="nav" id="nav">
+      <div class="container nav-inner">
+        <a href="#" class="nav-logo">
+          <span class="nav-mark">◠</span>
+          <span>Sawwii</span>
+        </a>
+
+        <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+
+        <nav class="nav-links" id="nav-links">
+          <a href="#features">Features</a>
+          <a href="#how">How it works</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#faq">FAQ</a>
+          <a class="btn btn-ghost btn-sm" id="cta-signin"  href="#">Sign in</a>
+          <a class="btn btn-primary btn-sm" id="cta-signup" href="#">Start free trial</a>
+        </nav>
       </div>
-    </div>
+    </header>
+
+    <!-- ── Hero ─────────────────────────────────────────────── -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <span class="pill">14-day free trial · no card</span>
+          <h1 class="hero-title">Digital signage that <em>just works</em>.</h1>
+          <p class="hero-sub">
+            Sawwii turns any screen in your shop, clinic, or kiosk into a living menu board — priced fairly, bilingual by design, and ready for the Gulf market from day one.
+          </p>
+          <div class="hero-ctas">
+            <a class="btn btn-primary btn-lg" id="cta-signup-hero" href="#">Start free trial</a>
+            <a class="btn btn-ghost btn-lg"   href="#how">How it works</a>
+          </div>
+          <div class="hero-proof">
+            <span class="hero-proof-dot"></span>
+            <span>Starter plan from <strong>$9.99/month</strong> — up to 3 screens.</span>
+          </div>
+        </div>
+
+        <div class="hero-art">
+          <img src="assets/illustrations/hero.svg" alt="" width="520" height="440" />
+        </div>
+      </div>
+    </section>
+
     <script src="app.js"></script>
   </body>
 </html>
