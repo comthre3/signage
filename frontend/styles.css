@@ -1,43 +1,60 @@
 /* ── Custom Properties ──────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,500;0,700;1,500&family=IBM+Plex+Mono:wght@400;600&display=swap');
 
 :root {
-  --bg-deep:    #020617;
-  --bg-surface: #0f172a;
-  --bg-panel:   rgba(13, 20, 40, 0.88);
-  --bg-card:    rgba(2, 8, 24, 0.72);
-  --bg-input:   rgba(2, 6, 23, 0.55);
+  /* ── Existing admin var names kept; VALUES remapped to pastel ─ */
+  --bg-deep:        #FFF8F0;
+  --bg-surface:     #FDF3D6;
+  --bg-panel:       #FFFFFF;
+  --bg-card:        #FFF8F0;
+  --bg-input:       #FFFFFF;
 
-  --text-primary:   #e2e8f0;
-  --text-secondary: #94a3b8;
-  --text-muted:     #475569;
+  --text-primary:   #3E2B4F;
+  --text-secondary: #5D4A66;
+  --text-muted:     #A89382;
 
-  --cyan:   #22d3ee;
-  --blue:   #38bdf8;
-  --indigo: #6366f1;
-  --green:  #34d399;
-  --orange: #f97316;
-  --red:    #ef4444;
+  --cyan:           #E09478;  /* now peach-deep (primary accent) */
+  --blue:           #F4B9A1;  /* now peach */
+  --indigo:         #C9B8E0;  /* now lavender */
+  --green:          #B5DABD;  /* now mint */
+  --orange:         #E09478;  /* warning → peach-deep */
+  --red:            #C94F6D;  /* error → deep rose, legible on cream */
 
-  --border:        rgba(148, 163, 184, 0.14);
-  --border-accent: rgba(34, 211, 238, 0.28);
+  --border:         #E8DCC6;
+  --border-accent:  #E09478;
 
-  --glow-cyan:   0 0 18px rgba(34, 211, 238, 0.35);
-  --glow-indigo: 0 0 18px rgba(99, 102, 241, 0.35);
+  --glow-cyan:      0 2px 0 #E8DCC6, 0 10px 30px rgba(62, 43, 79, 0.12);
+  --glow-indigo:    0 2px 0 #C9B8E0, 0 10px 30px rgba(62, 43, 79, 0.12);
 
-  --r-sm:   5px;
-  --r-md:   10px;
-  --r-lg:   16px;
+  --r-sm:   10px;
+  --r-md:   14px;
+  --r-lg:   20px;
   --r-pill: 999px;
 
-  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 10px 30px rgba(62, 43, 79, 0.12);
+  --shadow-md: 0 4px 16px rgba(62, 43, 79, 0.08);
 
   --t-fast:   140ms ease;
-  --t-normal: 240ms ease;
+  --t-normal: 260ms cubic-bezier(0.2, 0.7, 0.2, 1);
 
-  --font: 'Inter', system-ui, -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font:         'IBM Plex Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  --mono:         'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace;
+  --font-display: 'IBM Plex Serif', Georgia, serif;
+
+  /* ── Explicit pastel names (used by new component CSS in later tasks) ── */
+  --cream:        #FFF8F0;
+  --butter:       #FDF3D6;
+  --peach:        #F4B9A1;
+  --peach-deep:   #E09478;
+  --mint:         #B5DABD;
+  --lavender:     #C9B8E0;
+  --rose:         #E8B4C6;
+  --plum:         #3E2B4F;
+  --cocoa:        #5D4A66;
+  --sand:         #A89382;
+  --cream-border: #E8DCC6;
+  --plum-shadow:  rgba(62, 43, 79, 0.12);
+  --grain:        rgba(62, 43, 79, 0.035);
 }
 
 /* ── Reset ──────────────────────────────────────────────────── */
