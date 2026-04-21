@@ -412,6 +412,48 @@ form select option {
   font-size: 12px;
 }
 
+/* ── Auth panel (Sign In ⇄ Create Account) ───────────────────── */
+#auth-panel {
+  max-width: 440px;
+  margin: 48px auto 0;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.auth-tab:hover { color: var(--text-primary); }
+
+.auth-tab.active {
+  background: linear-gradient(135deg, var(--cyan), var(--indigo));
+  color: #020617;
+  box-shadow: var(--glow-cyan);
+}
+
+.auth-form {
+  display: grid;
+  gap: 10px;
+}
+
 /* ── List + Cards ─────────────────────────────────────────────── */
 .list {
   display: grid;
