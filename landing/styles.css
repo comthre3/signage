@@ -497,3 +497,95 @@ a:hover { color: var(--peach-deep); }
   .how-grid { grid-template-columns: 1fr; gap: 32px; }
   .how-art img { margin: 0 auto; }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   Pricing
+   ───────────────────────────────────────────────────────────── */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.pricing-card {
+  background: var(--cream);
+  border: 1.5px solid var(--cream-border);
+  border-radius: var(--r-card);
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  transition: transform var(--t-normal);
+}
+
+.pricing-card:hover { transform: translateY(-4px); }
+
+.pricing-card--popular {
+  background: var(--cream);
+  border: 2px solid var(--plum);
+  box-shadow: var(--shadow-card);
+  transform: translateY(-8px);
+}
+
+.pricing-ribbon {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--peach);
+  white-space: nowrap;
+}
+
+.pricing-price {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.pricing-amt {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 32px;
+  color: var(--plum);
+}
+
+.pricing-per {
+  color: var(--sand);
+  font-size: 13px;
+}
+
+.pricing-screens {
+  color: var(--cocoa);
+  font-weight: 500;
+  font-size: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1.5px dashed var(--cream-border);
+}
+
+.pricing-list {
+  list-style: none;
+  display: grid;
+  gap: 10px;
+  flex-grow: 1;
+  font-size: 14px;
+}
+
+.pricing-list li {
+  color: var(--cocoa);
+  display: flex;
+  gap: 8px;
+}
+
+.pricing-list li::before {
+  content: '✓';
+  color: var(--peach-deep);
+  font-weight: 700;
+}
+
+.pricing-card .btn { width: 100%; justify-content: center; }
+
+@media (max-width: 1080px) { .pricing-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px)  { .pricing-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1080px) { .pricing-card--popular { transform: none; } }
