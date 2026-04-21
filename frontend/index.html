@@ -37,15 +37,29 @@
 
     <main>
       <section id="auth-panel" class="panel">
-        <h2>Sign In</h2>
-        <form id="login-form">
-          <input type="text" id="login-username" placeholder="Username" required autocomplete="username" />
-          <input type="password" id="login-password" placeholder="Password" required autocomplete="current-password" />
-          <button type="submit">Sign In</button>
-        </form>
-        <div class="helper-text">
-          Default: <strong>admin</strong> / <strong>admin123</strong> — change after first login.
+        <div class="auth-tabs" role="tablist">
+          <button type="button" class="auth-tab active" id="auth-tab-login"  role="tab" aria-selected="true">Sign In</button>
+          <button type="button" class="auth-tab"        id="auth-tab-signup" role="tab" aria-selected="false">Create Account</button>
         </div>
+
+        <form id="login-form" class="auth-form">
+          <input type="text"     id="login-username" placeholder="Email or username" required autocomplete="username" />
+          <input type="password" id="login-password" placeholder="Password"           required autocomplete="current-password" />
+          <button type="submit">Sign In</button>
+          <div class="helper-text">
+            New here? Click <strong>Create Account</strong> to start a 14-day free trial — no card required.
+          </div>
+        </form>
+
+        <form id="signup-form" class="auth-form hidden">
+          <input type="text"     id="signup-business" placeholder="Business name"            required maxlength="100" autocomplete="organization" />
+          <input type="email"    id="signup-email"    placeholder="Work email"               required autocomplete="email" />
+          <input type="password" id="signup-password" placeholder="Password (min 8, letters + numbers)" required autocomplete="new-password" minlength="8" />
+          <button type="submit">Start Free Trial</button>
+          <div class="helper-text">
+            You'll get the <strong>Starter</strong> plan (up to 3 screens) free for 14 days. Cancel anytime.
+          </div>
+        </form>
       </section>
 
       <div id="dashboard" class="hidden">
