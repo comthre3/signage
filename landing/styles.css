@@ -1,1 +1,182 @@
-/* Placeholder — populated in Task 2. */
+/* ─────────────────────────────────────────────────────────────
+   Sawwii landing — pastel retro-modern foundation
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* ── Palette ─────────────────────────────────────────────── */
+  --cream:         #FFF8F0;
+  --butter:        #FDF3D6;
+  --peach:         #F4B9A1;
+  --peach-deep:    #E09478;
+  --mint:          #B5DABD;
+  --lavender:      #C9B8E0;
+  --rose:          #E8B4C6;
+
+  --plum:          #3E2B4F;
+  --cocoa:         #5D4A66;
+  --sand:          #A89382;
+
+  --cream-border:  #E8DCC6;
+  --plum-shadow:   rgba(62, 43, 79, 0.12);
+  --plum-shadow-lg:rgba(62, 43, 79, 0.18);
+  --grain:         rgba(62, 43, 79, 0.035);
+
+  /* ── Shape language ──────────────────────────────────────── */
+  --r-card: 20px;
+  --r-btn:  14px;
+  --r-pill: 999px;
+
+  --shadow-card: 0 2px 0 var(--cream-border), 0 10px 30px var(--plum-shadow);
+  --shadow-cta:  0 2px 0 var(--peach-deep),  0 8px 20px var(--plum-shadow);
+
+  --t-fast:   140ms ease;
+  --t-normal: 260ms cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* ── Typography ──────────────────────────────────────────── */
+  --font-display: 'IBM Plex Serif', Georgia, serif;
+  --font-body:    'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+
+  /* ── Layout ──────────────────────────────────────────────── */
+  --maxw: 1120px;
+  --gutter: 24px;
+}
+
+/* ── Reset ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--plum);
+  background: var(--cream);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Soft paper-grain overlay on the whole page */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image:
+    radial-gradient(var(--grain) 1px, transparent 1px),
+    radial-gradient(var(--grain) 1px, transparent 1px);
+  background-size: 3px 3px, 5px 5px;
+  background-position: 0 0, 1px 2px;
+  opacity: 0.6;
+}
+
+/* ── Typography ──────────────────────────────────────────────── */
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  color: var(--plum);
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+
+h1 { font-size: clamp(36px, 6vw, 60px); font-weight: 700; }
+h2 { font-size: clamp(28px, 4vw, 40px); font-weight: 700; }
+h3 { font-size: clamp(20px, 2.4vw, 24px); font-weight: 500; }
+
+p  { color: var(--cocoa); }
+a  { color: var(--plum); text-decoration: none; transition: color var(--t-fast); }
+a:hover { color: var(--peach-deep); }
+
+/* ── Layout helpers ──────────────────────────────────────────── */
+.container {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+.section {
+  padding: 96px 0;
+  position: relative;
+}
+
+.section--butter { background: var(--butter); }
+
+@media (max-width: 720px) {
+  .section { padding: 56px 0; }
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 22px;
+  border-radius: var(--r-btn);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1.5px solid transparent;
+  transition: transform var(--t-fast), box-shadow var(--t-fast), background var(--t-fast), color var(--t-fast);
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--peach);
+  color: var(--plum);
+  border-color: var(--peach-deep);
+  box-shadow: var(--shadow-cta);
+}
+
+.btn-primary:hover {
+  background: var(--peach-deep);
+  color: var(--cream);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 0 var(--peach-deep), 0 10px 24px var(--plum-shadow-lg);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--plum);
+  border-color: var(--plum);
+}
+
+.btn-ghost:hover {
+  background: var(--plum);
+  color: var(--cream);
+}
+
+.btn-lg {
+  padding: 18px 28px;
+  font-size: 16px;
+}
+
+/* ── Pill / tag ──────────────────────────────────────────────── */
+.pill {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: var(--r-pill);
+  background: var(--mint);
+  color: var(--plum);
+  font-size: 13px;
+  font-weight: 600;
+  border: 1.5px solid var(--plum);
+}
+
+/* ── Card base ───────────────────────────────────────────────── */
+.card {
+  background: var(--cream);
+  border: 1.5px solid var(--cream-border);
+  border-radius: var(--r-card);
+  padding: 32px;
+  box-shadow: var(--shadow-card);
+}
+
+/* ── Utility ─────────────────────────────────────────────────── */
+.hidden { display: none !important; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
