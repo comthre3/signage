@@ -569,37 +569,40 @@ label {
 }
 
 .card {
-  border: 1px solid var(--border);
+  border: 1.5px solid var(--cream-border);
   border-radius: var(--r-md);
   padding: 14px 16px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+  background: var(--cream);
+  color: var(--plum);
+  transition: border-color var(--t-fast), transform var(--t-fast);
 }
 
 .card:hover {
-  border-color: var(--border-accent);
-  box-shadow: 0 0 20px rgba(34, 211, 238, 0.07);
+  border-color: var(--peach-deep);
+  transform: translateY(-1px);
 }
 
 .card h3 {
   font-size: 15px;
   font-weight: 600;
   margin-bottom: 6px;
-  color: var(--text-primary);
+  color: var(--plum);
+  font-family: var(--font);
 }
 
 .card > div:not(.card-actions):not(.card-meta) {
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--cocoa);
   margin-bottom: 3px;
 }
 
 .card > div a {
-  color: var(--cyan);
+  color: var(--peach-deep);
   text-decoration: none;
+  font-weight: 600;
 }
 .card > div a:hover {
+  color: var(--plum);
   text-decoration: underline;
 }
 
@@ -609,7 +612,7 @@ label {
   gap: 12px;
   margin-bottom: 8px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--sand);
   font-family: var(--mono);
 }
 
@@ -624,9 +627,9 @@ label {
 .card-actions select {
   padding: 6px 10px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--border);
+  border: 1.5px solid var(--cream-border);
   background: var(--bg-input);
-  color: var(--text-primary);
+  color: var(--plum);
   font-size: 12px;
   font-family: var(--font);
 }
@@ -636,7 +639,7 @@ label {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--cyan);
+  color: var(--peach-deep);
   font-weight: 600;
   font-size: 12px;
   font-family: var(--mono);
@@ -646,9 +649,9 @@ label {
   display: block;
   width: 7px;
   height: 7px;
-  background: var(--cyan);
+  background: var(--peach-deep);
   border-radius: 50%;
-  box-shadow: 0 0 6px var(--cyan);
+  box-shadow: 0 0 8px rgba(224,148,120,0.45);
   animation: pulse 2s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -660,7 +663,7 @@ label {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--text-muted);
+  color: var(--sand);
   font-size: 12px;
   font-family: var(--mono);
 }
@@ -669,7 +672,7 @@ label {
   display: block;
   width: 7px;
   height: 7px;
-  background: var(--text-muted);
+  background: var(--sand);
   border-radius: 50%;
 }
 
@@ -1208,48 +1211,67 @@ label {
 
 /* ── Selection ─────────────────────────────────────────────────── */
 ::selection {
-  background: rgba(34,211,238,0.25);
-  color: var(--text-primary);
+  background: var(--peach);
+  color: var(--plum);
 }
 
 /* ── Plan card ───────────────────────────────────────────────── */
-.plan-card { border: 1px solid var(--border-accent); }
+.plan-card {
+  background: var(--butter);
+  border: 1.5px solid var(--cream-border);
+  border-radius: var(--r-lg);
+  padding: 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+}
 
 .plan-card-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
   flex-wrap: wrap;
 }
 
 .plan-card-head h2 {
-  font-size: 16px;
-  margin-bottom: 4px;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--plum);
+  margin: 0 0 4px;
+  text-transform: none;
+  letter-spacing: normal;
+  border-bottom: 0;
+  padding-bottom: 0;
 }
 
 .plan-card-sub {
+  color: var(--cocoa);
+  font-size: 14px;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  color: var(--text-secondary);
-  font-size: 13px;
+  align-items: center;
 }
 
-.plan-card-dot { color: var(--text-muted); }
+.plan-card-dot { color: var(--sand); }
 
 .plan-status {
   display: inline-block;
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-radius: var(--r-pill);
   font-size: 12px;
   font-weight: 600;
   text-transform: capitalize;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-secondary);
+  border: 1.5px solid var(--plum);
+  background: var(--butter);
+  color: var(--plum);
+  white-space: nowrap;
 }
 
-.plan-status-trialing { color: var(--cyan);   border-color: var(--border-accent); }
-.plan-status-active   { color: var(--green);  border-color: rgba(52, 211, 153, 0.35); }
-.plan-status-past_due { color: var(--orange); border-color: rgba(249, 115, 22, 0.4);  }
-.plan-status-canceled { color: var(--red);    border-color: rgba(239, 68, 68, 0.4);   }
+.plan-status-trialing { background: var(--mint);     color: var(--plum); }
+.plan-status-active   { background: var(--mint);     color: var(--plum); }
+.plan-status-past_due { background: var(--peach);    color: var(--plum); }
+.plan-status-canceled { background: var(--rose);     color: var(--plum); }
