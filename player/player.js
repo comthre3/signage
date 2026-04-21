@@ -95,15 +95,11 @@ function renderItem(item, durationMs) {
   const url = `${API_BASE}${item.url}`;
   let node = null;
   if (item.mime_type.startsWith("video")) {
-    node = document.createElement("video");
-    node.src = url;
-    node.autoplay = true;
-    node.muted = true;
-    node.playsInline = true;
-    node.loop = durationMs > 0;
+    node = createVideoNode(url, durationMs > 0);
   } else if (item.mime_type.startsWith("image")) {
     node = document.createElement("img");
     node.src = url;
+    node.decoding = "async";
   } else if (item.mime_type === "application/pdf") {
     node = document.createElement("iframe");
     node.src = `${url}#toolbar=0&navpanes=0`;
@@ -115,6 +111,24 @@ function renderItem(item, durationMs) {
     node.textContent = `Unsupported media: ${item.name}`;
   }
   mountMedia(contentEl, node, durationMs > 0, 600);
+}
+
+function createVideoNode(url, loop) {
+  const node = document.createElement("video");
+  node.src = url;
+  node.autoplay = true;
+  node.muted = true;
+  node.playsInline = true;
+  node.loop = loop;
+  node.preload = "auto";
+  node.disableRemotePlayback = true;
+  node.controls = false;
+  node.setAttribute("playsinline", "");
+  node.setAttribute("webkit-playsinline", "");
+  // Hint browser to prefer hardware decode + GPU compositing
+  node.style.willChange = "transform";
+  node.style.transform = "translateZ(0)";
+  return node;
 }
 
 function scheduleNext() {
@@ -146,15 +160,11 @@ function renderZoneItem(container, item, durationMs, transitionMs) {
   const url = `${API_BASE}${item.url}`;
   let node = null;
   if (item.mime_type.startsWith("video")) {
-    node = document.createElement("video");
-    node.src = url;
-    node.autoplay = true;
-    node.muted = true;
-    node.playsInline = true;
-    node.loop = durationMs > 0;
+    node = createVideoNode(url, durationMs > 0);
   } else if (item.mime_type.startsWith("image")) {
     node = document.createElement("img");
     node.src = url;
+    node.decoding = "async";
   } else if (item.mime_type === "application/pdf") {
     node = document.createElement("iframe");
     node.src = `${url}#toolbar=0&navpanes=0`;

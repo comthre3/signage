@@ -1,19 +1,79 @@
 import hashlib
 import json
+import logging
 import os
 import random
 import re
 import secrets
+import shutil
+import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from db import init_db, execute, query_all, query_one, utc_now_iso
+
+logger = logging.getLogger("signage")
+logging.basicConfig(level=logging.INFO)
+
+
+def transcode_video(input_path: str, media_id: int) -> None:
+    """Re-encode uploaded video to streaming-optimized H.264.
+
+    H.264 (libx264) hardware-decodes on every consumer device — minimal GPU/CPU
+    load on signage clients. CRF 23 is visually lossless; +faststart puts the
+    moov atom at the file head so the player starts immediately. Bitrate is
+    capped at 12 Mbps to bound network use even on 4K source.
+    """
+    if not shutil.which("ffmpeg"):
+        logger.warning("ffmpeg not installed — skipping transcode for media %s", media_id)
+        return
+    base, _ext = os.path.splitext(input_path)
+    output_path = f"{base}.opt.mp4"
+    cmd = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "23",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
+        "-maxrate", "12M",
+        "-bufsize", "24M",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-ac", "2",
+        output_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        logger.error("Transcode timed out for media %s", media_id)
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return
+    if result.returncode != 0:
+        logger.error("ffmpeg failed for media %s: %s", media_id, result.stderr[-400:].decode(errors="ignore"))
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return
+    new_filename = os.path.basename(output_path)
+    new_size = os.path.getsize(output_path)
+    execute(
+        "UPDATE media SET filename = ?, mime_type = ?, size = ? WHERE id = ?",
+        (new_filename, "video/mp4", new_size, media_id),
+    )
+    if os.path.exists(input_path) and input_path != output_path:
+        try:
+            os.remove(input_path)
+        except OSError:
+            pass
+    logger.info("Transcoded media %s → %s (%d bytes)", media_id, new_filename, new_size)
 
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
@@ -88,6 +148,14 @@ def verify_password(password: str, stored: str | None) -> bool:
 
 ROLE_LEVELS = {"viewer": 1, "editor": 2, "admin": 3}
 
+PLANS = {
+    "starter":    {"screen_limit": 3,    "price_usd_monthly":  9.99, "label": "Starter"},
+    "growth":     {"screen_limit": 5,    "price_usd_monthly": 12.99, "label": "Growth"},
+    "business":   {"screen_limit": 10,   "price_usd_monthly": 24.99, "label": "Business"},
+    "pro":        {"screen_limit": 25,   "price_usd_monthly": 49.99, "label": "Pro"},
+    "enterprise": {"screen_limit": 9999, "price_usd_monthly":  0.0,  "label": "Enterprise"},
+}
+
 
 def validate_password(password: str) -> None:
     if len(password) < 8:
@@ -117,7 +185,7 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     session = query_one(
         """
         SELECT sessions.token, sessions.user_id, users.username, users.is_admin,
-               users.role
+               users.role, users.organization_id
         FROM sessions
         JOIN users ON users.id = sessions.user_id
         WHERE sessions.token = ?
@@ -145,8 +213,16 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         "username": session["username"],
         "is_admin": bool(session["is_admin"]),
         "role": session.get("role") or ("admin" if session["is_admin"] else "viewer"),
+        "organization_id": session.get("organization_id"),
         "token": token,
     }
+
+
+def org_id(user: dict) -> int:
+    oid = user.get("organization_id")
+    if not oid:
+        raise HTTPException(status_code=403, detail="No organization for user")
+    return int(oid)
 
 
 def require_roles(*roles: str):
@@ -322,6 +398,12 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
 
 
+class SignupRequest(BaseModel):
+    business_name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., min_length=3, max_length=200)
+    password: str = Field(..., min_length=8)
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -334,18 +416,109 @@ def startup() -> None:
         admin_username = os.getenv("ADMIN_USERNAME", "admin")
         admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
         validate_password(admin_password)
+        org_row = query_one("SELECT id FROM organizations WHERE slug = ?", ("default",))
+        if org_row:
+            default_org_id = org_row["id"]
+        else:
+            default_org_id = execute(
+                """
+                INSERT INTO organizations
+                (name, slug, plan, screen_limit, subscription_status, locale, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("Default", "default", "pro", 25, "active", "en", utc_now_iso()),
+            )
         execute(
             """
-            INSERT INTO users (username, password_hash, is_admin, role, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (admin_username, hash_password(admin_password), 1, "admin", utc_now_iso()),
+            (default_org_id, admin_username, hash_password(admin_password), 1, "admin", utc_now_iso()),
         )
 
 
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/plans")
+def list_plans() -> dict:
+    return {"plans": [{"key": key, **values} for key, values in PLANS.items()]}
+
+
+@app.post("/auth/signup")
+def signup(payload: SignupRequest) -> dict:
+    email = payload.email.strip().lower()
+    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        raise HTTPException(status_code=400, detail="Invalid email address")
+    validate_password(payload.password)
+    if query_one("SELECT id FROM users WHERE username = ?", (email,)):
+        raise HTTPException(status_code=400, detail="Email is already registered")
+
+    slug_base = slugify(payload.business_name)
+    slug = slug_base
+    counter = 1
+    while query_one("SELECT id FROM organizations WHERE slug = ?", (slug,)):
+        counter += 1
+        slug = f"{slug_base}-{counter}"
+
+    plan_key = "starter"
+    plan = PLANS[plan_key]
+    trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+
+    new_org_id = execute(
+        """
+        INSERT INTO organizations
+        (name, slug, plan, screen_limit, subscription_status, trial_ends_at, locale, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (payload.business_name.strip(), slug, plan_key, plan["screen_limit"],
+         "trialing", trial_ends_at, "en", utc_now_iso()),
+    )
+    user_id = execute(
+        """
+        INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (new_org_id, email, hash_password(payload.password), 1, "admin", utc_now_iso()),
+    )
+    token = uuid.uuid4().hex
+    execute(
+        "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
+        (user_id, token, utc_now_iso(), utc_now_iso()),
+    )
+    return {
+        "token": token,
+        "user": {
+            "id": user_id,
+            "username": email,
+            "role": "admin",
+            "is_admin": True,
+        },
+        "organization": {
+            "id": new_org_id,
+            "name": payload.business_name.strip(),
+            "slug": slug,
+            "plan": plan_key,
+            "screen_limit": plan["screen_limit"],
+            "subscription_status": "trialing",
+            "trial_ends_at": trial_ends_at,
+        },
+    }
+
+
+@app.get("/organization")
+def get_organization(user: dict = Depends(get_current_user)) -> dict:
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    screens_count = query_one(
+        "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?",
+        (org["id"],),
+    )
+    org["screens_used"] = int(screens_count["n"] if screens_count else 0)
+    return org
 
 
 @app.post("/auth/login")
@@ -403,8 +576,11 @@ def me(user: dict = Depends(get_current_user)) -> dict:
 
 
 @app.get("/users")
-def list_users(_: dict = Depends(require_roles("admin"))) -> list[dict]:
-    rows = query_all("SELECT id, username, is_admin, role, created_at FROM users ORDER BY created_at DESC")
+def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
+    rows = query_all(
+        "SELECT id, username, is_admin, role, created_at FROM users WHERE organization_id = ? ORDER BY created_at DESC",
+        (org_id(user),),
+    )
     for row in rows:
         row["is_admin"] = bool(row["is_admin"])
         row["role"] = row.get("role") or ("admin" if row["is_admin"] else "viewer")
@@ -412,15 +588,16 @@ def list_users(_: dict = Depends(require_roles("admin"))) -> list[dict]:
 
 
 @app.post("/users")
-def create_user(payload: UserCreate, _: dict = Depends(require_roles("admin"))) -> dict:
+def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
         raise HTTPException(status_code=400, detail="Username already exists")
     if payload.role not in ROLE_LEVELS:
         raise HTTPException(status_code=400, detail="Invalid role")
     validate_password(payload.password)
     user_id = execute(
-        "INSERT INTO users (username, password_hash, is_admin, role, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         (
+            org_id(user),
             payload.username,
             hash_password(payload.password),
             int(payload.role == "admin"),
@@ -428,19 +605,22 @@ def create_user(payload: UserCreate, _: dict = Depends(require_roles("admin"))) 
             utc_now_iso(),
         ),
     )
-    user = query_one(
+    created = query_one(
         "SELECT id, username, is_admin, role, created_at FROM users WHERE id = ?",
         (user_id,),
     )
-    user["is_admin"] = bool(user["is_admin"])
-    user["role"] = user.get("role") or ("admin" if user["is_admin"] else "viewer")
-    return user
+    created["is_admin"] = bool(created["is_admin"])
+    created["role"] = created.get("role") or ("admin" if created["is_admin"] else "viewer")
+    return created
 
 
 @app.put("/users/{user_id}")
-def update_user(user_id: int, payload: UserUpdate, _: dict = Depends(require_roles("admin"))) -> dict:
-    user = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
-    if not user:
+def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
+    target = query_one(
+        "SELECT * FROM users WHERE id = ? AND organization_id = ?",
+        (user_id, org_id(user)),
+    )
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if payload.password:
         validate_password(payload.password)
@@ -465,9 +645,12 @@ def update_user(user_id: int, payload: UserUpdate, _: dict = Depends(require_rol
 
 
 @app.delete("/users/{user_id}")
-def delete_user(user_id: int, _: dict = Depends(require_roles("admin"))) -> dict:
-    user = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
-    if not user:
+def delete_user(user_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+    target = query_one(
+        "SELECT * FROM users WHERE id = ? AND organization_id = ?",
+        (user_id, org_id(user)),
+    )
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
     execute("DELETE FROM users WHERE id = ?", (user_id,))
     execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
@@ -475,37 +658,49 @@ def delete_user(user_id: int, _: dict = Depends(require_roles("admin"))) -> dict
 
 
 @app.get("/sites")
-def list_sites(_: dict = Depends(get_current_user)) -> list[dict]:
-    return query_all("SELECT * FROM sites ORDER BY created_at DESC")
+def list_sites(user: dict = Depends(get_current_user)) -> list[dict]:
+    return query_all(
+        "SELECT * FROM sites WHERE organization_id = ? ORDER BY created_at DESC",
+        (org_id(user),),
+    )
 
 
 @app.post("/sites")
-def create_site(payload: SiteCreate, _: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def create_site(payload: SiteCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    oid = org_id(user)
     slug = slugify(payload.slug or payload.name)
     base_slug = slug
     counter = 1
-    while query_one("SELECT id FROM sites WHERE slug = ?", (slug,)):
+    while query_one(
+        "SELECT id FROM sites WHERE slug = ? AND organization_id = ?",
+        (slug, oid),
+    ):
         counter += 1
         slug = f"{base_slug}-{counter}"
     site_id = execute(
-        "INSERT INTO sites (name, slug, created_at) VALUES (?, ?, ?)",
-        (payload.name, slug, utc_now_iso()),
+        "INSERT INTO sites (organization_id, name, slug, created_at) VALUES (?, ?, ?, ?)",
+        (oid, payload.name, slug, utc_now_iso()),
     )
     return query_one("SELECT * FROM sites WHERE id = ?", (site_id,))
 
 
 @app.put("/sites/{site_id}")
 def update_site(
-    site_id: int, payload: SiteUpdate, _: dict = Depends(require_roles("admin", "editor"))
+    site_id: int, payload: SiteUpdate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
-    site = query_one("SELECT * FROM sites WHERE id = ?", (site_id,))
+    oid = org_id(user)
+    site = query_one(
+        "SELECT * FROM sites WHERE id = ? AND organization_id = ?",
+        (site_id, oid),
+    )
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
 
     name = payload.name or site["name"]
     slug = slugify(payload.slug or site["slug"])
     if slug != site["slug"] and query_one(
-        "SELECT id FROM sites WHERE slug = ? AND id != ?", (slug, site_id)
+        "SELECT id FROM sites WHERE slug = ? AND id != ? AND organization_id = ?",
+        (slug, site_id, oid),
     ):
         raise HTTPException(status_code=400, detail="Slug already exists")
 
@@ -517,8 +712,11 @@ def update_site(
 
 
 @app.delete("/sites/{site_id}")
-def delete_site(site_id: int, _: dict = Depends(require_roles("admin"))) -> dict:
-    site = query_one("SELECT * FROM sites WHERE id = ?", (site_id,))
+def delete_site(site_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+    site = query_one(
+        "SELECT * FROM sites WHERE id = ? AND organization_id = ?",
+        (site_id, org_id(user)),
+    )
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
     execute("UPDATE screens SET site_id = NULL WHERE site_id = ?", (site_id,))
@@ -528,6 +726,7 @@ def delete_site(site_id: int, _: dict = Depends(require_roles("admin"))) -> dict
 
 @app.get("/screens")
 def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
+    oid = org_id(user)
     if user.get("is_admin"):
         rows = query_all(
             """
@@ -535,8 +734,10 @@ def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
             FROM screens
             LEFT JOIN sites ON sites.id = screens.site_id
             LEFT JOIN playlists ON playlists.id = screens.playlist_id
+            WHERE screens.organization_id = ?
             ORDER BY screens.created_at DESC
-            """
+            """,
+            (oid,),
         )
     else:
         rows = query_all(
@@ -547,26 +748,43 @@ def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
             LEFT JOIN playlists ON playlists.id = screens.playlist_id
             LEFT JOIN screen_groups ON screen_groups.screen_id = screens.id
             LEFT JOIN user_groups ON user_groups.group_id = screen_groups.group_id
-            WHERE screens.owner_user_id = ? OR user_groups.user_id = ?
+            WHERE screens.organization_id = ?
+              AND (screens.owner_user_id = ? OR user_groups.user_id = ?)
             ORDER BY screens.created_at DESC
             """,
-            (user["id"], user["id"]),
+            (oid, user["id"], user["id"]),
         )
     return [sanitize_screen(row, include_token=False) for row in rows]
 
 
 @app.post("/screens")
-def create_screen(payload: ScreenCreate, _: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    oid = org_id(user)
+    org = query_one(
+        "SELECT screen_limit FROM organizations WHERE id = ?", (oid,)
+    )
+    if org:
+        count_row = query_one(
+            "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?", (oid,)
+        )
+        current = int(count_row["n"] if count_row else 0)
+        limit = int(org["screen_limit"])
+        if current >= limit:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+            )
     pair_code = generate_unique_pair_code()
     token = generate_unique_token()
     screen_id = execute(
         """
         INSERT INTO screens (
-            name, location, resolution, orientation, site_id, owner_user_id,
+            organization_id, name, location, resolution, orientation, site_id, owner_user_id,
             pair_code, token, password_hash, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            oid,
             payload.name,
             payload.location,
             payload.resolution,
@@ -585,9 +803,12 @@ def create_screen(payload: ScreenCreate, _: dict = Depends(require_roles("admin"
 
 @app.put("/screens/{screen_id}")
 def update_screen(
-    screen_id: int, payload: ScreenUpdate, _: dict = Depends(require_roles("admin", "editor"))
+    screen_id: int, payload: ScreenUpdate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
-    screen = query_one("SELECT * FROM screens WHERE id = ?", (screen_id,))
+    screen = query_one(
+        "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, org_id(user)),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
 
@@ -614,8 +835,11 @@ def update_screen(
 
 
 @app.delete("/screens/{screen_id}")
-def delete_screen(screen_id: int, _: dict = Depends(require_roles("admin"))) -> dict:
-    screen = query_one("SELECT * FROM screens WHERE id = ?", (screen_id,))
+def delete_screen(screen_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+    screen = query_one(
+        "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, org_id(user)),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     execute("DELETE FROM screens WHERE id = ?", (screen_id,))
@@ -626,7 +850,10 @@ def delete_screen(screen_id: int, _: dict = Depends(require_roles("admin"))) -> 
 def list_screen_zones(
     screen_id: int, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
-    screen = query_one("SELECT id FROM screens WHERE id = ?", (screen_id,))
+    screen = query_one(
+        "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, org_id(user)),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     if not user.get("is_admin"):
@@ -641,7 +868,10 @@ def update_screen_zones(
     payload: ScreenZonesPayload,
     user: dict = Depends(require_roles("admin", "editor")),
 ) -> dict:
-    screen = query_one("SELECT id FROM screens WHERE id = ?", (screen_id,))
+    screen = query_one(
+        "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, org_id(user)),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     if not user.get("is_admin"):
@@ -716,28 +946,33 @@ def preview_layout(token: str) -> dict:
 
 
 @app.get("/zone-templates")
-def list_zone_templates(site_id: Optional[int] = None, _: dict = Depends(require_roles("admin", "editor"))) -> list[dict]:
+def list_zone_templates(
+    site_id: Optional[int] = None,
+    user: dict = Depends(require_roles("admin", "editor")),
+) -> list[dict]:
+    oid = org_id(user)
     if site_id is not None:
         return query_all(
-            "SELECT id, site_id, name, layout_json, created_at FROM screen_zone_templates WHERE site_id = ? ORDER BY created_at DESC",
-            (site_id,),
+            "SELECT id, site_id, name, layout_json, created_at FROM screen_zone_templates WHERE site_id = ? AND organization_id = ? ORDER BY created_at DESC",
+            (site_id, oid),
         )
     return query_all(
-        "SELECT id, site_id, name, layout_json, created_at FROM screen_zone_templates ORDER BY created_at DESC"
+        "SELECT id, site_id, name, layout_json, created_at FROM screen_zone_templates WHERE organization_id = ? ORDER BY created_at DESC",
+        (oid,),
     )
 
 
 @app.post("/zone-templates")
 def create_zone_template(
-    payload: ZoneTemplateCreate, _: dict = Depends(require_roles("admin", "editor"))
+    payload: ZoneTemplateCreate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
     layout_json = json.dumps([zone.dict() for zone in payload.zones])
     template_id = execute(
         """
-        INSERT INTO screen_zone_templates (site_id, name, layout_json, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO screen_zone_templates (organization_id, site_id, name, layout_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (payload.site_id, payload.name, layout_json, utc_now_iso()),
+        (org_id(user), payload.site_id, payload.name, layout_json, utc_now_iso()),
     )
     return query_one(
         "SELECT id, site_id, name, layout_json, created_at FROM screen_zone_templates WHERE id = ?",
@@ -749,14 +984,18 @@ def create_zone_template(
 def apply_zone_template(
     screen_id: int,
     payload: ZoneTemplateApply,
-    _: dict = Depends(require_roles("admin", "editor")),
+    user: dict = Depends(require_roles("admin", "editor")),
 ) -> dict:
-    screen = query_one("SELECT id FROM screens WHERE id = ?", (screen_id,))
+    oid = org_id(user)
+    screen = query_one(
+        "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, oid),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     template = query_one(
-        "SELECT layout_json FROM screen_zone_templates WHERE id = ?",
-        (payload.template_id,),
+        "SELECT layout_json FROM screen_zone_templates WHERE id = ? AND organization_id = ?",
+        (payload.template_id, oid),
     )
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -764,26 +1003,32 @@ def apply_zone_template(
         zones = json.loads(template["layout_json"])
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Template data invalid")
-    return update_screen_zones(screen_id, ScreenZonesPayload(zones=zones))
+    return update_screen_zones(screen_id, ScreenZonesPayload(zones=zones), user=user)
 
 
 @app.get("/groups")
-def list_groups(_: dict = Depends(require_roles("admin"))) -> list[dict]:
-    return query_all("SELECT id, name, created_at FROM groups ORDER BY created_at DESC")
+def list_groups(user: dict = Depends(require_roles("admin"))) -> list[dict]:
+    return query_all(
+        "SELECT id, name, created_at FROM groups WHERE organization_id = ? ORDER BY created_at DESC",
+        (org_id(user),),
+    )
 
 
 @app.post("/groups")
-def create_group(payload: GroupCreate, _: dict = Depends(require_roles("admin"))) -> dict:
+def create_group(payload: GroupCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     group_id = execute(
-        "INSERT INTO groups (name, created_at) VALUES (?, ?)",
-        (payload.name, utc_now_iso()),
+        "INSERT INTO groups (organization_id, name, created_at) VALUES (?, ?, ?)",
+        (org_id(user), payload.name, utc_now_iso()),
     )
     return query_one("SELECT id, name, created_at FROM groups WHERE id = ?", (group_id,))
 
 
 @app.put("/groups/{group_id}")
-def update_group(group_id: int, payload: GroupUpdate, _: dict = Depends(require_roles("admin"))) -> dict:
-    group = query_one("SELECT id FROM groups WHERE id = ?", (group_id,))
+def update_group(group_id: int, payload: GroupUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
+    group = query_one(
+        "SELECT id FROM groups WHERE id = ? AND organization_id = ?",
+        (group_id, org_id(user)),
+    )
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     execute("UPDATE groups SET name = ? WHERE id = ?", (payload.name, group_id))
@@ -791,8 +1036,11 @@ def update_group(group_id: int, payload: GroupUpdate, _: dict = Depends(require_
 
 
 @app.delete("/groups/{group_id}")
-def delete_group(group_id: int, _: dict = Depends(require_roles("admin"))) -> dict:
-    group = query_one("SELECT id FROM groups WHERE id = ?", (group_id,))
+def delete_group(group_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+    group = query_one(
+        "SELECT id FROM groups WHERE id = ? AND organization_id = ?",
+        (group_id, org_id(user)),
+    )
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     execute("DELETE FROM user_groups WHERE group_id = ?", (group_id,))
@@ -803,15 +1051,25 @@ def delete_group(group_id: int, _: dict = Depends(require_roles("admin"))) -> di
 
 @app.put("/users/{user_id}/groups")
 def update_user_groups(
-    user_id: int, payload: UserGroupsPayload, _: dict = Depends(require_roles("admin"))
+    user_id: int, payload: UserGroupsPayload, user: dict = Depends(require_roles("admin"))
 ) -> dict:
-    user = query_one("SELECT id FROM users WHERE id = ?", (user_id,))
-    if not user:
+    oid = org_id(user)
+    target = query_one(
+        "SELECT id FROM users WHERE id = ? AND organization_id = ?",
+        (user_id, oid),
+    )
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
     execute("DELETE FROM user_groups WHERE user_id = ?", (user_id,))
     for group_id in payload.group_ids:
+        group_check = query_one(
+            "SELECT id FROM groups WHERE id = ? AND organization_id = ?",
+            (group_id, oid),
+        )
+        if not group_check:
+            continue
         execute(
-            "INSERT OR IGNORE INTO user_groups (user_id, group_id, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO user_groups (user_id, group_id, created_at) VALUES (?, ?, ?) ON CONFLICT (user_id, group_id) DO NOTHING",
             (user_id, group_id, utc_now_iso()),
         )
     groups = query_all(
@@ -828,10 +1086,13 @@ def update_user_groups(
 
 @app.get("/users/{user_id}/groups")
 def list_user_groups(
-    user_id: int, _: dict = Depends(require_roles("admin"))
+    user_id: int, user: dict = Depends(require_roles("admin"))
 ) -> dict:
-    user = query_one("SELECT id FROM users WHERE id = ?", (user_id,))
-    if not user:
+    target = query_one(
+        "SELECT id FROM users WHERE id = ? AND organization_id = ?",
+        (user_id, org_id(user)),
+    )
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
     groups = query_all(
         """
@@ -847,15 +1108,25 @@ def list_user_groups(
 
 @app.put("/screens/{screen_id}/groups")
 def update_screen_groups(
-    screen_id: int, payload: ScreenGroupsPayload, _: dict = Depends(require_roles("admin"))
+    screen_id: int, payload: ScreenGroupsPayload, user: dict = Depends(require_roles("admin"))
 ) -> dict:
-    screen = query_one("SELECT id FROM screens WHERE id = ?", (screen_id,))
+    oid = org_id(user)
+    screen = query_one(
+        "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, oid),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     execute("DELETE FROM screen_groups WHERE screen_id = ?", (screen_id,))
     for group_id in payload.group_ids:
+        group_check = query_one(
+            "SELECT id FROM groups WHERE id = ? AND organization_id = ?",
+            (group_id, oid),
+        )
+        if not group_check:
+            continue
         execute(
-            "INSERT OR IGNORE INTO screen_groups (screen_id, group_id, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO screen_groups (screen_id, group_id, created_at) VALUES (?, ?, ?) ON CONFLICT (screen_id, group_id) DO NOTHING",
             (screen_id, group_id, utc_now_iso()),
         )
     groups = query_all(
@@ -872,9 +1143,12 @@ def update_screen_groups(
 
 @app.get("/screens/{screen_id}/groups")
 def list_screen_groups(
-    screen_id: int, _: dict = Depends(require_roles("admin"))
+    screen_id: int, user: dict = Depends(require_roles("admin"))
 ) -> dict:
-    screen = query_one("SELECT id FROM screens WHERE id = ?", (screen_id,))
+    screen = query_one(
+        "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, org_id(user)),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     groups = query_all(
@@ -981,7 +1255,10 @@ def screen_content(token: str) -> dict:
 def create_preview_token(
     screen_id: int, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
-    screen = query_one("SELECT * FROM screens WHERE id = ?", (screen_id,))
+    screen = query_one(
+        "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
+        (screen_id, org_id(user)),
+    )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     if not user.get("is_admin"):
@@ -1018,24 +1295,30 @@ def preview_content(token: str) -> dict:
 
 
 @app.get("/playlists")
-def list_playlists(_: dict = Depends(get_current_user)) -> list[dict]:
-    return query_all("SELECT * FROM playlists ORDER BY created_at DESC")
+def list_playlists(user: dict = Depends(get_current_user)) -> list[dict]:
+    return query_all(
+        "SELECT * FROM playlists WHERE organization_id = ? ORDER BY created_at DESC",
+        (org_id(user),),
+    )
 
 
 @app.post("/playlists")
 def create_playlist(
-    payload: PlaylistCreate, _: dict = Depends(require_roles("admin", "editor"))
+    payload: PlaylistCreate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
     playlist_id = execute(
-        "INSERT INTO playlists (name, created_at) VALUES (?, ?)",
-        (payload.name, utc_now_iso()),
+        "INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
+        (org_id(user), payload.name, utc_now_iso()),
     )
     return query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
 
 
 @app.get("/playlists/{playlist_id}")
-def get_playlist(playlist_id: int, _: dict = Depends(get_current_user)) -> dict:
-    playlist = query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
+def get_playlist(playlist_id: int, user: dict = Depends(get_current_user)) -> dict:
+    playlist = query_one(
+        "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
+        (playlist_id, org_id(user)),
+    )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
     items = query_all(
@@ -1062,9 +1345,12 @@ def get_playlist(playlist_id: int, _: dict = Depends(get_current_user)) -> dict:
 def update_playlist(
     playlist_id: int,
     payload: PlaylistUpdate,
-    _: dict = Depends(require_roles("admin", "editor")),
+    user: dict = Depends(require_roles("admin", "editor")),
 ) -> dict:
-    playlist = query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
+    playlist = query_one(
+        "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
+        (playlist_id, org_id(user)),
+    )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
     execute(
@@ -1075,8 +1361,11 @@ def update_playlist(
 
 
 @app.delete("/playlists/{playlist_id}")
-def delete_playlist(playlist_id: int, _: dict = Depends(require_roles("admin"))) -> dict:
-    playlist = query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
+def delete_playlist(playlist_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+    playlist = query_one(
+        "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
+        (playlist_id, org_id(user)),
+    )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
     execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
@@ -1087,12 +1376,19 @@ def delete_playlist(playlist_id: int, _: dict = Depends(require_roles("admin")))
 
 @app.post("/playlists/{playlist_id}/items")
 def add_playlist_item(
-    playlist_id: int, payload: PlaylistItemCreate, _: dict = Depends(require_roles("admin", "editor"))
+    playlist_id: int, payload: PlaylistItemCreate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
-    playlist = query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
+    oid = org_id(user)
+    playlist = query_one(
+        "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
+        (playlist_id, oid),
+    )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
-    media = query_one("SELECT * FROM media WHERE id = ?", (payload.media_id,))
+    media = query_one(
+        "SELECT * FROM media WHERE id = ? AND organization_id = ?",
+        (payload.media_id, oid),
+    )
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")
     max_position = query_one(
@@ -1116,8 +1412,14 @@ def add_playlist_item(
 
 @app.delete("/playlists/{playlist_id}/items/{item_id}")
 def delete_playlist_item(
-    playlist_id: int, item_id: int, _: dict = Depends(require_roles("admin", "editor"))
+    playlist_id: int, item_id: int, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
+    playlist = query_one(
+        "SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
+        (playlist_id, org_id(user)),
+    )
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Playlist not found")
     item = query_one(
         "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, playlist_id),
@@ -1129,8 +1431,11 @@ def delete_playlist_item(
 
 
 @app.get("/media")
-def list_media(_: dict = Depends(get_current_user)) -> list[dict]:
-    media = query_all("SELECT * FROM media ORDER BY created_at DESC")
+def list_media(user: dict = Depends(get_current_user)) -> list[dict]:
+    media = query_all(
+        "SELECT * FROM media WHERE organization_id = ? ORDER BY created_at DESC",
+        (org_id(user),),
+    )
     for item in media:
         if item.get("mime_type") == "text/url":
             item["url"] = item["filename"]
@@ -1141,7 +1446,9 @@ def list_media(_: dict = Depends(get_current_user)) -> list[dict]:
 
 @app.post("/media/upload")
 async def upload_media(
-    file: UploadFile = File(...), _: dict = Depends(require_roles("admin", "editor"))
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles("admin", "editor")),
 ) -> dict:
     contents = await file.read()
     if not contents:
@@ -1155,19 +1462,23 @@ async def upload_media(
     with open(file_path, "wb") as f:
         f.write(contents)
 
+    content_type = file.content_type or "application/octet-stream"
     media_id = execute(
         """
-        INSERT INTO media (name, filename, mime_type, size, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
+            org_id(user),
             file.filename or filename,
             filename,
-            file.content_type or "application/octet-stream",
+            content_type,
             len(contents),
             utc_now_iso(),
         ),
     )
+    if content_type.startswith("video"):
+        background_tasks.add_task(transcode_video, file_path, media_id)
     item = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
     item["url"] = f"/uploads/{item['filename']}"
     return item
@@ -1175,17 +1486,17 @@ async def upload_media(
 
 @app.post("/media/url")
 def create_media_url(
-    payload: MediaUrlCreate, _: dict = Depends(require_roles("admin", "editor"))
+    payload: MediaUrlCreate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
     url = payload.url.strip()
     if not re.match(r"^https?://", url):
         raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
     media_id = execute(
         """
-        INSERT INTO media (name, filename, mime_type, size, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (payload.name, url, "text/url", 0, utc_now_iso()),
+        (org_id(user), payload.name, url, "text/url", 0, utc_now_iso()),
     )
     item = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
     item["url"] = item["filename"]
@@ -1193,8 +1504,11 @@ def create_media_url(
 
 
 @app.delete("/media/{media_id}")
-def delete_media(media_id: int, _: dict = Depends(require_roles("admin", "editor"))) -> dict:
-    media = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
+def delete_media(media_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    media = query_one(
+        "SELECT * FROM media WHERE id = ? AND organization_id = ?",
+        (media_id, org_id(user)),
+    )
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")
     file_path = os.path.join(UPLOAD_DIR, media["filename"])

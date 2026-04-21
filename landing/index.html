@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+    <title>Sawwii — Digital signage that just works</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,500;0,700;1,500&display=swap" />
+    <script src="config.js"></script>
+  </head>
+  <body>
+    <!-- ── Nav ──────────────────────────────────────────────── -->
+    <header class="nav" id="nav">
+      <div class="container nav-inner">
+        <a href="#" class="nav-logo">
+          <span class="nav-mark">◠</span>
+          <span>Sawwii</span>
+        </a>
+
+        <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+
+        <nav class="nav-links" id="nav-links">
+          <a href="#features">Features</a>
+          <a href="#how">How it works</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#faq">FAQ</a>
+          <a class="btn btn-ghost btn-sm" id="cta-signin"  href="#">Sign in</a>
+          <a class="btn btn-primary btn-sm" id="cta-signup" href="#">Start free trial</a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- ── Hero ─────────────────────────────────────────────── -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <span class="pill">14-day free trial · no card</span>
+          <h1 class="hero-title">Digital signage that <em>just works</em>.</h1>
+          <p class="hero-sub">
+            Sawwii turns any screen in your shop, clinic, or kiosk into a living menu board — priced fairly, bilingual by design, and ready for the Gulf market from day one.
+          </p>
+          <div class="hero-ctas">
+            <a class="btn btn-primary btn-lg" id="cta-signup-hero" href="#">Start free trial</a>
+            <a class="btn btn-ghost btn-lg"   href="#how">How it works</a>
+          </div>
+          <div class="hero-proof">
+            <span class="hero-proof-dot"></span>
+            <span>Starter plan from <strong>$9.99/month</strong> — up to 3 screens.</span>
+          </div>
+        </div>
+
+        <div class="hero-art">
+          <img src="assets/illustrations/hero.svg" alt="" width="520" height="440" />
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Features ─────────────────────────────────────────────── -->
+    <section class="section section--butter" id="features">
+      <div class="container">
+        <div class="section-head">
+          <span class="pill" style="background: var(--rose);">Why Sawwii</span>
+          <h2 class="section-title">Built for shop owners, not stadiums.</h2>
+          <p class="section-sub">A fair price, a fast setup, and the tiny touches that matter when you're running a café in Salmiya or a clinic in Hawalli.</p>
+        </div>
+
+        <div class="features-grid">
+          <article class="feature-card">
+            <div class="feature-icon feature-icon--peach">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="10" width="36" height="24" rx="4" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2.5"/><rect x="18" y="36" width="12" height="4" rx="1" fill="#3E2B4F"/><circle cx="24" cy="22" r="5" fill="#F4B9A1" stroke="#3E2B4F" stroke-width="2"/></svg>
+            </div>
+            <h3>Any screen, in ten minutes</h3>
+            <p>Plug an old TV or tablet in, scan the pairing code, done. No hardware to buy, no installer to wait for.</p>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-icon feature-icon--mint">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8"  y="8"  width="14" height="14" rx="3" fill="#B5DABD" stroke="#3E2B4F" stroke-width="2"/><rect x="26" y="8"  width="14" height="14" rx="3" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2"/><rect x="8"  y="26" width="14" height="14" rx="3" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2"/><rect x="26" y="26" width="14" height="14" rx="3" fill="#E8B4C6" stroke="#3E2B4F" stroke-width="2"/></svg>
+            </div>
+            <h3>Zones, playlists, schedules</h3>
+            <p>Split a screen into tidy zones. Run a playlist in each. Schedule your weekend specials once and forget them.</p>
+          </article>
+
+          <article class="feature-card feature-card--highlight">
+            <span class="pill" style="background: var(--lavender); position: absolute; top: 20px; right: 20px;">Coming soon</span>
+            <div class="feature-icon feature-icon--lavender">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M14 34 L24 10 L34 34 Z" fill="#C9B8E0" stroke="#3E2B4F" stroke-width="2.5" stroke-linejoin="round"/><circle cx="36" cy="14" r="4" fill="#E8B4C6" stroke="#3E2B4F" stroke-width="2"/><circle cx="12" cy="18" r="3" fill="#F4B9A1" stroke="#3E2B4F" stroke-width="2"/></svg>
+            </div>
+            <h3>AI menu, from your website</h3>
+            <p>Paste a URL. Sawwii pulls your menu, your colours, your logo — and drafts a polished playlist you can edit in minutes.</p>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-icon feature-icon--rose">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="14" width="36" height="22" rx="4" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2.5"/><rect x="6" y="18" width="36" height="6" fill="#E8B4C6" stroke="#3E2B4F" stroke-width="2.5"/><rect x="12" y="28" width="10" height="4" rx="1" fill="#3E2B4F"/></svg>
+            </div>
+            <h3>Pay your way</h3>
+            <p>Card, Apple Pay, Google Pay on day one. KNET for Kuwait is on its way — because local trust is not optional.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── How it works ─────────────────────────────────────── -->
+    <section class="section" id="how">
+      <div class="container how-grid">
+        <div class="how-art">
+          <img src="assets/illustrations/how-it-works.svg" alt="" width="480" height="360" />
+        </div>
+
+        <div class="how-copy">
+          <span class="pill">How it works</span>
+          <h2>Three steps to a screen that sells.</h2>
+
+          <ol class="how-steps">
+            <li>
+              <span class="how-step-num">1</span>
+              <div>
+                <h3>Sign up in a minute</h3>
+                <p>Business name, email, password. You land on a clean dashboard with a 14-day free trial already running.</p>
+              </div>
+            </li>
+            <li>
+              <span class="how-step-num">2</span>
+              <div>
+                <h3>Upload, arrange, schedule</h3>
+                <p>Drop images and videos, group them into playlists, split screens into zones — a weekly menu or a happy-hour rotation is 15 minutes of work.</p>
+              </div>
+            </li>
+            <li>
+              <span class="how-step-num">3</span>
+              <div>
+                <h3>Pair any screen and you're live</h3>
+                <p>Open the player URL on any TV or tablet, type the six-digit pairing code, and the right content appears instantly.</p>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pricing ──────────────────────────────────────────────── -->
+    <section class="section section--butter" id="pricing">
+      <div class="container">
+        <div class="section-head">
+          <span class="pill">Honest pricing</span>
+          <h2 class="section-title">Five tiers. No surprises.</h2>
+          <p class="section-sub">Priced in USD. Billed monthly. Cancel anytime — we'd rather earn next month than trap you in a contract.</p>
+        </div>
+
+        <div class="pricing-grid">
+          <article class="pricing-card">
+            <h3>Starter</h3>
+            <div class="pricing-price"><span class="pricing-amt">$9.99</span><span class="pricing-per">/ month</span></div>
+            <div class="pricing-screens">Up to 3 screens</div>
+            <ul class="pricing-list">
+              <li>All core features</li>
+              <li>Playlists + zones</li>
+              <li>Email support</li>
+            </ul>
+            <a class="btn btn-ghost" href="#" data-cta="signup">Start free trial</a>
+          </article>
+
+          <article class="pricing-card">
+            <h3>Growth</h3>
+            <div class="pricing-price"><span class="pricing-amt">$12.99</span><span class="pricing-per">/ month</span></div>
+            <div class="pricing-screens">Up to 5 screens</div>
+            <ul class="pricing-list">
+              <li>Everything in Starter</li>
+              <li>Multi-location scheduling</li>
+              <li>Priority email support</li>
+            </ul>
+            <a class="btn btn-ghost" href="#" data-cta="signup">Start free trial</a>
+          </article>
+
+          <article class="pricing-card pricing-card--popular">
+            <span class="pill pricing-ribbon">Most popular</span>
+            <h3>Business</h3>
+            <div class="pricing-price"><span class="pricing-amt">$24.99</span><span class="pricing-per">/ month</span></div>
+            <div class="pricing-screens">Up to 10 screens</div>
+            <ul class="pricing-list">
+              <li>Everything in Growth</li>
+              <li>Team roles + audit log</li>
+              <li>WhatsApp support</li>
+            </ul>
+            <a class="btn btn-primary" href="#" data-cta="signup">Start free trial</a>
+          </article>
+
+          <article class="pricing-card">
+            <h3>Pro</h3>
+            <div class="pricing-price"><span class="pricing-amt">$49.99</span><span class="pricing-per">/ month</span></div>
+            <div class="pricing-screens">Up to 25 screens</div>
+            <ul class="pricing-list">
+              <li>Everything in Business</li>
+              <li>Dedicated onboarding</li>
+              <li>SLA on response times</li>
+            </ul>
+            <a class="btn btn-ghost" href="#" data-cta="signup">Start free trial</a>
+          </article>
+
+          <article class="pricing-card">
+            <h3>Enterprise</h3>
+            <div class="pricing-price"><span class="pricing-amt">Custom</span></div>
+            <div class="pricing-screens">25+ screens</div>
+            <ul class="pricing-list">
+              <li>Volume pricing</li>
+              <li>Self-hosted option</li>
+              <li>Named account manager</li>
+            </ul>
+            <a class="btn btn-ghost" href="mailto:hello@sawwii.com">Contact us</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── AI spotlight ─────────────────────────────────────── -->
+    <section class="section" id="ai">
+      <div class="container">
+        <div class="ai-card">
+          <div class="ai-copy">
+            <span class="pill" style="background: var(--lavender);">Phase 3 preview</span>
+            <h2>Your website, turned into a menu board — in under a minute.</h2>
+            <p>
+              Paste your website or Instagram URL. Sawwii reads your menu, extracts your brand palette and logo, and drafts a polished playlist — ready to tweak and publish. The feature that killed our competitors' ten-hour designer bills.
+            </p>
+            <a class="btn btn-primary btn-lg" href="mailto:hello@sawwii.com?subject=Sawwii%20AI%20early%20access">Get early access</a>
+          </div>
+          <div class="ai-visual">
+            <div class="ai-chip">yourshop.com/menu</div>
+            <div class="ai-arrow">→</div>
+            <div class="ai-mini-tv">
+              <div class="ai-mini-hero"></div>
+              <div class="ai-mini-line"></div>
+              <div class="ai-mini-line short"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── FAQ ──────────────────────────────────────────────── -->
+    <section class="section section--butter" id="faq">
+      <div class="container faq-wrap">
+        <div class="section-head" style="margin-bottom: 40px;">
+          <span class="pill">FAQ</span>
+          <h2 class="section-title">Answers before you ask.</h2>
+        </div>
+
+        <div class="faq-list">
+          <details class="faq-item" open>
+            <summary>What devices can show the content?</summary>
+            <p>Any device with a modern browser — smart TVs, Android boxes, Raspberry Pis, old iPads, or a laptop plugged into an HDMI cable. You pair by opening a URL and typing a six-digit code.</p>
+          </details>
+          <details class="faq-item">
+            <summary>Do I need a designer?</summary>
+            <p>No. Upload images or videos, drag them into a playlist, and go. Zones, schedules, and transitions are already handled. The upcoming AI menu generator drafts the first version for you.</p>
+          </details>
+          <details class="faq-item">
+            <summary>Is Arabic supported?</summary>
+            <p>Full bilingual English + Arabic with right-to-left layouts is coming in Phase 2. The product is built for Gulf business owners from day one — Arabic is not an afterthought.</p>
+          </details>
+          <details class="faq-item">
+            <summary>How do I pay?</summary>
+            <p>Credit card, Apple Pay, and Google Pay through Stripe — live at launch. KNET is on the roadmap for Kuwait customers who want to pay locally.</p>
+          </details>
+          <details class="faq-item">
+            <summary>What happens after the 14-day trial?</summary>
+            <p>You pick a plan, enter a card, and keep going. No auto-charge during the trial — we ask before we bill.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Final CTA ────────────────────────────────────────── -->
+    <section class="section section-cta">
+      <div class="container section-cta-inner">
+        <h2>Ready to make it?</h2>
+        <p>14 days free. No card. No lock-in.</p>
+        <div class="hero-ctas" style="justify-content: center;">
+          <a class="btn btn-primary btn-lg" href="#" data-cta="signup">Start free trial</a>
+          <a class="btn btn-ghost btn-lg" href="mailto:hello@sawwii.com">Talk to us</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Footer ───────────────────────────────────────────── -->
+    <footer class="footer">
+      <div class="container footer-inner">
+        <div class="footer-brand">
+          <span class="nav-mark">◠</span>
+          <span class="footer-wordmark">Sawwii</span>
+          <span class="footer-tag">سوّي — make it</span>
+        </div>
+        <div class="footer-links">
+          <a href="#features">Features</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#faq">FAQ</a>
+          <a href="mailto:hello@sawwii.com">Contact</a>
+        </div>
+        <div class="footer-copy">© 2026 Sawwii. Built in the Gulf.</div>
+      </div>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
