@@ -1253,6 +1253,7 @@ async function boot() {
     showDashboard();
     await bootData();
     updateResolutionCustomVisibility();
+    if (location.hash === '#signup') showAuthTab('signup');
   } catch (err) {
     console.error(err);
     handleAuthFailure();
