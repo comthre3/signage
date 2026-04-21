@@ -2,6 +2,7 @@
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,500;0,700;1,500&family=IBM+Plex+Mono:wght@400;600&display=swap');
 
 :root {
+  color-scheme: light;
   /* ── Existing admin var names kept; VALUES remapped to pastel ─ */
   --bg-deep:        #FFF8F0;
   --bg-surface:     #FDF3D6;
@@ -416,38 +417,34 @@ form {
   align-items: flex-start;
 }
 
-form input,
-form select,
-form textarea,
-.playlist-controls input,
-.playlist-controls select {
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+select,
+textarea {
   padding: 10px 12px;
   border-radius: var(--r-md);
   border: 1.5px solid var(--cream-border);
-  background: var(--bg-input);
-  color: var(--plum);
+  background: #FFFFFF;
+  color: #000000;
   font-family: var(--font);
   font-size: 14px;
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
   min-width: 0;
 }
 
-form input:focus,
-form select:focus,
-form textarea:focus,
-.playlist-controls input:focus,
-.playlist-controls select:focus {
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+select:focus,
+textarea:focus {
   outline: none;
   border-color: var(--peach-deep);
   box-shadow: 0 0 0 3px rgba(224, 148, 120, 0.18);
 }
 
-form input::placeholder,
-form textarea::placeholder { color: var(--sand); }
+input::placeholder,
+textarea::placeholder { color: var(--sand); }
 
-form select option {
-  background: var(--cream);
-  color: var(--plum);
+select option {
+  background: #FFFFFF;
+  color: #000000;
 }
 
 label {
@@ -458,10 +455,10 @@ label {
 
 .form-error {
   width: 100%;
-  color: #fca5a5;
-  background: rgba(127, 29, 29, 0.35);
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  padding: 7px 10px;
+  color: var(--plum);
+  background: var(--rose);
+  border: 1.5px solid var(--red);
+  padding: 8px 12px;
   border-radius: var(--r-sm);
   font-size: 13px;
   animation: fadeUp 0.2s ease;
