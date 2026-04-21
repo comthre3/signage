@@ -251,31 +251,30 @@ main {
 .panel h2 {
   font-size: 16px;
   font-weight: 700;
-  font-family: var(--mono);
-  color: var(--cyan);
+  font-family: var(--font-display);
+  color: var(--plum);
   letter-spacing: 0.04em;
-  text-transform: uppercase;
   margin-bottom: 16px;
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1.5px solid var(--cream-border);
 }
 
 .panel h3 {
   font-size: 14px;
   font-weight: 600;
-  color: var(--blue);
+  color: var(--cocoa);
   margin-bottom: 12px;
 }
 
 /* ── Buttons ─────────────────────────────────────────────────── */
 button {
   font-family: var(--font);
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: var(--r-sm);
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: var(--r-md);
   border: none;
   cursor: pointer;
-  padding: 8px 14px;
+  padding: 10px 16px;
   transition: var(--t-fast);
   display: inline-flex;
   align-items: center;
@@ -291,81 +290,100 @@ button:disabled {
 .btn-primary,
 form button[type="submit"],
 form button:not([type="button"]):not(.secondary-btn) {
-  background: linear-gradient(135deg, var(--cyan), var(--green));
-  color: #020617;
-  font-weight: 600;
-  box-shadow: 0 2px 10px rgba(34, 211, 238, 0.25);
+  background: var(--peach);
+  color: var(--plum);
+  border: 1.5px solid var(--peach-deep);
+  box-shadow: 0 2px 0 var(--peach-deep);
 }
 
 .btn-primary:hover,
 form button[type="submit"]:hover,
 form button:not([type="button"]):not(.secondary-btn):hover {
-  box-shadow: var(--glow-cyan);
+  background: var(--peach-deep);
+  color: var(--cream);
   transform: translateY(-1px);
+  box-shadow: 0 3px 0 var(--peach-deep), 0 6px 16px var(--plum-shadow);
 }
 
 .secondary-btn {
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--plum);
+  border: 1.5px solid var(--plum);
+  padding: 9px 14px;
+  font-size: 13px;
 }
 
 .secondary-btn:hover {
-  background: rgba(148, 163, 184, 0.1);
-  border-color: rgba(148, 163, 184, 0.3);
-  color: var(--text-primary);
+  background: var(--plum);
+  color: var(--cream);
+  border-color: var(--plum);
+}
+
+.secondary-btn:disabled {
+  color: var(--sand);
+  border-color: var(--cream-border);
+  cursor: not-allowed;
+}
+
+.secondary-btn:disabled:hover {
+  background: transparent;
+  color: var(--sand);
 }
 
 .delete-btn {
-  background: linear-gradient(135deg, rgba(249,115,22,0.15), rgba(239,68,68,0.15));
-  color: #fca5a5;
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: transparent;
+  color: var(--red);
+  border: 1.5px solid var(--red);
+  padding: 9px 14px;
+  font-size: 13px;
 }
 
 .delete-btn:hover {
-  background: linear-gradient(135deg, var(--orange), var(--red));
-  color: #fff;
-  border-color: transparent;
-  box-shadow: 0 0 16px rgba(239, 68, 68, 0.35);
+  background: var(--red);
+  color: var(--cream);
+  border-color: var(--red);
+  box-shadow: 0 4px 12px rgba(201, 79, 109, 0.25);
 }
 
 .save-btn {
-  background: linear-gradient(135deg, rgba(96,165,250,0.15), rgba(99,102,241,0.15));
-  color: var(--blue);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--peach);
+  color: var(--plum);
+  border: 1.5px solid var(--peach-deep);
+  font-weight: 600;
+  box-shadow: 0 2px 0 var(--peach-deep);
 }
 
 .save-btn:hover {
-  background: linear-gradient(135deg, var(--blue), var(--indigo));
-  color: #fff;
-  border-color: transparent;
-  box-shadow: var(--glow-indigo);
+  background: var(--peach-deep);
+  color: var(--cream);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 0 var(--peach-deep), 0 6px 16px var(--plum-shadow);
 }
 
 .preview-btn {
-  background: linear-gradient(135deg, rgba(34,211,238,0.15), rgba(56,189,248,0.15));
-  color: var(--cyan);
-  border: 1px solid var(--border-accent);
+  background: var(--lavender);
+  color: var(--plum);
+  border: 1.5px solid var(--plum);
+  box-shadow: 0 2px 0 var(--plum);
 }
 
 .preview-btn:hover {
-  background: linear-gradient(135deg, var(--cyan), var(--blue));
-  color: #020617;
-  border-color: transparent;
-  box-shadow: var(--glow-cyan);
+  background: var(--plum);
+  color: var(--cream);
+  transform: translateY(-1px);
 }
 
 .access-btn {
-  background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(168,85,247,0.15));
-  color: var(--indigo);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--mint);
+  color: var(--plum);
+  border: 1.5px solid var(--plum);
+  box-shadow: 0 2px 0 var(--plum);
 }
 
 .access-btn:hover {
-  background: linear-gradient(135deg, var(--indigo), #a855f7);
-  color: #fff;
-  border-color: transparent;
-  box-shadow: var(--glow-indigo);
+  background: var(--plum);
+  color: var(--cream);
+  transform: translateY(-1px);
 }
 
 /* loading state */
@@ -393,41 +411,49 @@ button.loading::after {
 form {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 16px;
   align-items: flex-start;
 }
 
 form input,
 form select,
+form textarea,
 .playlist-controls input,
 .playlist-controls select {
-  padding: 8px 12px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1.5px solid var(--cream-border);
   background: var(--bg-input);
-  color: var(--text-primary);
+  color: var(--plum);
   font-family: var(--font);
-  font-size: 13px;
-  transition: var(--t-fast);
+  font-size: 14px;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
   min-width: 0;
 }
 
 form input:focus,
 form select:focus,
+form textarea:focus,
 .playlist-controls input:focus,
 .playlist-controls select:focus {
   outline: none;
-  border-color: var(--cyan);
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
-  background: rgba(2, 6, 23, 0.8);
+  border-color: var(--peach-deep);
+  box-shadow: 0 0 0 3px rgba(224, 148, 120, 0.18);
 }
 
-form input::placeholder { color: var(--text-muted); }
+form input::placeholder,
+form textarea::placeholder { color: var(--sand); }
 
 form select option {
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  background: var(--cream);
+  color: var(--plum);
+}
+
+label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cocoa);
 }
 
 .form-error {
@@ -649,17 +675,18 @@ form select option {
 
 /* ── Checkbox ──────────────────────────────────────────────────── */
 .checkbox {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
-  color: var(--text-secondary);
+  gap: 8px;
+  color: var(--cocoa);
   cursor: pointer;
   font-size: 13px;
 }
+
 .checkbox input[type="checkbox"] {
-  accent-color: var(--cyan);
-  width: 14px;
-  height: 14px;
+  accent-color: var(--peach-deep);
+  width: 16px;
+  height: 16px;
 }
 
 /* ── Modal ─────────────────────────────────────────────────────── */
