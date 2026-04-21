@@ -63,27 +63,28 @@
 /* ── Body ───────────────────────────────────────────────────── */
 body {
   font-family: var(--font);
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--text-primary);
-  background: radial-gradient(ellipse 80% 60% at 50% -10%, #0d2040, var(--bg-deep) 70%);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--plum);
+  background: var(--cream);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* scanline retro overlay */
+/* Subtle paper-grain overlay (same as landing) */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 3px,
-    rgba(0, 0, 0, 0.04) 3px,
-    rgba(0, 0, 0, 0.04) 4px
-  );
   pointer-events: none;
   z-index: 9999;
+  background-image:
+    radial-gradient(var(--grain) 1px, transparent 1px),
+    radial-gradient(var(--grain) 1px, transparent 1px);
+  background-size: 3px 3px, 5px 5px;
+  background-position: 0 0, 1px 2px;
+  opacity: 0.6;
 }
 
 /* ── Utility ─────────────────────────────────────────────────── */
@@ -91,61 +92,56 @@ body::before {
 
 /* ── Header ─────────────────────────────────────────────────── */
 header {
-  background: linear-gradient(135deg,
-    rgba(13, 20, 40, 0.97) 0%,
-    rgba(25, 50, 110, 0.65) 100%);
-  border-bottom: 1px solid var(--border-accent);
-  padding: 14px 20px;
   position: sticky;
   top: 0;
-  z-index: 100;
-  backdrop-filter: blur(12px);
+  z-index: 50;
+  background: rgba(255, 248, 240, 0.92);
+  backdrop-filter: saturate(140%) blur(12px);
+  border-bottom: 1.5px solid var(--cream-border);
+  padding: 14px 24px;
 }
 
 .header-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 16px;
 }
 
 header h1 {
-  font-size: 18px;
+  font-family: var(--font-display);
+  font-size: 22px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  background: linear-gradient(90deg, var(--cyan), var(--blue), var(--indigo));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  font-family: var(--mono);
+  color: var(--plum);
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  -webkit-text-fill-color: var(--plum);
+  letter-spacing: normal;
+  text-transform: none;
 }
 
-/* hamburger */
-.nav-toggle {
-  display: none;
-  flex-direction: column;
-  gap: 5px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 8px 10px;
-  cursor: pointer;
-}
-.nav-toggle span {
-  display: block;
-  width: 20px;
-  height: 2px;
-  background: var(--text-secondary);
-  border-radius: 2px;
-  transition: var(--t-fast);
+header h1::before {
+  content: '◠';
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  background: var(--peach);
+  border: 1.5px solid var(--plum);
+  border-radius: 10px;
+  font-size: 18px;
+  line-height: 1;
 }
 
 .header-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
 }
 
 /* ── Nav ────────────────────────────────────────────────────── */
@@ -186,20 +182,42 @@ nav button.nav-active {
 
 /* ── Auth Status ─────────────────────────────────────────────── */
 .auth-status {
-  display: flex;
+  display: inline-flex;
+  gap: 10px;
   align-items: center;
-  gap: 8px;
   flex-wrap: wrap;
 }
 
 #auth-user {
   font-size: 12px;
   font-family: var(--mono);
-  color: var(--text-secondary);
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  color: var(--cocoa);
+  background: var(--butter);
+  border: 1.5px solid var(--cream-border);
   border-radius: var(--r-pill);
   padding: 4px 10px;
+}
+
+/* hamburger */
+.nav-toggle {
+  display: none;
+  background: transparent;
+  border: 0;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 0;
+}
+
+.nav-toggle span {
+  display: block;
+  width: 22px;
+  height: 2px;
+  background: var(--plum);
+  border-radius: 2px;
 }
 
 /* ── Main ────────────────────────────────────────────────────── */
