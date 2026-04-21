@@ -4,7 +4,7 @@
 
 **Goal:** Ship a single-page marketing site for Sawwii with a pastel retro-modern aesthetic, SVG illustrations, and CTAs that route visitors into the existing admin signup flow.
 
-**Architecture:** New `landing/` directory served by its own nginx container on port `3002`. Static HTML/CSS/JS; no framework. SVG illustrations are inline or external assets — no bitmap images, no external image requests. The hosting model mirrors the existing `frontend/` and `player/` services (alpine nginx image, same entrypoint pattern that bakes a runtime `config.js` with the admin URL). Re-theming the admin SPA is explicitly **out of scope** — that lands in a follow-up plan.
+**Architecture:** New `landing/` directory served by its own nginx container on host port `3003` (port 3002 is occupied by an unrelated nginx on this VPS). Exposed publicly via a Cloudflare Tunnel as `lets.sawwii.com`. Static HTML/CSS/JS; no framework. SVG illustrations are inline or external assets — no bitmap images, no external image requests. The hosting model mirrors the existing `frontend/` and `player/` services (alpine nginx image, same entrypoint pattern that bakes a runtime `config.js` with the admin URL). Re-theming the admin SPA is explicitly **out of scope** — that lands in a follow-up plan.
 
 **Tech Stack:** HTML5, vanilla JS (ES2022 for mobile-nav toggle + smooth scroll only), plain CSS with CSS custom properties, IBM Plex Serif + IBM Plex Sans (Google Fonts), inline + external SVG illustrations, nginx:1.27-alpine container, Docker Compose.
 
@@ -115,7 +115,7 @@ EOF
 exec nginx -g 'daemon off;'
 ```
 
-`APP_URL` points at the admin SPA. Defaults to the Montreal VPS IP for local development; in production (once `sawwii.com` DNS is live) the env var is set to `https://app.sawwii.com` via `.env`.
+`APP_URL` points at the admin SPA. Defaults to the Montreal VPS IP for local development; once the Cloudflare Tunnel is live, set `APP_URL=https://app.sawwii.com` in `.env` and redeploy.
 
 - [ ] **Step 3: Create `landing/nginx.conf`**
 
@@ -192,7 +192,7 @@ Append after the existing `player:` service (after line 66):
   landing:
     build: ./landing
     ports:
-      - "3002:80"
+      - "3003:80"
     env_file:
       - .env
     restart: unless-stopped
@@ -218,9 +218,9 @@ docker-compose build landing && docker-compose up -d landing
 - [ ] **Step 8: Verify the placeholder serves**
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://192.168.18.192:3002/
-curl -s http://192.168.18.192:3002/ | grep -E 'Sawwii landing|scaffold placeholder'
-curl -s http://192.168.18.192:3002/config.js
+curl -s -o /dev/null -w "%{http_code}\n" http://192.168.18.192:3003/
+curl -s http://192.168.18.192:3003/ | grep -E 'Sawwii landing|scaffold placeholder'
+curl -s http://192.168.18.192:3003/config.js
 ```
 
 Expected:
@@ -232,7 +232,7 @@ Expected:
 
 ```bash
 git add landing/ docker-compose.yml .env
-git commit -m "feat(landing): scaffold marketing site container on :3002"
+git commit -m "feat(landing): scaffold marketing site container on :3003"
 ```
 
 (If `.env` was not modified because `APP_URL` was already present or the file is gitignored, drop it from the `git add` and commit only the rest.)
@@ -473,7 +473,7 @@ This is a throwaway smoke — Task 3 replaces the body entirely with the real st
 docker-compose build landing && docker-compose up -d landing
 ```
 
-Open http://192.168.18.192:3002/ in a browser. Expected:
+Open http://192.168.18.192:3003/ in a browser. Expected:
 - Cream background (`#FFF8F0`)
 - "Sawwii — *make it* today" headline in IBM Plex Serif, with "make it" in italic
 - Body copy in IBM Plex Sans
@@ -805,7 +805,7 @@ Append (do not replace) at the end of the file:
 docker-compose build landing && docker-compose up -d landing
 ```
 
-In a browser at http://192.168.18.192:3002/. Expected:
+In a browser at http://192.168.18.192:3003/. Expected:
 - A sticky translucent nav bar at the top with logo (`◠ Sawwii`), four anchor links, a ghost "Sign in" button, and a peach "Start free trial" button.
 - Below, a two-column hero: left side has the "14-day free trial · no card" mint pill, a large serif headline with "just works" italic + a rose underline, a sub-paragraph, two CTA buttons, and a tiny price line. Right side shows the hero SVG illustration (cream display with a peach hero tile, mint + rose side tiles, purple status bar, accents floating around).
 - At < 880px viewport, the nav collapses to a hamburger (non-functional yet — Task 8 wires it), and the hero stacks into a single column.
@@ -955,7 +955,7 @@ Insert this block in `landing/index.html` immediately after the closing `</secti
 docker-compose build landing && docker-compose up -d landing
 ```
 
-Expected at http://192.168.18.192:3002/:
+Expected at http://192.168.18.192:3003/:
 - Below the hero, a butter-coloured section with a rose pill, a large "Built for shop owners, not stadiums." headline, and a sub-paragraph.
 - Four feature cards in a row: peach/mint/lavender/rose icon tiles, each with a short title and a two-line blurb. The third card ("AI menu, from your website") has a `Coming soon` lavender pill in its top-right corner and a darker plum border.
 - At ≤ 980px, cards reflow to 2×2; at ≤ 560px, to a single column.
@@ -1365,7 +1365,7 @@ Insert into `landing/index.html` after the pricing `</section>`:
             <a class="btn btn-primary btn-lg" href="mailto:hello@sawwii.com?subject=Sawwii%20AI%20early%20access">Get early access</a>
           </div>
           <div class="ai-visual">
-            <div class="ai-chip">sawwii.com/menu</div>
+            <div class="ai-chip">yourshop.com/menu</div>
             <div class="ai-arrow">→</div>
             <div class="ai-mini-tv">
               <div class="ai-mini-hero"></div>
@@ -1752,9 +1752,9 @@ git commit -m "feat(landing): mobile nav, CTA wiring to admin, favicon"
 - [ ] **Step 1: Lighthouse-style sanity check**
 
 ```bash
-curl -s -o /dev/null -w "HTTP %{http_code} · %{size_download} bytes · %{time_total}s\n" http://192.168.18.192:3002/
-curl -s -I http://192.168.18.192:3002/styles.css | grep -iE 'content-encoding|cache-control'
-curl -s -I http://192.168.18.192:3002/assets/illustrations/hero.svg | grep -iE 'content-encoding|cache-control'
+curl -s -o /dev/null -w "HTTP %{http_code} · %{size_download} bytes · %{time_total}s\n" http://192.168.18.192:3003/
+curl -s -I http://192.168.18.192:3003/styles.css | grep -iE 'content-encoding|cache-control'
+curl -s -I http://192.168.18.192:3003/assets/illustrations/hero.svg | grep -iE 'content-encoding|cache-control'
 ```
 
 Expected:
@@ -1772,7 +1772,7 @@ Expected: `postgres`, `backend`, `frontend`, `player`, and `landing` all `Up (he
 
 - [ ] **Step 3: Cross-check the CTAs end-to-end**
 
-1. Open http://192.168.18.192:3002/ in an incognito window.
+1. Open http://192.168.18.192:3003/ in an incognito window.
 2. Click **Start free trial** (nav). Browser → `http://192.168.18.192:3000/#signup`. Expected: admin loads. (If the deep-link follow-up from Task 8 was applied, it lands on Create Account; otherwise on Sign In — either is acceptable.)
 3. Go back. Click any of the five pricing CTAs → same target.
 4. Click the Enterprise "Contact us" → opens mailto.
@@ -1805,7 +1805,7 @@ Print:
 ```
 Landing page complete.
 - 8 new commits on feature/landing-page.
-- New docker-compose service `landing` serving the marketing site at :3002.
+- New docker-compose service `landing` serving the marketing site at :3003 (publicly as lets.sawwii.com via Cloudflare Tunnel).
 - Sections: nav, hero, features, how-it-works, pricing, AI spotlight, FAQ, CTA, footer.
 - Pastel retro-modern palette: cream/butter/peach/mint/lavender/rose/plum.
 - IBM Plex Serif + IBM Plex Sans. 6 SVG illustrations inline or as assets.
@@ -1822,4 +1822,13 @@ Landing page complete.
 
 **Bilingual EN/AR** on the landing will: (1) add a tiny language toggle in the nav that writes `localStorage.lang`, (2) flip `<html lang dir>`, (3) load IBM Plex Sans Arabic + IBM Plex Serif's Arabic-compatible fallback, (4) move copy strings into `translations/{en,ar}.json`. The palette and illustrations work identically in RTL — the only layout changes are nav order and hero art side.
 
-**Production DNS cutover** (when ready): point `sawwii.com` → Montreal VPS, add Caddy or Traefik in Docker, route `sawwii.com` → landing `:3002`, `app.sawwii.com` → frontend `:3000`, `play.sawwii.com` → player `:3001`, `api.sawwii.com` → backend `:8000`. Set `APP_URL=https://app.sawwii.com` in `.env` and redeploy landing.
+**Cloudflare Tunnel cutover** (when ready): install `cloudflared` on the Montreal VPS, authenticate once (`cloudflared tunnel login`), create a tunnel, and map these four public hostnames to local origins in the Zero Trust dashboard:
+
+| Public hostname     | Origin service                   |
+|---------------------|----------------------------------|
+| `lets.sawwii.com`   | `http://192.168.18.192:3003`     |
+| `app.sawwii.com`    | `http://192.168.18.192:3000`     |
+| `play.sawwii.com`   | `http://192.168.18.192:3001`     |
+| `api.sawwii.com`    | `http://192.168.18.192:8000`     |
+
+Apex `sawwii.com` is intentionally not tunnelled — the account's tunnel routing is scoped to subdomains. Once the four hostnames resolve, set `APP_URL=https://app.sawwii.com` in `.env` and redeploy the landing container so every CTA points at the real admin URL. TLS is terminated at Cloudflare's edge — no Caddy/Traefik needed inside the stack.
