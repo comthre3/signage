@@ -93,3 +93,48 @@ def test_signup_request_cooldown_blocks_rapid_resend(otp_client):
     )
     assert r2.status_code == 429
     assert "wait" in r2.json()["detail"].lower()
+
+
+def _request_otp(client, email: str) -> str:
+    r = client.post(
+        "/auth/signup/request",
+        json={"business_name": "Kebab Corner", "email": email},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["dev_otp"]
+
+
+def test_signup_verify_happy_path_returns_token(otp_client):
+    email = _fresh_email()
+    otp = _request_otp(otp_client, email)
+    r = otp_client.post("/auth/signup/verify", json={"email": email, "otp": otp})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert len(data["verification_token"]) >= 32
+    assert data["business_name"] == "Kebab Corner"
+
+
+def test_signup_verify_wrong_otp_increments_attempts(otp_client):
+    email = _fresh_email()
+    _request_otp(otp_client, email)
+    r = otp_client.post("/auth/signup/verify", json={"email": email, "otp": "000000"})
+    assert r.status_code == 400
+    assert "incorrect" in r.json()["detail"].lower()
+
+
+def test_signup_verify_locks_after_max_attempts(otp_client):
+    email = _fresh_email()
+    _request_otp(otp_client, email)
+    for _ in range(5):
+        otp_client.post("/auth/signup/verify", json={"email": email, "otp": "000000"})
+    r = otp_client.post("/auth/signup/verify", json={"email": email, "otp": "000000"})
+    assert r.status_code == 400
+    assert "too many" in r.json()["detail"].lower()
+
+
+def test_signup_verify_unknown_email_fails(otp_client):
+    r = otp_client.post(
+        "/auth/signup/verify",
+        json={"email": "nobody@example.com", "otp": "123456"},
+    )
+    assert r.status_code == 400

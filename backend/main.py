@@ -540,6 +540,53 @@ def signup_request(payload: SignupStartRequest) -> dict:
     return response
 
 
+class SignupVerifyRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200)
+    otp: str = Field(..., min_length=6, max_length=6)
+
+
+@app.post("/auth/signup/verify")
+def signup_verify(payload: SignupVerifyRequest) -> dict:
+    email = payload.email.strip().lower()
+    row = query_one("SELECT * FROM pending_signups WHERE email = ?", (email,))
+    if not row:
+        raise HTTPException(status_code=400, detail="No pending signup for this email")
+
+    now = datetime.now(timezone.utc)
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+    if now > expires_dt:
+        raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
+
+    if (row.get("attempts") or 0) >= OTP_MAX_ATTEMPTS:
+        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Request a new code.")
+
+    if not verify_otp(payload.otp, row.get("otp_hash")):
+        execute(
+            "UPDATE pending_signups SET attempts = attempts + 1 WHERE email = ?",
+            (email,),
+        )
+        raise HTTPException(status_code=400, detail="Incorrect code")
+
+    verification_token = secrets.token_hex(16)
+    verification_expires = (now + timedelta(seconds=VERIFICATION_TOKEN_TTL_SECONDS)).isoformat()
+    execute(
+        """
+        UPDATE pending_signups
+           SET verification_token = ?, verification_token_expires_at = ?, attempts = 0
+         WHERE email = ?
+        """,
+        (verification_token, verification_expires, email),
+    )
+    return {
+        "verification_token": verification_token,
+        "business_name": row["business_name"],
+        "expires_in_seconds": VERIFICATION_TOKEN_TTL_SECONDS,
+    }
+
+
 @app.get("/organization")
 def get_organization(user: dict = Depends(get_current_user)) -> dict:
     org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))
