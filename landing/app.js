@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const APP_URL = (window.APP_URL || 'http://192.168.18.192:3000').replace(/\/+$/, '');
+  const APP_URL = (window.APP_URL || 'https://app.sawwii.com').replace(/\/+$/, '');
 
   /* ── CTA wiring ─────────────────────────────────────────── */
   const signupTargets = [
