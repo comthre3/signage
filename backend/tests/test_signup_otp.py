@@ -1,4 +1,18 @@
-from main import generate_otp, hash_otp, verify_otp
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+
+from main import generate_otp, hash_otp, verify_otp, app
+
+
+@pytest.fixture
+def otp_client() -> TestClient:
+    return TestClient(app)
+
+
+def _fresh_email() -> str:
+    return f"otp-{uuid.uuid4().hex[:8]}@example.com"
 
 
 def test_generate_otp_is_six_digits_numeric():
@@ -17,3 +31,65 @@ def test_otp_hash_roundtrip():
 
 def test_verify_otp_none_stored_returns_false():
     assert verify_otp("123456", None) is False
+
+
+def test_signup_request_happy_path_returns_dev_otp(otp_client):
+    email = _fresh_email()
+    r = otp_client.post(
+        "/auth/signup/request",
+        json={"business_name": "Kebab Corner", "email": email},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "otp_sent"
+    assert "dev_otp" in data
+    assert len(data["dev_otp"]) == 6 and data["dev_otp"].isdigit()
+
+
+def test_signup_request_rejects_invalid_email(otp_client):
+    r = otp_client.post(
+        "/auth/signup/request",
+        json={"business_name": "Kebab Corner", "email": "notanemail"},
+    )
+    assert r.status_code == 400
+
+
+def test_signup_request_rejects_already_registered_email(otp_client):
+    email = _fresh_email()
+    from db import execute
+    from main import hash_password, utc_now_iso
+    org_id = execute(
+        """
+        INSERT INTO organizations (name, slug, plan, screen_limit, subscription_status, locale, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (f"Seed {email}", f"seed-{uuid.uuid4().hex[:6]}", "starter", 3, "trialing", "en", utc_now_iso()),
+    )
+    execute(
+        """
+        INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (org_id, email, hash_password("seeded1x"), 1, "admin", utc_now_iso()),
+    )
+    r = otp_client.post(
+        "/auth/signup/request",
+        json={"business_name": "Kebab Corner", "email": email},
+    )
+    assert r.status_code == 400
+    assert "registered" in r.json()["detail"].lower()
+
+
+def test_signup_request_cooldown_blocks_rapid_resend(otp_client):
+    email = _fresh_email()
+    r1 = otp_client.post(
+        "/auth/signup/request",
+        json={"business_name": "Kebab Corner", "email": email},
+    )
+    assert r1.status_code == 200
+    r2 = otp_client.post(
+        "/auth/signup/request",
+        json={"business_name": "Kebab Corner", "email": email},
+    )
+    assert r2.status_code == 429
+    assert "wait" in r2.json()["detail"].lower()

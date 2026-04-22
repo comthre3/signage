@@ -437,10 +437,9 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
 
 
-class SignupRequest(BaseModel):
+class SignupStartRequest(BaseModel):
     business_name: str = Field(..., min_length=1, max_length=100)
     email: str = Field(..., min_length=3, max_length=200)
-    password: str = Field(..., min_length=8)
 
 
 @app.on_event("startup")
@@ -486,65 +485,59 @@ def list_plans() -> dict:
     return {"plans": [{"key": key, **values} for key, values in PLANS.items()]}
 
 
-@app.post("/auth/signup")
-def signup(payload: SignupRequest) -> dict:
+@app.post("/auth/signup/request")
+def signup_request(payload: SignupStartRequest) -> dict:
     email = payload.email.strip().lower()
+    business_name = payload.business_name.strip()
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
         raise HTTPException(status_code=400, detail="Invalid email address")
-    validate_password(payload.password)
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
         raise HTTPException(status_code=400, detail="Email is already registered")
 
-    slug_base = slugify(payload.business_name)
-    slug = slug_base
-    counter = 1
-    while query_one("SELECT id FROM organizations WHERE slug = ?", (slug,)):
-        counter += 1
-        slug = f"{slug_base}-{counter}"
+    now = datetime.now(timezone.utc)
+    existing = query_one("SELECT last_sent_at FROM pending_signups WHERE email = ?", (email,))
+    if existing and existing.get("last_sent_at"):
+        try:
+            last_sent_dt = datetime.fromisoformat(existing["last_sent_at"])
+            if (now - last_sent_dt).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
+                )
+        except ValueError:
+            pass
 
-    plan_key = "starter"
-    plan = PLANS[plan_key]
-    trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+    otp = generate_otp()
+    otp_hash_val = hash_otp(otp)
+    expires_at = (now + timedelta(seconds=OTP_TTL_SECONDS)).isoformat()
+    now_iso = now.isoformat()
 
-    new_org_id = execute(
-        """
-        INSERT INTO organizations
-        (name, slug, plan, screen_limit, subscription_status, trial_ends_at, locale, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (payload.business_name.strip(), slug, plan_key, plan["screen_limit"],
-         "trialing", trial_ends_at, "en", utc_now_iso()),
-    )
-    user_id = execute(
-        """
-        INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (new_org_id, email, hash_password(payload.password), 1, "admin", utc_now_iso()),
-    )
-    token = uuid.uuid4().hex
-    execute(
-        "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
-        (user_id, token, utc_now_iso(), utc_now_iso()),
-    )
-    return {
-        "token": token,
-        "user": {
-            "id": user_id,
-            "username": email,
-            "role": "admin",
-            "is_admin": True,
-        },
-        "organization": {
-            "id": new_org_id,
-            "name": payload.business_name.strip(),
-            "slug": slug,
-            "plan": plan_key,
-            "screen_limit": plan["screen_limit"],
-            "subscription_status": "trialing",
-            "trial_ends_at": trial_ends_at,
-        },
-    }
+    if existing:
+        execute(
+            """
+            UPDATE pending_signups
+               SET business_name = ?, otp_hash = ?, attempts = 0,
+                   expires_at = ?, last_sent_at = ?,
+                   verification_token = NULL, verification_token_expires_at = NULL
+             WHERE email = ?
+            """,
+            (business_name, otp_hash_val, expires_at, now_iso, email),
+        )
+    else:
+        execute(
+            """
+            INSERT INTO pending_signups
+              (email, business_name, otp_hash, attempts, expires_at, last_sent_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (email, business_name, otp_hash_val, 0, expires_at, now_iso, now_iso),
+        )
+
+    send_signup_otp_email(email, business_name, otp)
+    response: dict = {"status": "otp_sent", "expires_in_seconds": OTP_TTL_SECONDS}
+    if DEV_MODE:
+        response["dev_otp"] = otp
+    return response
 
 
 @app.get("/organization")
