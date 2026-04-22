@@ -587,6 +587,90 @@ def signup_verify(payload: SignupVerifyRequest) -> dict:
     }
 
 
+class SignupCompleteRequest(BaseModel):
+    verification_token: str = Field(..., min_length=32, max_length=64)
+    password: str = Field(..., min_length=1)
+
+
+@app.post("/auth/signup/complete")
+def signup_complete(payload: SignupCompleteRequest) -> dict:
+    validate_password(payload.password)
+    row = query_one(
+        "SELECT * FROM pending_signups WHERE verification_token = ?",
+        (payload.verification_token,),
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+
+    now = datetime.now(timezone.utc)
+    try:
+        vt_expires_dt = datetime.fromisoformat(row["verification_token_expires_at"])
+    except (TypeError, ValueError):
+        vt_expires_dt = now - timedelta(seconds=1)
+    if now > vt_expires_dt:
+        raise HTTPException(status_code=400, detail="Verification token expired. Please restart signup.")
+
+    email = row["email"]
+    business_name = row["business_name"]
+
+    if query_one("SELECT id FROM users WHERE username = ?", (email,)):
+        execute("DELETE FROM pending_signups WHERE email = ?", (email,))
+        raise HTTPException(status_code=400, detail="Email is already registered")
+
+    slug_base = slugify(business_name)
+    slug = slug_base
+    counter = 1
+    while query_one("SELECT id FROM organizations WHERE slug = ?", (slug,)):
+        counter += 1
+        slug = f"{slug_base}-{counter}"
+
+    plan_key = "starter"
+    plan = PLANS[plan_key]
+    trial_ends_at = (now + timedelta(days=14)).isoformat()
+
+    new_org_id = execute(
+        """
+        INSERT INTO organizations
+        (name, slug, plan, screen_limit, subscription_status, trial_ends_at, locale, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (business_name, slug, plan_key, plan["screen_limit"],
+         "trialing", trial_ends_at, "en", utc_now_iso()),
+    )
+    user_id = execute(
+        """
+        INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (new_org_id, email, hash_password(payload.password), 1, "admin", utc_now_iso()),
+    )
+    session_token = uuid.uuid4().hex
+    execute(
+        "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
+        (user_id, session_token, utc_now_iso(), utc_now_iso()),
+    )
+    execute("DELETE FROM pending_signups WHERE email = ?", (email,))
+
+    return {
+        "token": session_token,
+        "user": {
+            "id": user_id,
+            "username": email,
+            "role": "admin",
+            "is_admin": True,
+        },
+        "organization": {
+            "id": new_org_id,
+            "name": business_name,
+            "slug": slug,
+            "plan": plan_key,
+            "screen_limit": plan["screen_limit"],
+            "subscription_status": "trialing",
+            "trial_ends_at": trial_ends_at,
+        },
+    }
+
+
 @app.get("/organization")
 def get_organization(user: dict = Depends(get_current_user)) -> dict:
     org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))

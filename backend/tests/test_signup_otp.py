@@ -138,3 +138,61 @@ def test_signup_verify_unknown_email_fails(otp_client):
         json={"email": "nobody@example.com", "otp": "123456"},
     )
     assert r.status_code == 400
+
+
+def _verify_otp(client, email: str, otp: str) -> str:
+    r = client.post("/auth/signup/verify", json={"email": email, "otp": otp})
+    assert r.status_code == 200, r.text
+    return r.json()["verification_token"]
+
+
+def test_signup_complete_happy_path_returns_session(otp_client):
+    email = _fresh_email()
+    otp = _request_otp(otp_client, email)
+    vt = _verify_otp(otp_client, email, otp)
+    r = otp_client.post(
+        "/auth/signup/complete",
+        json={"verification_token": vt, "password": "testpass1"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["token"]
+    assert data["user"]["username"] == email
+    assert data["user"]["role"] == "admin"
+    assert data["organization"]["plan"] == "starter"
+    assert data["organization"]["subscription_status"] == "trialing"
+
+
+def test_signup_complete_rejects_invalid_token(otp_client):
+    r = otp_client.post(
+        "/auth/signup/complete",
+        json={"verification_token": "deadbeef" * 4, "password": "testpass1"},
+    )
+    assert r.status_code == 400
+
+
+def test_signup_complete_rejects_reused_token(otp_client):
+    email = _fresh_email()
+    otp = _request_otp(otp_client, email)
+    vt = _verify_otp(otp_client, email, otp)
+    r1 = otp_client.post(
+        "/auth/signup/complete",
+        json={"verification_token": vt, "password": "testpass1"},
+    )
+    assert r1.status_code == 200
+    r2 = otp_client.post(
+        "/auth/signup/complete",
+        json={"verification_token": vt, "password": "testpass1"},
+    )
+    assert r2.status_code == 400
+
+
+def test_signup_complete_enforces_password_policy(otp_client):
+    email = _fresh_email()
+    otp = _request_otp(otp_client, email)
+    vt = _verify_otp(otp_client, email, otp)
+    r = otp_client.post(
+        "/auth/signup/complete",
+        json={"verification_token": vt, "password": "short"},
+    )
+    assert r.status_code == 400
