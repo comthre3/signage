@@ -1151,6 +1151,9 @@ document.getElementById("signup-request-form").addEventListener("submit", async 
       signupState.business_name = business_name;
       document.getElementById("signup-verify-email").textContent = email;
       signupResetDevOtpHint(data.dev_otp || "");
+      if (data.dev_otp) {
+        document.getElementById("signup-otp").value = data.dev_otp;
+      }
       signupShowStep("verify");
       toast("Code sent. Check the email (or dev log).", "success");
     });
@@ -1188,6 +1191,9 @@ document.getElementById("signup-resend").addEventListener("click", async (e) => 
       }),
     });
     signupResetDevOtpHint(data.dev_otp || "");
+    if (data.dev_otp) {
+      document.getElementById("signup-otp").value = data.dev_otp;
+    }
     toast("New code sent.", "success");
   } catch (err) {
     toast(err.message || "Couldn't resend code.", "error");
