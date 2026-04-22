@@ -29,9 +29,30 @@ def unique_business() -> dict:
 
 @pytest.fixture
 def signed_up_org(client: TestClient, unique_business: dict) -> dict:
-    response = client.post("/auth/signup", json=unique_business)
-    assert response.status_code == 200, response.text
-    data = response.json()
+    r = client.post(
+        "/auth/signup/request",
+        json={
+            "business_name": unique_business["business_name"],
+            "email": unique_business["email"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    otp = r.json()["dev_otp"]
+    r = client.post(
+        "/auth/signup/verify",
+        json={"email": unique_business["email"], "otp": otp},
+    )
+    assert r.status_code == 200, r.text
+    verification_token = r.json()["verification_token"]
+    r = client.post(
+        "/auth/signup/complete",
+        json={
+            "verification_token": verification_token,
+            "password": unique_business["password"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
     return {
         "token": data["token"],
         "org": data["organization"],
