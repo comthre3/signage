@@ -51,11 +51,35 @@
           </div>
         </form>
 
-        <form id="signup-form" class="auth-form hidden">
-          <input type="text"     id="signup-business" placeholder="Business name"            required maxlength="100" autocomplete="organization" />
-          <input type="email"    id="signup-email"    placeholder="Work email"               required autocomplete="email" />
-          <input type="password" id="signup-password" placeholder="Password (min 8, letters + numbers)" required autocomplete="new-password" minlength="8" />
-          <button type="submit">Start Free Trial</button>
+        <form id="signup-request-form" class="auth-form hidden">
+          <input type="text"  id="signup-business" placeholder="Business name" required maxlength="100" autocomplete="organization" />
+          <input type="email" id="signup-email"    placeholder="Work email"    required autocomplete="email" />
+          <button type="submit">Send Code</button>
+          <div class="helper-text">
+            We'll email you a 6-digit code to verify your address before you set a password.
+          </div>
+        </form>
+
+        <form id="signup-verify-form" class="auth-form hidden">
+          <div class="helper-text" id="signup-verify-intro">
+            Enter the 6-digit code sent to <strong id="signup-verify-email">—</strong>.
+          </div>
+          <input type="text" id="signup-otp" placeholder="123456" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" />
+          <button type="submit">Verify</button>
+          <div class="helper-text">
+            <a href="#" id="signup-resend">Resend code</a> ·
+            <a href="#" id="signup-change-email">Use a different email</a>
+          </div>
+          <div class="helper-text hidden" id="signup-dev-otp"></div>
+        </form>
+
+        <form id="signup-password-form" class="auth-form hidden">
+          <div class="helper-text">
+            Email verified. Set a password to finish creating your account.
+          </div>
+          <input type="password" id="signup-new-password"     placeholder="Password (min 8, letters + numbers)" required autocomplete="new-password" minlength="8" />
+          <input type="password" id="signup-confirm-password" placeholder="Confirm password"                    required autocomplete="new-password" minlength="8" />
+          <button type="submit">Create Account</button>
           <div class="helper-text">
             You'll get the <strong>Starter</strong> plan (up to 3 screens) free for 14 days. Cancel anytime.
           </div>
