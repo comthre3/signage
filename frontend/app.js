@@ -1084,14 +1084,19 @@ function showAuthTab(which) {
   const loginTab   = document.getElementById("auth-tab-login");
   const signupTab  = document.getElementById("auth-tab-signup");
   const loginForm  = document.getElementById("login-form");
-  const signupForm = document.getElementById("signup-form");
   const isSignup   = which === "signup";
   loginTab .classList.toggle("active", !isSignup);
   signupTab.classList.toggle("active",  isSignup);
   loginTab .setAttribute("aria-selected", String(!isSignup));
   signupTab.setAttribute("aria-selected", String( isSignup));
   loginForm .classList.toggle("hidden",  isSignup);
-  signupForm.classList.toggle("hidden", !isSignup);
+  // three-step wizard — always re-enter at the request step
+  const signupRequestForm  = document.getElementById("signup-request-form");
+  const signupVerifyForm   = document.getElementById("signup-verify-form");
+  const signupPasswordForm = document.getElementById("signup-password-form");
+  signupRequestForm .classList.toggle("hidden", !isSignup);
+  signupVerifyForm  .classList.add("hidden");
+  signupPasswordForm.classList.add("hidden");
   const firstInput = isSignup ? "signup-business" : "login-username";
   document.getElementById(firstInput)?.focus();
 }
@@ -1099,23 +1104,130 @@ function showAuthTab(which) {
 document.getElementById("auth-tab-login") .addEventListener("click", () => showAuthTab("login"));
 document.getElementById("auth-tab-signup").addEventListener("click", () => showAuthTab("signup"));
 
-/* ── Signup ──────────────────────────────────────────────────── */
-document.getElementById("signup-form").addEventListener("submit", async (e) => {
+/* ── Signup (3-step OTP wizard) ──────────────────────────────── */
+const signupState = { email: "", business_name: "", verification_token: "" };
+
+function signupShowStep(step) {
+  const forms = {
+    request:  document.getElementById("signup-request-form"),
+    verify:   document.getElementById("signup-verify-form"),
+    password: document.getElementById("signup-password-form"),
+  };
+  Object.entries(forms).forEach(([key, form]) => {
+    form.classList.toggle("hidden", key !== step);
+  });
+  const focusMap = {
+    request:  "signup-business",
+    verify:   "signup-otp",
+    password: "signup-new-password",
+  };
+  document.getElementById(focusMap[step])?.focus();
+}
+
+function signupResetDevOtpHint(otp) {
+  const el = document.getElementById("signup-dev-otp");
+  if (!el) return;
+  if (otp) {
+    el.textContent = `Dev mode: your code is ${otp}`;
+    el.classList.remove("hidden");
+  } else {
+    el.textContent = "";
+    el.classList.add("hidden");
+  }
+}
+
+document.getElementById("signup-request-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const btn          = e.target.querySelector("button[type=submit]");
+  const btn = e.target.querySelector("button[type=submit]");
   const business_name = document.getElementById("signup-business").value.trim();
-  const email        = document.getElementById("signup-email").value.trim();
-  const password     = document.getElementById("signup-password").value;
+  const email         = document.getElementById("signup-email").value.trim();
   try {
     await withLoading(btn, async () => {
-      const data = await api("/auth/signup", {
+      const data = await api("/auth/signup/request", {
         method: "POST",
-        body: JSON.stringify({ business_name, email, password }),
+        body: JSON.stringify({ business_name, email }),
+      });
+      signupState.email = email;
+      signupState.business_name = business_name;
+      document.getElementById("signup-verify-email").textContent = email;
+      signupResetDevOtpHint(data.dev_otp || "");
+      signupShowStep("verify");
+      toast("Code sent. Check the email (or dev log).", "success");
+    });
+  } catch (err) {
+    toast(err.message || "Couldn't send code.", "error");
+  }
+});
+
+document.getElementById("signup-verify-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button[type=submit]");
+  const otp = document.getElementById("signup-otp").value.trim();
+  try {
+    await withLoading(btn, async () => {
+      const data = await api("/auth/signup/verify", {
+        method: "POST",
+        body: JSON.stringify({ email: signupState.email, otp }),
+      });
+      signupState.verification_token = data.verification_token;
+      signupShowStep("password");
+    });
+  } catch (err) {
+    toast(err.message || "Verification failed.", "error");
+  }
+});
+
+document.getElementById("signup-resend").addEventListener("click", async (e) => {
+  e.preventDefault();
+  try {
+    const data = await api("/auth/signup/request", {
+      method: "POST",
+      body: JSON.stringify({
+        business_name: signupState.business_name,
+        email: signupState.email,
+      }),
+    });
+    signupResetDevOtpHint(data.dev_otp || "");
+    toast("New code sent.", "success");
+  } catch (err) {
+    toast(err.message || "Couldn't resend code.", "error");
+  }
+});
+
+document.getElementById("signup-change-email").addEventListener("click", (e) => {
+  e.preventDefault();
+  signupState.email = "";
+  signupState.verification_token = "";
+  signupResetDevOtpHint("");
+  document.getElementById("signup-otp").value = "";
+  signupShowStep("request");
+});
+
+document.getElementById("signup-password-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button[type=submit]");
+  const password        = document.getElementById("signup-new-password").value;
+  const confirmPassword = document.getElementById("signup-confirm-password").value;
+  if (password !== confirmPassword) {
+    toast("Passwords do not match.", "error");
+    return;
+  }
+  try {
+    await withLoading(btn, async () => {
+      const data = await api("/auth/signup/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          verification_token: signupState.verification_token,
+          password,
+        }),
       });
       setAuth(data.token, data.user);
       showDashboard();
       await bootData();
-      toast(`Welcome to Sawwii, ${business_name}! Your 14-day trial is active.`, "success", 6000);
+      toast(`Welcome to Sawwii, ${signupState.business_name}! Your 14-day trial is active.`, "success", 6000);
+      signupState.email = "";
+      signupState.business_name = "";
+      signupState.verification_token = "";
     });
   } catch (err) {
     toast(err.message || "Sign-up failed.", "error");

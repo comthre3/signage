@@ -146,6 +146,45 @@ def verify_password(password: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
+OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
+OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
+OTP_RESEND_COOLDOWN_SECONDS = int(os.getenv("OTP_RESEND_COOLDOWN_SECONDS", "60"))
+VERIFICATION_TOKEN_TTL_SECONDS = int(os.getenv("VERIFICATION_TOKEN_TTL_SECONDS", "900"))
+DEV_MODE = os.getenv("DEV_MODE", "0").lower() in ("1", "true", "yes")
+
+
+def generate_otp() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_otp(otp: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", otp.encode(), salt, 120000)
+    return f"{salt.hex()}${digest.hex()}"
+
+
+def verify_otp(otp: str, stored: str | None) -> bool:
+    if not stored:
+        return False
+    try:
+        salt_hex, digest_hex = stored.split("$", 1)
+    except ValueError:
+        return False
+    salt = bytes.fromhex(salt_hex)
+    digest = hashlib.pbkdf2_hmac("sha256", otp.encode(), salt, 120000)
+    return secrets.compare_digest(digest.hex(), digest_hex)
+
+
+def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
+    """Dev stub for outbound signup email.
+
+    DEV_MODE writes the OTP to the container log so operators can recover it
+    locally without a provider. Production use (Resend) is wired in a separate
+    plan once the sawwii.com DNS is pointed and an API key is issued.
+    """
+    logger.info("SIGNUP_OTP for %s (%s): %s", to_email, business_name, otp)
+
+
 ROLE_LEVELS = {"viewer": 1, "editor": 2, "admin": 3}
 
 PLANS = {
@@ -398,10 +437,9 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
 
 
-class SignupRequest(BaseModel):
+class SignupStartRequest(BaseModel):
     business_name: str = Field(..., min_length=1, max_length=100)
     email: str = Field(..., min_length=3, max_length=200)
-    password: str = Field(..., min_length=8)
 
 
 @app.on_event("startup")
@@ -447,16 +485,139 @@ def list_plans() -> dict:
     return {"plans": [{"key": key, **values} for key, values in PLANS.items()]}
 
 
-@app.post("/auth/signup")
-def signup(payload: SignupRequest) -> dict:
+@app.post("/auth/signup/request")
+def signup_request(payload: SignupStartRequest) -> dict:
     email = payload.email.strip().lower()
+    business_name = payload.business_name.strip()
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
         raise HTTPException(status_code=400, detail="Invalid email address")
-    validate_password(payload.password)
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
         raise HTTPException(status_code=400, detail="Email is already registered")
 
-    slug_base = slugify(payload.business_name)
+    now = datetime.now(timezone.utc)
+    existing = query_one("SELECT last_sent_at FROM pending_signups WHERE email = ?", (email,))
+    if existing and existing.get("last_sent_at"):
+        try:
+            last_sent_dt = datetime.fromisoformat(existing["last_sent_at"])
+            if (now - last_sent_dt).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
+                )
+        except ValueError:
+            pass
+
+    otp = generate_otp()
+    otp_hash_val = hash_otp(otp)
+    expires_at = (now + timedelta(seconds=OTP_TTL_SECONDS)).isoformat()
+    now_iso = now.isoformat()
+
+    if existing:
+        execute(
+            """
+            UPDATE pending_signups
+               SET business_name = ?, otp_hash = ?, attempts = 0,
+                   expires_at = ?, last_sent_at = ?,
+                   verification_token = NULL, verification_token_expires_at = NULL
+             WHERE email = ?
+            """,
+            (business_name, otp_hash_val, expires_at, now_iso, email),
+        )
+    else:
+        execute(
+            """
+            INSERT INTO pending_signups
+              (email, business_name, otp_hash, attempts, expires_at, last_sent_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (email, business_name, otp_hash_val, 0, expires_at, now_iso, now_iso),
+        )
+
+    send_signup_otp_email(email, business_name, otp)
+    response: dict = {"status": "otp_sent", "expires_in_seconds": OTP_TTL_SECONDS}
+    if DEV_MODE:
+        response["dev_otp"] = otp
+    return response
+
+
+class SignupVerifyRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200)
+    otp: str = Field(..., min_length=6, max_length=6)
+
+
+@app.post("/auth/signup/verify")
+def signup_verify(payload: SignupVerifyRequest) -> dict:
+    email = payload.email.strip().lower()
+    row = query_one("SELECT * FROM pending_signups WHERE email = ?", (email,))
+    if not row:
+        raise HTTPException(status_code=400, detail="No pending signup for this email")
+
+    now = datetime.now(timezone.utc)
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+    if now > expires_dt:
+        raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
+
+    if (row.get("attempts") or 0) >= OTP_MAX_ATTEMPTS:
+        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Request a new code.")
+
+    if not verify_otp(payload.otp, row.get("otp_hash")):
+        execute(
+            "UPDATE pending_signups SET attempts = attempts + 1 WHERE email = ?",
+            (email,),
+        )
+        raise HTTPException(status_code=400, detail="Incorrect code")
+
+    verification_token = secrets.token_hex(16)
+    verification_expires = (now + timedelta(seconds=VERIFICATION_TOKEN_TTL_SECONDS)).isoformat()
+    execute(
+        """
+        UPDATE pending_signups
+           SET verification_token = ?, verification_token_expires_at = ?, attempts = 0
+         WHERE email = ?
+        """,
+        (verification_token, verification_expires, email),
+    )
+    return {
+        "verification_token": verification_token,
+        "business_name": row["business_name"],
+        "expires_in_seconds": VERIFICATION_TOKEN_TTL_SECONDS,
+    }
+
+
+class SignupCompleteRequest(BaseModel):
+    verification_token: str = Field(..., min_length=32, max_length=64)
+    password: str = Field(..., min_length=1)
+
+
+@app.post("/auth/signup/complete")
+def signup_complete(payload: SignupCompleteRequest) -> dict:
+    validate_password(payload.password)
+    row = query_one(
+        "SELECT * FROM pending_signups WHERE verification_token = ?",
+        (payload.verification_token,),
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+
+    now = datetime.now(timezone.utc)
+    try:
+        vt_expires_dt = datetime.fromisoformat(row["verification_token_expires_at"])
+    except (TypeError, ValueError):
+        vt_expires_dt = now - timedelta(seconds=1)
+    if now > vt_expires_dt:
+        raise HTTPException(status_code=400, detail="Verification token expired. Please restart signup.")
+
+    email = row["email"]
+    business_name = row["business_name"]
+
+    if query_one("SELECT id FROM users WHERE username = ?", (email,)):
+        execute("DELETE FROM pending_signups WHERE email = ?", (email,))
+        raise HTTPException(status_code=400, detail="Email is already registered")
+
+    slug_base = slugify(business_name)
     slug = slug_base
     counter = 1
     while query_one("SELECT id FROM organizations WHERE slug = ?", (slug,)):
@@ -465,7 +626,7 @@ def signup(payload: SignupRequest) -> dict:
 
     plan_key = "starter"
     plan = PLANS[plan_key]
-    trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+    trial_ends_at = (now + timedelta(days=14)).isoformat()
 
     new_org_id = execute(
         """
@@ -473,7 +634,7 @@ def signup(payload: SignupRequest) -> dict:
         (name, slug, plan, screen_limit, subscription_status, trial_ends_at, locale, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (payload.business_name.strip(), slug, plan_key, plan["screen_limit"],
+        (business_name, slug, plan_key, plan["screen_limit"],
          "trialing", trial_ends_at, "en", utc_now_iso()),
     )
     user_id = execute(
@@ -483,13 +644,15 @@ def signup(payload: SignupRequest) -> dict:
         """,
         (new_org_id, email, hash_password(payload.password), 1, "admin", utc_now_iso()),
     )
-    token = uuid.uuid4().hex
+    session_token = uuid.uuid4().hex
     execute(
         "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
-        (user_id, token, utc_now_iso(), utc_now_iso()),
+        (user_id, session_token, utc_now_iso(), utc_now_iso()),
     )
+    execute("DELETE FROM pending_signups WHERE email = ?", (email,))
+
     return {
-        "token": token,
+        "token": session_token,
         "user": {
             "id": user_id,
             "username": email,
@@ -498,7 +661,7 @@ def signup(payload: SignupRequest) -> dict:
         },
         "organization": {
             "id": new_org_id,
-            "name": payload.business_name.strip(),
+            "name": business_name,
             "slug": slug,
             "plan": plan_key,
             "screen_limit": plan["screen_limit"],

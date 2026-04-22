@@ -6,16 +6,27 @@ def _bearer(token: str) -> dict:
 
 
 def _signup(client, suffix: str) -> dict:
-    response = client.post(
-        "/auth/signup",
-        json={
-            "business_name": f"Biz {suffix}",
-            "email": f"owner-{suffix}@example.com",
-            "password": "testpass1",
-        },
+    email = f"owner-{suffix}@example.com"
+    business_name = f"Biz {suffix}"
+    password = "testpass1"
+    r = client.post(
+        "/auth/signup/request",
+        json={"business_name": business_name, "email": email},
     )
-    assert response.status_code == 200, response.text
-    return response.json()
+    assert r.status_code == 200, r.text
+    otp = r.json()["dev_otp"]
+    r = client.post(
+        "/auth/signup/verify",
+        json={"email": email, "otp": otp},
+    )
+    assert r.status_code == 200, r.text
+    verification_token = r.json()["verification_token"]
+    r = client.post(
+        "/auth/signup/complete",
+        json={"verification_token": verification_token, "password": password},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 def test_org_a_cannot_see_or_mutate_org_b_screens(client):

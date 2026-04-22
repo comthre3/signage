@@ -25,6 +25,8 @@ services:
       - ./data:/app/data
     env_file:
       - .env
+    environment:
+      - DEV_MODE=1
     depends_on:
       postgres:
         condition: service_healthy
