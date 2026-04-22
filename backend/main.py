@@ -128,6 +128,22 @@ def generate_unique_token() -> str:
             return token
 
 
+PAIR_CODE_CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+PAIR_CODE_LENGTH = 5
+PAIR_CODE_TTL_SECONDS = int(os.getenv("PAIR_CODE_TTL_SECONDS", "600"))
+
+
+def generate_pair_code_v2() -> str:
+    return "".join(secrets.choice(PAIR_CODE_CHARSET) for _ in range(PAIR_CODE_LENGTH))
+
+
+def generate_unique_pair_code_v2() -> str:
+    while True:
+        code = generate_pair_code_v2()
+        if not query_one("SELECT id FROM pairing_codes WHERE code = ?", (code,)):
+            return code
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120000)
