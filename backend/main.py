@@ -1424,6 +1424,28 @@ def request_pair_code(payload: PairRequestStart | None = None) -> dict:
     }
 
 
+@app.get("/screens/poll/{code}")
+def poll_pair_code(code: str) -> dict:
+    row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (code,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown pairing code")
+
+    now = datetime.now(timezone.utc)
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+
+    if row["status"] == "pending" and now > expires_dt:
+        return {"status": "expired"}
+
+    if row["status"] == "pending":
+        return {"status": "pending"}
+
+    # Paired branch — fully populated in Task 4.
+    return {"status": row["status"]}
+
+
 @app.post("/screens/pair")
 def pair_screen(payload: PairRequest) -> dict:
     screen = query_one("SELECT * FROM screens WHERE pair_code = ?", (payload.pair_code,))

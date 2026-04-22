@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timedelta, timezone
 
 from main import (
     PAIR_CODE_CHARSET,
@@ -40,3 +41,32 @@ def test_request_code_each_call_is_unique(client):
 def test_request_code_accepts_empty_body(client):
     r = client.post("/screens/request_code")
     assert r.status_code == 200
+
+
+def test_poll_returns_pending_for_fresh_code(client):
+    r = client.post("/screens/request_code", json={})
+    code = r.json()["code"]
+    r2 = client.get(f"/screens/poll/{code}")
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "pending"
+
+
+def test_poll_unknown_code_returns_404(client):
+    r = client.get("/screens/poll/ZZZZZ")
+    assert r.status_code == 404
+
+
+def test_poll_expired_code_returns_expired_status(client):
+    from db import execute
+    r = client.post("/screens/request_code", json={})
+    code = r.json()["code"]
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    execute("UPDATE pairing_codes SET expires_at = ? WHERE code = ?", (past, code))
+    r2 = client.get(f"/screens/poll/{code}")
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "expired"
+
+
+def test_poll_malformed_code_returns_404(client):
+    r = client.get("/screens/poll/toolong1234")
+    assert r.status_code == 404
