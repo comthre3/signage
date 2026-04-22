@@ -1399,6 +1399,31 @@ def get_screen_zones(screen_id: int) -> list[dict]:
     return zones
 
 
+class PairRequestStart(BaseModel):
+    user_agent: str | None = Field(default=None, max_length=500)
+
+
+@app.post("/screens/request_code")
+def request_pair_code(payload: PairRequestStart | None = None) -> dict:
+    now = datetime.now(timezone.utc)
+    code = generate_unique_pair_code_v2()
+    device_id = secrets.token_hex(16)
+    expires_at = (now + timedelta(seconds=PAIR_CODE_TTL_SECONDS)).isoformat()
+    execute(
+        """
+        INSERT INTO pairing_codes (code, device_id, status, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (code, device_id, "pending", expires_at, now.isoformat()),
+    )
+    return {
+        "code": code,
+        "device_id": device_id,
+        "expires_at": expires_at,
+        "expires_in_seconds": PAIR_CODE_TTL_SECONDS,
+    }
+
+
 @app.post("/screens/pair")
 def pair_screen(payload: PairRequest) -> dict:
     screen = query_one("SELECT * FROM screens WHERE pair_code = ?", (payload.pair_code,))
