@@ -146,6 +146,45 @@ def verify_password(password: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
+OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
+OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
+OTP_RESEND_COOLDOWN_SECONDS = int(os.getenv("OTP_RESEND_COOLDOWN_SECONDS", "60"))
+VERIFICATION_TOKEN_TTL_SECONDS = int(os.getenv("VERIFICATION_TOKEN_TTL_SECONDS", "900"))
+DEV_MODE = os.getenv("DEV_MODE", "0").lower() in ("1", "true", "yes")
+
+
+def generate_otp() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_otp(otp: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", otp.encode(), salt, 120000)
+    return f"{salt.hex()}${digest.hex()}"
+
+
+def verify_otp(otp: str, stored: str | None) -> bool:
+    if not stored:
+        return False
+    try:
+        salt_hex, digest_hex = stored.split("$", 1)
+    except ValueError:
+        return False
+    salt = bytes.fromhex(salt_hex)
+    digest = hashlib.pbkdf2_hmac("sha256", otp.encode(), salt, 120000)
+    return secrets.compare_digest(digest.hex(), digest_hex)
+
+
+def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
+    """Dev stub for outbound signup email.
+
+    DEV_MODE writes the OTP to the container log so operators can recover it
+    locally without a provider. Production use (Resend) is wired in a separate
+    plan once the sawwii.com DNS is pointed and an API key is issued.
+    """
+    logger.info("SIGNUP_OTP for %s (%s): %s", to_email, business_name, otp)
+
+
 ROLE_LEVELS = {"viewer": 1, "editor": 2, "admin": 3}
 
 PLANS = {

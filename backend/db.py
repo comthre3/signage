@@ -263,6 +263,20 @@ def init_db() -> None:
                 created_at      TEXT NOT NULL
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pending_signups (
+                id                             SERIAL PRIMARY KEY,
+                email                          TEXT NOT NULL UNIQUE,
+                business_name                  TEXT NOT NULL,
+                otp_hash                       TEXT NOT NULL,
+                attempts                       INTEGER NOT NULL DEFAULT 0,
+                expires_at                     TEXT NOT NULL,
+                last_sent_at                   TEXT NOT NULL,
+                verification_token             TEXT,
+                verification_token_expires_at  TEXT,
+                created_at                     TEXT NOT NULL
+            )
+        """)
 
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS password_hash        TEXT")
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS owner_user_id        INTEGER")
