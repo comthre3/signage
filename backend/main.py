@@ -1497,9 +1497,13 @@ def claim_pair_code(
         UPDATE pairing_codes
            SET status = 'paired', screen_id = ?, claimed_at = ?
          WHERE code = ?
+           AND (status = 'pending' OR (status = 'paired' AND screen_id = ?))
         """,
-        (screen["id"], now.isoformat(), payload.code),
+        (screen["id"], now.isoformat(), payload.code, screen["id"]),
     )
+    after = query_one("SELECT screen_id FROM pairing_codes WHERE code = ?", (payload.code,))
+    if not after or after["screen_id"] != screen["id"]:
+        raise HTTPException(status_code=409, detail="This pairing code was just claimed by another display.")
     return {"screen_id": screen["id"], "screen_name": screen["name"]}
 
 

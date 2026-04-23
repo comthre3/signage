@@ -177,3 +177,23 @@ def test_claim_is_idempotent_same_caller_same_screen(client):
     )
     assert r2.status_code == 200
     assert r2.json()["screen_id"] == ctx["default_screen"]["id"]
+
+
+def test_claim_rejects_rebind_to_different_screen_same_org(client):
+    ctx = _login_as_signed_up_org(client)
+    screen_b = client.post(
+        "/screens", json={"name": "Second Display"}, headers=ctx["auth"]
+    ).json()
+    code = client.post("/screens/request_code", json={}).json()["code"]
+    r1 = client.post(
+        "/screens/claim",
+        json={"code": code, "screen_id": ctx["default_screen"]["id"]},
+        headers=ctx["auth"],
+    )
+    assert r1.status_code == 200
+    r2 = client.post(
+        "/screens/claim",
+        json={"code": code, "screen_id": screen_b["id"]},
+        headers=ctx["auth"],
+    )
+    assert r2.status_code == 400
