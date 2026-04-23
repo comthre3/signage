@@ -128,6 +128,22 @@ def generate_unique_token() -> str:
             return token
 
 
+PAIR_CODE_CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+PAIR_CODE_LENGTH = 5
+PAIR_CODE_TTL_SECONDS = int(os.getenv("PAIR_CODE_TTL_SECONDS", "600"))
+
+
+def generate_pair_code_v2() -> str:
+    return "".join(secrets.choice(PAIR_CODE_CHARSET) for _ in range(PAIR_CODE_LENGTH))
+
+
+def generate_unique_pair_code_v2() -> str:
+    while True:
+        code = generate_pair_code_v2()
+        if not query_one("SELECT id FROM pairing_codes WHERE code = ?", (code,)):
+            return code
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120000)
@@ -961,7 +977,7 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
         ),
     )
     screen = query_one("SELECT * FROM screens WHERE id = ?", (screen_id,))
-    return sanitize_screen(screen)
+    return sanitize_screen(screen, include_token=True)
 
 
 @app.put("/screens/{screen_id}")
@@ -1381,6 +1397,114 @@ def get_screen_zones(screen_id: int) -> list[dict]:
                 item["url"] = f"/uploads/{item['filename']}"
         zone["items"] = items
     return zones
+
+
+class PairRequestStart(BaseModel):
+    user_agent: str | None = Field(default=None, max_length=500)
+
+
+@app.post("/screens/request_code")
+def request_pair_code(payload: PairRequestStart | None = None) -> dict:
+    now = datetime.now(timezone.utc)
+    code = generate_unique_pair_code_v2()
+    device_id = secrets.token_hex(16)
+    expires_at = (now + timedelta(seconds=PAIR_CODE_TTL_SECONDS)).isoformat()
+    execute(
+        """
+        INSERT INTO pairing_codes (code, device_id, status, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (code, device_id, "pending", expires_at, now.isoformat()),
+    )
+    return {
+        "code": code,
+        "device_id": device_id,
+        "expires_at": expires_at,
+        "expires_in_seconds": PAIR_CODE_TTL_SECONDS,
+    }
+
+
+@app.get("/screens/poll/{code}")
+def poll_pair_code(code: str) -> dict:
+    row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (code,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown pairing code")
+
+    now = datetime.now(timezone.utc)
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+
+    if row["status"] == "pending" and now > expires_dt:
+        return {"status": "expired"}
+
+    if row["status"] == "pending":
+        return {"status": "pending"}
+
+    if row["status"] == "paired":
+        screen = query_one("SELECT * FROM screens WHERE id = ?", (row["screen_id"],))
+        if not screen:
+            return {"status": "expired"}
+        execute(
+            "UPDATE screens SET last_seen = ? WHERE id = ?",
+            (now.isoformat(), screen["id"]),
+        )
+        return {
+            "status": "paired",
+            "screen_id": screen["id"],
+            "screen_name": screen["name"],
+            "screen_token": screen["token"],
+        }
+
+    return {"status": row["status"]}
+
+
+class PairClaimRequest(BaseModel):
+    code: str = Field(..., min_length=PAIR_CODE_LENGTH, max_length=PAIR_CODE_LENGTH)
+    screen_id: int
+
+
+@app.post("/screens/claim")
+def claim_pair_code(
+    payload: PairClaimRequest,
+    user: dict = Depends(require_roles("admin", "editor")),
+) -> dict:
+    row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (payload.code,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown pairing code")
+
+    now = datetime.now(timezone.utc)
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+    if now > expires_dt:
+        raise HTTPException(status_code=400, detail="Pairing code expired. Ask the display to refresh.")
+
+    screen = query_one(
+        "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
+        (payload.screen_id, user["organization_id"]),
+    )
+    if not screen:
+        raise HTTPException(status_code=404, detail="Screen not found")
+
+    if row["status"] == "paired" and row.get("screen_id") and row["screen_id"] != screen["id"]:
+        raise HTTPException(status_code=400, detail="This pairing code is already bound to another display.")
+
+    execute(
+        """
+        UPDATE pairing_codes
+           SET status = 'paired', screen_id = ?, claimed_at = ?
+         WHERE code = ?
+           AND (status = 'pending' OR (status = 'paired' AND screen_id = ?))
+        """,
+        (screen["id"], now.isoformat(), payload.code, screen["id"]),
+    )
+    after = query_one("SELECT screen_id FROM pairing_codes WHERE code = ?", (payload.code,))
+    if not after or after["screen_id"] != screen["id"]:
+        raise HTTPException(status_code=409, detail="This pairing code was just claimed by another display.")
+    return {"screen_id": screen["id"], "screen_name": screen["name"]}
 
 
 @app.post("/screens/pair")

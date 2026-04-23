@@ -277,6 +277,18 @@ def init_db() -> None:
                 created_at                     TEXT NOT NULL
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pairing_codes (
+                id           SERIAL PRIMARY KEY,
+                code         TEXT NOT NULL UNIQUE,
+                device_id    TEXT NOT NULL UNIQUE,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                screen_id    INTEGER REFERENCES screens (id) ON DELETE SET NULL,
+                expires_at   TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                claimed_at   TEXT
+            )
+        """)
 
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS password_hash        TEXT")
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS owner_user_id        INTEGER")
