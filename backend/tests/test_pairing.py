@@ -197,3 +197,34 @@ def test_claim_rejects_rebind_to_different_screen_same_org(client):
         headers=ctx["auth"],
     )
     assert r2.status_code == 400
+
+
+def test_full_flow_request_claim_poll(client):
+    # 1. Player requests a code (unauthenticated)
+    r = client.post("/screens/request_code", json={})
+    assert r.status_code == 200
+    code = r.json()["code"]
+
+    # 2. Player polls — still pending
+    r = client.get(f"/screens/poll/{code}")
+    assert r.json()["status"] == "pending"
+
+    # 3. Admin signs up, logs in, creates a display, and claims the code
+    ctx = _login_as_signed_up_org(client)
+    r = client.post(
+        "/screens/claim",
+        json={"code": code, "screen_id": ctx["default_screen"]["id"]},
+        headers=ctx["auth"],
+    )
+    assert r.status_code == 200
+
+    # 4. Player's next poll returns the paired screen's token
+    r = client.get(f"/screens/poll/{code}")
+    body = r.json()
+    assert body["status"] == "paired"
+    token = body["screen_token"]
+
+    # 5. Player can now fetch content with that token
+    r = client.get(f"/screens/{token}/content")
+    assert r.status_code == 200
+    assert "items" in r.json()
