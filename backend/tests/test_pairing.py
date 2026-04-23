@@ -207,6 +207,7 @@ def test_full_flow_request_claim_poll(client):
 
     # 2. Player polls — still pending
     r = client.get(f"/screens/poll/{code}")
+    assert r.status_code == 200
     assert r.json()["status"] == "pending"
 
     # 3. Admin signs up, logs in, creates a display, and claims the code
@@ -223,6 +224,7 @@ def test_full_flow_request_claim_poll(client):
     body = r.json()
     assert body["status"] == "paired"
     token = body["screen_token"]
+    assert isinstance(token, str) and token
 
     # 5. Player can now fetch content with that token
     r = client.get(f"/screens/{token}/content")
