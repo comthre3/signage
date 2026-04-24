@@ -129,7 +129,15 @@ async function api(path, options = {}) {
   if (!res.ok) {
     if (res.status === 401) handleAuthFailure();
     const text = await res.text();
-    throw new Error(text || "Request failed");
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+    const msg = (data && typeof data === "object" && typeof data.detail === "string")
+      ? data.detail
+      : (text || "Request failed");
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data   = data;
+    throw err;
   }
   return res.json();
 }
