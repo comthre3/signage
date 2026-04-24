@@ -110,6 +110,46 @@ async function requestPairingCode() {
   return res.json(); // { code, device_id, expires_at, expires_in_seconds }
 }
 
+async function pollPairingCode(code) {
+  const res = await fetch(`${API_BASE}/screens/poll/${encodeURIComponent(code)}`);
+  if (!res.ok) {
+    throw new Error(`poll failed: ${res.status}`);
+  }
+  return res.json(); // { status: pending|expired|paired, screen_id?, screen_name?, screen_token? }
+}
+
+function stopPairPoll() {
+  if (pairPollTimer) {
+    clearTimeout(pairPollTimer);
+    pairPollTimer = null;
+  }
+}
+
+async function onPaired(screenToken) {
+  stopPairPoll();
+  activePairCode = null;
+  localStorage.setItem("screen_token", screenToken);
+  hidePairingView();
+  setStatus("Loading content...");
+  // Re-run the same post-auth path boot() uses
+  await resumeAfterPair(screenToken);
+}
+
+async function resumeAfterPair(token) {
+  screenToken = token;
+  const layout = await fetchLayout();
+  if (layout?.zones && layout.zones.length > 0) {
+    layoutSignature = getLayoutSignature(layout.zones);
+    renderZonesLayout(layout.zones);
+  } else {
+    renderSingleLayout();
+    await fetchContent();
+  }
+  if (!refreshLoopStarted) {
+    startRefreshLoop();
+  }
+}
+
 function mountMedia(container, node, enableFade, transitionMs = 600) {
   const previous = container.firstElementChild;
   if (enableFade) {
@@ -343,17 +383,74 @@ async function fetchLayout() {
 
 async function startPairingFlow() {
   showPairingView();
+  stopPairPoll();
   try {
     const data = await requestPairingCode();
     activePairCode = data.code;
     renderPairingCode(data.code);
     pairingMetaEl.textContent = "Waiting for your phone…";
+    schedulePairPoll();
   } catch (err) {
     console.error(err);
     pairingCodeEl.textContent = "—";
     pairingMetaEl.textContent = "Can't reach server. Retrying…";
     setTimeout(startPairingFlow, 5000);
   }
+}
+
+function schedulePairPoll() {
+  pairPollTimer = setTimeout(runPairPoll, PAIR_POLL_INTERVAL_MS);
+}
+
+async function runPairPoll() {
+  if (!activePairCode) return;
+  try {
+    const data = await pollPairingCode(activePairCode);
+    if (data.status === "paired" && data.screen_token) {
+      await onPaired(data.screen_token);
+      return;
+    }
+    if (data.status === "expired") {
+      pairingMetaEl.textContent = "Code expired — getting a new one…";
+      await startPairingFlow();
+      return;
+    }
+    schedulePairPoll();
+  } catch (err) {
+    console.error(err);
+    pairingMetaEl.textContent = "Reconnecting…";
+    schedulePairPoll();
+  }
+}
+
+let refreshLoopStarted = false;
+
+function startRefreshLoop() {
+  if (refreshLoopStarted) return;
+  refreshLoopStarted = true;
+  setInterval(() => {
+    if (zonesEl && !zonesEl.classList.contains("hidden")) {
+      fetchLayout()
+        .then((nextLayout) => {
+          if (nextLayout?.zones) {
+            const nextSignature = getLayoutSignature(nextLayout.zones);
+            if (nextSignature !== layoutSignature) {
+              layoutSignature = nextSignature;
+              renderZonesLayout(nextLayout.zones);
+            }
+          }
+        })
+        .catch((err) => {
+          console.error(err);
+          setStatus("Connection issue");
+        });
+    } else {
+      fetchContent().catch((err) => {
+        console.error(err);
+        setStatus("Connection issue");
+      });
+    }
+  }, 15000);
 }
 
 async function boot() {
@@ -389,29 +486,7 @@ async function boot() {
     renderSingleLayout();
     await fetchContent();
   }
-  setInterval(() => {
-    if (zonesEl && !zonesEl.classList.contains("hidden")) {
-      fetchLayout()
-        .then((nextLayout) => {
-          if (nextLayout?.zones) {
-            const nextSignature = getLayoutSignature(nextLayout.zones);
-            if (nextSignature !== layoutSignature) {
-              layoutSignature = nextSignature;
-              renderZonesLayout(nextLayout.zones);
-            }
-          }
-        })
-        .catch((err) => {
-          console.error(err);
-          setStatus("Connection issue");
-        });
-    } else {
-      fetchContent().catch((err) => {
-        console.error(err);
-        setStatus("Connection issue");
-      });
-    }
-  }, 15000);
+  startRefreshLoop();
 }
 
 if ("serviceWorker" in navigator) {
