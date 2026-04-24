@@ -1371,15 +1371,123 @@ function renderPlanCard(org) {
   card.classList.remove("hidden");
 }
 
+/* ── Pair view ──────────────────────────────────────────────── */
+const PAIR_CODE_RE = /^[A-Z2-9]{5}$/;
+
+function normalizePairCode(raw) {
+  return String(raw || "").toUpperCase().replace(/[^A-Z2-9]/g, "").slice(0, 5);
+}
+
+function showPairViewPanel() {
+  document.getElementById("auth-panel").classList.add("hidden");
+  document.getElementById("dashboard").classList.add("hidden");
+  document.getElementById("pair-view").classList.remove("hidden");
+}
+
+function setPairState(which) {
+  const loading = document.getElementById("pair-loading");
+  const form    = document.getElementById("pair-form");
+  const success = document.getElementById("pair-success");
+  loading.classList.toggle("hidden", which !== "loading");
+  form   .classList.toggle("hidden", which !== "form");
+  success.classList.toggle("hidden", which !== "success");
+}
+
+function updatePairSubmitEnabled() {
+  const code = normalizePairCode(document.getElementById("pair-code-input").value);
+  const target = document.querySelector('input[name="pair-target"]:checked')?.value;
+  let ok = PAIR_CODE_RE.test(code);
+  if (target === "existing") {
+    ok = ok && Boolean(document.getElementById("pair-existing-select").value);
+  } else if (target === "new") {
+    ok = ok && document.getElementById("pair-new-name").value.trim().length > 0;
+  } else {
+    ok = false;
+  }
+  document.getElementById("pair-submit").disabled = !ok;
+}
+
+function clearPairError() {
+  const el = document.getElementById("pair-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+async function showPairView(initialCode) {
+  showPairViewPanel();
+  setPairState("loading");
+  clearPairError();
+
+  const codeInput    = document.getElementById("pair-code-input");
+  const existingSel  = document.getElementById("pair-existing-select");
+  const newNameInput = document.getElementById("pair-new-name");
+  const radioExist   = document.getElementById("pair-target-existing");
+  const radioNew     = document.getElementById("pair-target-new");
+
+  codeInput.value    = normalizePairCode(initialCode);
+  newNameInput.value = "";
+  newNameInput.classList.add("hidden");
+  existingSel.innerHTML = '<option value="">— Pick a screen —</option>';
+
+  let screens = [];
+  try {
+    screens = await api("/screens");
+  } catch (err) {
+    if (err.status === 401) return;
+    console.error(err);
+    screens = [];
+  }
+
+  for (const s of screens) {
+    const opt = document.createElement("option");
+    opt.value = String(s.id);
+    opt.textContent = s.name || `Screen #${s.id}`;
+    existingSel.appendChild(opt);
+  }
+
+  if (screens.length === 0) {
+    radioExist.disabled = true;
+    existingSel.disabled = true;
+    radioNew.checked = true;
+    newNameInput.classList.remove("hidden");
+  } else {
+    radioExist.disabled = false;
+    existingSel.disabled = false;
+    radioExist.checked = true;
+    newNameInput.classList.add("hidden");
+  }
+
+  setPairState("form");
+  updatePairSubmitEnabled();
+}
+
 async function boot() {
-  if (!authToken) { showAuthPanel(); updateAuthUI(); return; }
+  const isPairPath = location.pathname === "/pair";
+  const pairCodeParam = isPairPath
+    ? new URLSearchParams(location.search).get("code") || ""
+    : "";
+
+  if (!authToken) {
+    if (isPairPath) {
+      sessionStorage.setItem("pair_resume", JSON.stringify({ path: "/pair", code: pairCodeParam }));
+    }
+    showAuthPanel();
+    updateAuthUI();
+    if (location.hash === '#signup') showAuthTab('signup');
+    return;
+  }
+
   try {
     const me = await api("/auth/me");
     setAuth(authToken, me);
-    showDashboard();
-    await bootData();
-    updateResolutionCustomVisibility();
-    if (location.hash === '#signup') showAuthTab('signup');
+    if (isPairPath) {
+      await showPairView(pairCodeParam);
+    } else {
+      showDashboard();
+      await bootData();
+      updateResolutionCustomVisibility();
+      if (location.hash === '#signup') showAuthTab('signup');
+    }
   } catch (err) {
     console.error(err);
     handleAuthFailure();
@@ -1408,3 +1516,29 @@ function formatBytes(bytes) {
   if (bytes < 1048576)    return `${(bytes/1024).toFixed(1)} KB`;
   return `${(bytes/1048576).toFixed(1)} MB`;
 }
+
+/* ── Pair-view input wiring ─────────────────────────────────── */
+document.getElementById("pair-code-input").addEventListener("input", (e) => {
+  const cleaned = normalizePairCode(e.target.value);
+  if (cleaned !== e.target.value) e.target.value = cleaned;
+  updatePairSubmitEnabled();
+});
+
+document.getElementById("pair-existing-select").addEventListener("change", updatePairSubmitEnabled);
+document.getElementById("pair-new-name")      .addEventListener("input",  updatePairSubmitEnabled);
+
+document.querySelectorAll('input[name="pair-target"]').forEach((el) => {
+  el.addEventListener("change", () => {
+    const target = document.querySelector('input[name="pair-target"]:checked')?.value;
+    const existingSel  = document.getElementById("pair-existing-select");
+    const newNameInput = document.getElementById("pair-new-name");
+    if (target === "new") {
+      newNameInput.classList.remove("hidden");
+      existingSel.classList.add("hidden");
+    } else {
+      newNameInput.classList.add("hidden");
+      existingSel.classList.remove("hidden");
+    }
+    updatePairSubmitEnabled();
+  });
+});
