@@ -8,6 +8,18 @@ const statusEl = document.getElementById("status");
 const contentEl = document.getElementById("content");
 const zonesEl = document.getElementById("zones");
 
+const pairingEl = document.getElementById("pairing");
+const pairingCodeEl = document.getElementById("pairing-code");
+const pairingQrEl = document.getElementById("pairing-qr");
+const pairingUrlEl = document.getElementById("pairing-url");
+const pairingMetaEl = document.getElementById("pairing-meta");
+
+const APP_URL = (window.APP_URL || "").trim() || "https://app.sawwii.com";
+const PAIR_POLL_INTERVAL_MS = 3000;
+
+let activePairCode = null;
+let pairPollTimer = null;
+
 let screenToken = null;
 let playbackTimer = null;
 let currentIndex = 0;
@@ -58,6 +70,44 @@ function clearPlayback() {
 function clearZonePlayback() {
   zoneTimers.forEach((timer) => clearTimeout(timer));
   zoneTimers = [];
+}
+
+function showPairingView() {
+  contentEl.classList.add("hidden");
+  zonesEl.classList.add("hidden");
+  pairingEl.classList.remove("hidden");
+  statusEl.style.display = "none";
+}
+
+function hidePairingView() {
+  pairingEl.classList.add("hidden");
+  contentEl.classList.remove("hidden");
+  statusEl.style.display = "";
+}
+
+function renderPairingCode(code) {
+  pairingCodeEl.textContent = code;
+  const url = `${APP_URL}/pair?code=${encodeURIComponent(code)}`;
+  const host = APP_URL.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  pairingUrlEl.textContent = `${host}/pair`;
+
+  // QR — type 0 = auto-fit version, "M" error correction handles modest TV glare
+  const qr = qrcode(0, "M");
+  qr.addData(url);
+  qr.make();
+  pairingQrEl.innerHTML = qr.createImgTag(8, 16);
+}
+
+async function requestPairingCode() {
+  const res = await fetch(`${API_BASE}/screens/request_code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_agent: navigator.userAgent.slice(0, 500) }),
+  });
+  if (!res.ok) {
+    throw new Error(`request_code failed: ${res.status}`);
+  }
+  return res.json(); // { code, device_id, expires_at, expires_in_seconds }
 }
 
 function mountMedia(container, node, enableFade, transitionMs = 600) {
@@ -291,6 +341,21 @@ async function fetchLayout() {
   return data;
 }
 
+async function startPairingFlow() {
+  showPairingView();
+  try {
+    const data = await requestPairingCode();
+    activePairCode = data.code;
+    renderPairingCode(data.code);
+    pairingMetaEl.textContent = "Waiting for your phone…";
+  } catch (err) {
+    console.error(err);
+    pairingCodeEl.textContent = "—";
+    pairingMetaEl.textContent = "Can't reach server. Retrying…";
+    setTimeout(startPairingFlow, 5000);
+  }
+}
+
 async function boot() {
   const tokenParam = getParam("token");
   const codeParam = getParam("code");
@@ -311,7 +376,7 @@ async function boot() {
   }
 
   if (!screenToken && !previewToken) {
-    setStatus("Missing pairing code or token");
+    await startPairingFlow();
     return;
   }
 
