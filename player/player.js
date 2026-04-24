@@ -14,7 +14,7 @@ const pairingQrEl = document.getElementById("pairing-qr");
 const pairingUrlEl = document.getElementById("pairing-url");
 const pairingMetaEl = document.getElementById("pairing-meta");
 
-const APP_URL = (window.APP_URL || "").trim() || "https://app.sawwii.com";
+const APP_URL = (window.APP_URL || "").trim() || "https://app.khanshoof.com";
 const PAIR_POLL_INTERVAL_MS = 3000;
 
 let activePairCode = null;
