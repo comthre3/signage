@@ -3,15 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Signage Player</title>
+    <title>Sawwii Player</title>
     <link rel="stylesheet" href="styles.css" />
     <script src="config.js"></script>
+    <script src="vendor/qrcode.js"></script>
   </head>
   <body>
     <div id="player">
       <div id="status">Connecting...</div>
       <div id="content" class="single-content"></div>
       <div id="zones" class="zones-layout hidden"></div>
+
+      <section id="pairing" class="pairing hidden" aria-live="polite">
+        <header class="pairing-brand">Sawwii</header>
+        <p class="pairing-intro">Pair this display to your account</p>
+        <div class="pairing-code" id="pairing-code" aria-label="Pairing code">—</div>
+        <div class="pairing-qr" id="pairing-qr"></div>
+        <ol class="pairing-steps">
+          <li>On your phone, open <strong id="pairing-url">app.sawwii.com/pair</strong></li>
+          <li>Enter the code above, or scan the QR to jump there</li>
+          <li>Pick which screen this is — the display updates automatically</li>
+        </ol>
+        <p class="pairing-meta" id="pairing-meta">Code refreshes every 10 minutes</p>
+      </section>
     </div>
     <script src="player.js"></script>
   </body>
