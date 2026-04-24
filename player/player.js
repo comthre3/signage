@@ -8,6 +8,18 @@ const statusEl = document.getElementById("status");
 const contentEl = document.getElementById("content");
 const zonesEl = document.getElementById("zones");
 
+const pairingEl = document.getElementById("pairing");
+const pairingCodeEl = document.getElementById("pairing-code");
+const pairingQrEl = document.getElementById("pairing-qr");
+const pairingUrlEl = document.getElementById("pairing-url");
+const pairingMetaEl = document.getElementById("pairing-meta");
+
+const APP_URL = (window.APP_URL || "").trim() || "https://app.khanshoof.com";
+const PAIR_POLL_INTERVAL_MS = 3000;
+
+let activePairCode = null;
+let pairPollTimer = null;
+
 let screenToken = null;
 let playbackTimer = null;
 let currentIndex = 0;
@@ -58,6 +70,84 @@ function clearPlayback() {
 function clearZonePlayback() {
   zoneTimers.forEach((timer) => clearTimeout(timer));
   zoneTimers = [];
+}
+
+function showPairingView() {
+  contentEl.classList.add("hidden");
+  zonesEl.classList.add("hidden");
+  pairingEl.classList.remove("hidden");
+  statusEl.style.display = "none";
+}
+
+function hidePairingView() {
+  pairingEl.classList.add("hidden");
+  contentEl.classList.remove("hidden");
+  statusEl.style.display = "";
+}
+
+function renderPairingCode(code) {
+  pairingCodeEl.textContent = code;
+  const url = `${APP_URL}/pair?code=${encodeURIComponent(code)}`;
+  const host = APP_URL.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  pairingUrlEl.textContent = `${host}/pair`;
+
+  // QR — type 0 = auto-fit version, "M" error correction handles modest TV glare
+  const qr = qrcode(0, "M");
+  qr.addData(url);
+  qr.make();
+  pairingQrEl.innerHTML = qr.createImgTag(8, 16);
+}
+
+async function requestPairingCode() {
+  const res = await fetch(`${API_BASE}/screens/request_code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_agent: navigator.userAgent.slice(0, 500) }),
+  });
+  if (!res.ok) {
+    throw new Error(`request_code failed: ${res.status}`);
+  }
+  return res.json(); // { code, device_id, expires_at, expires_in_seconds }
+}
+
+async function pollPairingCode(code) {
+  const res = await fetch(`${API_BASE}/screens/poll/${encodeURIComponent(code)}`);
+  if (!res.ok) {
+    throw new Error(`poll failed: ${res.status}`);
+  }
+  return res.json(); // { status: pending|expired|paired, screen_id?, screen_name?, screen_token? }
+}
+
+function stopPairPoll() {
+  if (pairPollTimer) {
+    clearTimeout(pairPollTimer);
+    pairPollTimer = null;
+  }
+}
+
+async function onPaired(screenToken) {
+  stopPairPoll();
+  activePairCode = null;
+  localStorage.setItem("screen_token", screenToken);
+  hidePairingView();
+  setStatus("Loading content...");
+  // Re-run the same post-auth path boot() uses
+  await resumeAfterPair(screenToken);
+}
+
+async function resumeAfterPair(token) {
+  screenToken = token;
+  const layout = await fetchLayout();
+  if (layout?.zones && layout.zones.length > 0) {
+    layoutSignature = getLayoutSignature(layout.zones);
+    renderZonesLayout(layout.zones);
+  } else {
+    renderSingleLayout();
+    await fetchContent();
+  }
+  if (!refreshLoopStarted) {
+    startRefreshLoop();
+  }
 }
 
 function mountMedia(container, node, enableFade, transitionMs = 600) {
@@ -240,12 +330,29 @@ function renderSingleLayout() {
   contentEl.classList.remove("hidden");
   clearZonePlayback();
 }
+async function handleAuthFailure() {
+  console.warn("Screen token rejected — returning to pairing view");
+  localStorage.removeItem("screen_token");
+  screenToken = null;
+  currentSignature = "";
+  currentItems = [];
+  clearPlayback();
+  clearZonePlayback();
+  contentEl.innerHTML = "";
+  zonesEl.innerHTML = "";
+  await startPairingFlow();
+}
+
 async function fetchContent() {
   if (!screenToken && !previewToken) return;
   const endpoint = previewToken
     ? `${API_BASE}/preview/${previewToken}/content`
     : `${API_BASE}/screens/${screenToken}/content`;
   const res = await fetch(endpoint);
+  if ((res.status === 401 || res.status === 404) && !previewToken) {
+    await handleAuthFailure();
+    return;
+  }
   if (!res.ok) {
     const cached = localStorage.getItem(getCacheKey("content"));
     if (!cached) {
@@ -282,6 +389,10 @@ async function fetchLayout() {
     ? `${API_BASE}/preview/${previewToken}/layout`
     : `${API_BASE}/screens/${screenToken}/layout`;
   const res = await fetch(endpoint);
+  if ((res.status === 401 || res.status === 404) && !previewToken) {
+    await handleAuthFailure();
+    return null;
+  }
   if (!res.ok) {
     const cached = localStorage.getItem(getCacheKey("layout"));
     return cached ? JSON.parse(cached) : null;
@@ -291,39 +402,53 @@ async function fetchLayout() {
   return data;
 }
 
-async function boot() {
-  const tokenParam = getParam("token");
-  const codeParam = getParam("code");
-  const previewParam = getParam("preview_token");
-  const isPreview = Boolean(previewParam);
-  previewToken = previewParam;
-  screenToken =
-    tokenParam ||
-    (isPreview ? null : localStorage.getItem("screen_token")) ||
-    screenToken;
+async function startPairingFlow() {
+  showPairingView();
+  stopPairPoll();
+  try {
+    const data = await requestPairingCode();
+    activePairCode = data.code;
+    renderPairingCode(data.code);
+    pairingMetaEl.textContent = "Waiting for your phone…";
+    schedulePairPoll();
+  } catch (err) {
+    console.error(err);
+    pairingCodeEl.textContent = "—";
+    pairingMetaEl.textContent = "Can't reach server. Retrying…";
+    setTimeout(startPairingFlow, 5000);
+  }
+}
 
-  if (!screenToken && codeParam) {
-    setStatus("Pairing...");
-    screenToken = await pairWithCode(codeParam);
-    if (!isPreview) {
-      localStorage.setItem("screen_token", screenToken);
+function schedulePairPoll() {
+  pairPollTimer = setTimeout(runPairPoll, PAIR_POLL_INTERVAL_MS);
+}
+
+async function runPairPoll() {
+  if (!activePairCode) return;
+  try {
+    const data = await pollPairingCode(activePairCode);
+    if (data.status === "paired" && data.screen_token) {
+      await onPaired(data.screen_token);
+      return;
     }
+    if (data.status === "expired") {
+      pairingMetaEl.textContent = "Code expired — getting a new one…";
+      await startPairingFlow();
+      return;
+    }
+    schedulePairPoll();
+  } catch (err) {
+    console.error(err);
+    pairingMetaEl.textContent = "Reconnecting…";
+    schedulePairPoll();
   }
+}
 
-  if (!screenToken && !previewToken) {
-    setStatus("Missing pairing code or token");
-    return;
-  }
+let refreshLoopStarted = false;
 
-  setStatus("Loading content...");
-  const layout = await fetchLayout();
-  if (layout?.zones && layout.zones.length > 0) {
-    layoutSignature = getLayoutSignature(layout.zones);
-    renderZonesLayout(layout.zones);
-  } else {
-    renderSingleLayout();
-    await fetchContent();
-  }
+function startRefreshLoop() {
+  if (refreshLoopStarted) return;
+  refreshLoopStarted = true;
   setInterval(() => {
     if (zonesEl && !zonesEl.classList.contains("hidden")) {
       fetchLayout()
@@ -347,6 +472,42 @@ async function boot() {
       });
     }
   }, 15000);
+}
+
+async function boot() {
+  const tokenParam = getParam("token");
+  const codeParam = getParam("code");
+  const previewParam = getParam("preview_token");
+  const isPreview = Boolean(previewParam);
+  previewToken = previewParam;
+  screenToken =
+    tokenParam ||
+    (isPreview ? null : localStorage.getItem("screen_token")) ||
+    screenToken;
+
+  if (!screenToken && codeParam) {
+    setStatus("Pairing...");
+    screenToken = await pairWithCode(codeParam);
+    if (!isPreview) {
+      localStorage.setItem("screen_token", screenToken);
+    }
+  }
+
+  if (!screenToken && !previewToken) {
+    await startPairingFlow();
+    return;
+  }
+
+  setStatus("Loading content...");
+  const layout = await fetchLayout();
+  if (layout?.zones && layout.zones.length > 0) {
+    layoutSignature = getLayoutSignature(layout.zones);
+    renderZonesLayout(layout.zones);
+  } else {
+    renderSingleLayout();
+    await fetchContent();
+  }
+  startRefreshLoop();
 }
 
 if ("serviceWorker" in navigator) {

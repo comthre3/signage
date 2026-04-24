@@ -129,7 +129,15 @@ async function api(path, options = {}) {
   if (!res.ok) {
     if (res.status === 401) handleAuthFailure();
     const text = await res.text();
-    throw new Error(text || "Request failed");
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+    const msg = (data && typeof data === "object" && typeof data.detail === "string")
+      ? data.detail
+      : (text || "Request failed");
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data   = data;
+    throw err;
   }
   return res.json();
 }
@@ -1071,6 +1079,20 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
     await withLoading(btn, async () => {
       const data = await api("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
       setAuth(data.token, data.user);
+
+      const resumeRaw = sessionStorage.getItem("pair_resume");
+      if (resumeRaw) {
+        sessionStorage.removeItem("pair_resume");
+        try {
+          const resume = JSON.parse(resumeRaw);
+          if (resume && resume.path === "/pair") {
+            history.replaceState({}, "", `/pair${resume.code ? `?code=${encodeURIComponent(resume.code)}` : ""}`);
+            await showPairView(resume.code || "");
+            return;
+          }
+        } catch (_) { /* fall through */ }
+      }
+
       showDashboard();
       await bootData();
     });
@@ -1230,7 +1252,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
       setAuth(data.token, data.user);
       showDashboard();
       await bootData();
-      toast(`Welcome to Sawwii, ${signupState.business_name}! Your 14-day trial is active.`, "success", 6000);
+      toast(`Welcome to Khanshoof, ${signupState.business_name}! Your 14-day trial is active.`, "success", 6000);
       signupState.email = "";
       signupState.business_name = "";
       signupState.verification_token = "";
@@ -1363,15 +1385,123 @@ function renderPlanCard(org) {
   card.classList.remove("hidden");
 }
 
+/* ── Pair view ──────────────────────────────────────────────── */
+const PAIR_CODE_RE = /^[A-Z2-9]{5}$/;
+
+function normalizePairCode(raw) {
+  return String(raw || "").toUpperCase().replace(/[^A-Z2-9]/g, "").slice(0, 5);
+}
+
+function showPairViewPanel() {
+  document.getElementById("auth-panel").classList.add("hidden");
+  document.getElementById("dashboard").classList.add("hidden");
+  document.getElementById("pair-view").classList.remove("hidden");
+}
+
+function setPairState(which) {
+  const loading = document.getElementById("pair-loading");
+  const form    = document.getElementById("pair-form");
+  const success = document.getElementById("pair-success");
+  loading.classList.toggle("hidden", which !== "loading");
+  form   .classList.toggle("hidden", which !== "form");
+  success.classList.toggle("hidden", which !== "success");
+}
+
+function updatePairSubmitEnabled() {
+  const code = normalizePairCode(document.getElementById("pair-code-input").value);
+  const target = document.querySelector('input[name="pair-target"]:checked')?.value;
+  let ok = PAIR_CODE_RE.test(code);
+  if (target === "existing") {
+    ok = ok && Boolean(document.getElementById("pair-existing-select").value);
+  } else if (target === "new") {
+    ok = ok && document.getElementById("pair-new-name").value.trim().length > 0;
+  } else {
+    ok = false;
+  }
+  document.getElementById("pair-submit").disabled = !ok;
+}
+
+function clearPairError() {
+  const el = document.getElementById("pair-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+async function showPairView(initialCode) {
+  showPairViewPanel();
+  setPairState("loading");
+  clearPairError();
+
+  const codeInput    = document.getElementById("pair-code-input");
+  const existingSel  = document.getElementById("pair-existing-select");
+  const newNameInput = document.getElementById("pair-new-name");
+  const radioExist   = document.getElementById("pair-target-existing");
+  const radioNew     = document.getElementById("pair-target-new");
+
+  codeInput.value    = normalizePairCode(initialCode);
+  newNameInput.value = "";
+  newNameInput.classList.add("hidden");
+  existingSel.innerHTML = '<option value="">— Pick a screen —</option>';
+
+  let screens = [];
+  try {
+    screens = await api("/screens");
+  } catch (err) {
+    if (err.status === 401) return;
+    console.error(err);
+    screens = [];
+  }
+
+  for (const s of screens) {
+    const opt = document.createElement("option");
+    opt.value = String(s.id);
+    opt.textContent = s.name || `Screen #${s.id}`;
+    existingSel.appendChild(opt);
+  }
+
+  if (screens.length === 0) {
+    radioExist.disabled = true;
+    existingSel.disabled = true;
+    radioNew.checked = true;
+    newNameInput.classList.remove("hidden");
+  } else {
+    radioExist.disabled = false;
+    existingSel.disabled = false;
+    radioExist.checked = true;
+    newNameInput.classList.add("hidden");
+  }
+
+  setPairState("form");
+  updatePairSubmitEnabled();
+}
+
 async function boot() {
-  if (!authToken) { showAuthPanel(); updateAuthUI(); return; }
+  const isPairPath = location.pathname === "/pair";
+  const pairCodeParam = isPairPath
+    ? new URLSearchParams(location.search).get("code") || ""
+    : "";
+
+  if (!authToken) {
+    if (isPairPath) {
+      sessionStorage.setItem("pair_resume", JSON.stringify({ path: "/pair", code: pairCodeParam }));
+    }
+    showAuthPanel();
+    updateAuthUI();
+    if (location.hash === '#signup') showAuthTab('signup');
+    return;
+  }
+
   try {
     const me = await api("/auth/me");
     setAuth(authToken, me);
-    showDashboard();
-    await bootData();
-    updateResolutionCustomVisibility();
-    if (location.hash === '#signup') showAuthTab('signup');
+    if (isPairPath) {
+      await showPairView(pairCodeParam);
+    } else {
+      showDashboard();
+      await bootData();
+      updateResolutionCustomVisibility();
+      if (location.hash === '#signup') showAuthTab('signup');
+    }
   } catch (err) {
     console.error(err);
     handleAuthFailure();
@@ -1400,3 +1530,124 @@ function formatBytes(bytes) {
   if (bytes < 1048576)    return `${(bytes/1024).toFixed(1)} KB`;
   return `${(bytes/1048576).toFixed(1)} MB`;
 }
+
+/* ── Pair-view input wiring ─────────────────────────────────── */
+document.getElementById("pair-code-input").addEventListener("input", (e) => {
+  const cleaned = normalizePairCode(e.target.value);
+  if (cleaned !== e.target.value) e.target.value = cleaned;
+  updatePairSubmitEnabled();
+});
+
+document.getElementById("pair-existing-select").addEventListener("change", updatePairSubmitEnabled);
+document.getElementById("pair-new-name")      .addEventListener("input",  updatePairSubmitEnabled);
+
+document.querySelectorAll('input[name="pair-target"]').forEach((el) => {
+  el.addEventListener("change", () => {
+    const target = document.querySelector('input[name="pair-target"]:checked')?.value;
+    const existingSel  = document.getElementById("pair-existing-select");
+    const newNameInput = document.getElementById("pair-new-name");
+    if (target === "new") {
+      newNameInput.classList.remove("hidden");
+      existingSel.classList.add("hidden");
+    } else {
+      newNameInput.classList.add("hidden");
+      existingSel.classList.remove("hidden");
+    }
+    updatePairSubmitEnabled();
+  });
+});
+
+/* ── Pair-view submit ───────────────────────────────────────── */
+function showPairError(message) {
+  const el = document.getElementById("pair-error");
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+function mapPairErrorMessage(err) {
+  const detail = (err && err.data && typeof err.data.detail === "string")
+    ? err.data.detail
+    : (err?.message || "");
+  const status = err?.status;
+  if (status === 404 && /pairing code/i.test(detail)) {
+    return "That code isn't recognised. Check the TV screen and try again.";
+  }
+  if (status === 400 && /expired/i.test(detail)) {
+    return "Code expired. Refresh the TV to get a new one.";
+  }
+  if (status === 409) {
+    return "That code's been used. Refresh the TV to get a new one.";
+  }
+  if (status === 400 && /bound to a different screen/i.test(detail)) {
+    return "This code belongs to a different display. Refresh the TV to get a new one.";
+  }
+  if (status === 402) {
+    return "You've hit your plan's screen limit. Upgrade to add more.";
+  }
+  if (status === 403) {
+    return "Your account doesn't have permission to pair displays.";
+  }
+  if (!status) {
+    return "Can't reach server. Please try again.";
+  }
+  return "Something went wrong — please try again.";
+}
+
+async function onPairSubmit(e) {
+  e.preventDefault();
+  clearPairError();
+  const btn = document.getElementById("pair-submit");
+  const code = normalizePairCode(document.getElementById("pair-code-input").value);
+  const target = document.querySelector('input[name="pair-target"]:checked')?.value;
+
+  await withLoading(btn, async () => {
+    try {
+      let screenId = null;
+      let screenName = "";
+
+      if (target === "new") {
+        const name = document.getElementById("pair-new-name").value.trim();
+        const screen = await api("/screens", {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        });
+        screenId = screen.id;
+        screenName = screen.name || name;
+      } else {
+        const sel = document.getElementById("pair-existing-select");
+        screenId = Number(sel.value);
+        screenName = sel.options[sel.selectedIndex]?.textContent || `Screen #${screenId}`;
+      }
+
+      await api("/screens/claim", {
+        method: "POST",
+        body: JSON.stringify({ code, screen_id: screenId }),
+      });
+
+      document.getElementById("pair-success-name").textContent = screenName;
+      setPairState("success");
+    } catch (err) {
+      console.error(err);
+      showPairError(mapPairErrorMessage(err));
+    }
+  });
+}
+
+async function onPairAnother() {
+  history.replaceState({}, "", "/pair");
+  await showPairView("");
+}
+
+function onPairViewDashboard() {
+  history.pushState({}, "", "/");
+  document.getElementById("pair-view").classList.add("hidden");
+  showDashboard();
+  bootData().catch((err) => {
+    console.error(err);
+    toast("Failed to load dashboard. Check your connection.", "error", 6000);
+  });
+}
+
+document.getElementById("pair-form")         .addEventListener("submit", onPairSubmit);
+document.getElementById("pair-another-btn")  .addEventListener("click",  onPairAnother);
+document.getElementById("pair-dashboard-btn").addEventListener("click",  onPairViewDashboard);
