@@ -196,7 +196,7 @@ def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
 
     DEV_MODE writes the OTP to the container log so operators can recover it
     locally without a provider. Production use (Resend) is wired in a separate
-    plan once the sawwii.com DNS is pointed and an API key is issued.
+    plan once the khanshoof.com DNS is pointed and an API key is issued.
     """
     logger.info("SIGNUP_OTP for %s (%s): %s", to_email, business_name, otp)
 
