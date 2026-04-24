@@ -330,12 +330,29 @@ function renderSingleLayout() {
   contentEl.classList.remove("hidden");
   clearZonePlayback();
 }
+async function handleAuthFailure() {
+  console.warn("Screen token rejected — returning to pairing view");
+  localStorage.removeItem("screen_token");
+  screenToken = null;
+  currentSignature = "";
+  currentItems = [];
+  clearPlayback();
+  clearZonePlayback();
+  contentEl.innerHTML = "";
+  zonesEl.innerHTML = "";
+  await startPairingFlow();
+}
+
 async function fetchContent() {
   if (!screenToken && !previewToken) return;
   const endpoint = previewToken
     ? `${API_BASE}/preview/${previewToken}/content`
     : `${API_BASE}/screens/${screenToken}/content`;
   const res = await fetch(endpoint);
+  if ((res.status === 401 || res.status === 404) && !previewToken) {
+    await handleAuthFailure();
+    return;
+  }
   if (!res.ok) {
     const cached = localStorage.getItem(getCacheKey("content"));
     if (!cached) {
@@ -372,6 +389,10 @@ async function fetchLayout() {
     ? `${API_BASE}/preview/${previewToken}/layout`
     : `${API_BASE}/screens/${screenToken}/layout`;
   const res = await fetch(endpoint);
+  if ((res.status === 401 || res.status === 404) && !previewToken) {
+    await handleAuthFailure();
+    return null;
+  }
   if (!res.ok) {
     const cached = localStorage.getItem(getCacheKey("layout"));
     return cached ? JSON.parse(cached) : null;
