@@ -86,6 +86,75 @@
         </form>
       </section>
 
+      <section id="pair-view" class="panel pair-view hidden" aria-live="polite">
+        <div id="pair-loading" class="pair-loading hidden">
+          <p>Loading…</p>
+        </div>
+
+        <form id="pair-form" class="pair-form hidden" novalidate>
+          <header class="pair-header">
+            <h1 class="pair-brand">Khanshoof</h1>
+            <p class="pair-title">Pair a display</p>
+          </header>
+
+          <label class="pair-field">
+            <span class="pair-label">Pairing code</span>
+            <input
+              type="text"
+              id="pair-code-input"
+              class="pair-code-input"
+              inputmode="text"
+              autocapitalize="characters"
+              autocorrect="off"
+              spellcheck="false"
+              maxlength="5"
+              pattern="[A-Z2-9]{5}"
+              placeholder="ABCDE"
+              required
+            />
+          </label>
+
+          <fieldset class="pair-field pair-choice">
+            <legend class="pair-label">Which screen is this?</legend>
+
+            <label class="pair-radio">
+              <input type="radio" name="pair-target" id="pair-target-existing" value="existing" checked />
+              <span>Existing screen</span>
+            </label>
+            <select id="pair-existing-select" class="pair-select">
+              <option value="">— Pick a screen —</option>
+            </select>
+
+            <label class="pair-radio">
+              <input type="radio" name="pair-target" id="pair-target-new" value="new" />
+              <span>Create new screen</span>
+            </label>
+            <input
+              type="text"
+              id="pair-new-name"
+              class="pair-new-name hidden"
+              placeholder="Screen name (e.g. Lobby TV)"
+              maxlength="80"
+              autocomplete="off"
+            />
+          </fieldset>
+
+          <button type="submit" id="pair-submit" class="pair-submit" disabled>Pair display</button>
+
+          <p id="pair-error" class="pair-error hidden" role="alert"></p>
+        </form>
+
+        <div id="pair-success" class="pair-success hidden">
+          <div class="pair-success-check" aria-hidden="true">✓</div>
+          <h1 class="pair-success-title">Display paired</h1>
+          <p class="pair-success-name" id="pair-success-name">—</p>
+          <div class="pair-success-actions">
+            <button type="button" id="pair-another-btn" class="pair-primary">Pair another display</button>
+            <button type="button" id="pair-dashboard-btn" class="pair-secondary">View dashboard</button>
+          </div>
+        </div>
+      </section>
+
       <div id="dashboard" class="hidden">
         <section id="plan-card" class="panel plan-card hidden">
           <div class="plan-card-head">
