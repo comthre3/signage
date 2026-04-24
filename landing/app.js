@@ -1,10 +1,10 @@
 /* ─────────────────────────────────────────────────────────────
-   Sawwii landing — client behaviour
+   Khanshoof landing — client behaviour
    ───────────────────────────────────────────────────────────── */
 (function () {
   'use strict';
 
-  const APP_URL = (window.APP_URL || 'https://app.sawwii.com').replace(/\/+$/, '');
+  const APP_URL = (window.APP_URL || 'https://app.khanshoof.com').replace(/\/+$/, '');
 
   /* ── CTA wiring ─────────────────────────────────────────── */
   const signupTargets = [
