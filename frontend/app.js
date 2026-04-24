@@ -1079,6 +1079,20 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
     await withLoading(btn, async () => {
       const data = await api("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
       setAuth(data.token, data.user);
+
+      const resumeRaw = sessionStorage.getItem("pair_resume");
+      if (resumeRaw) {
+        sessionStorage.removeItem("pair_resume");
+        try {
+          const resume = JSON.parse(resumeRaw);
+          if (resume && resume.path === "/pair") {
+            history.replaceState({}, "", `/pair${resume.code ? `?code=${encodeURIComponent(resume.code)}` : ""}`);
+            await showPairView(resume.code || "");
+            return;
+          }
+        } catch (_) { /* fall through */ }
+      }
+
       showDashboard();
       await bootData();
     });
