@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Khanshoof</title>
+    <link rel="icon" type="image/png" href="assets/faces/v1_smile.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="styles.css" />
@@ -14,7 +15,7 @@
 
     <header>
       <div class="header-top">
-        <h1>Khanshoof</h1>
+        <h1><img class="brand-face" src="assets/faces/v1_kawaii.png" alt="" width="32" height="32" />Khanshoof</h1>
         <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
           <span></span><span></span><span></span>
         </button>
@@ -93,6 +94,7 @@
 
         <form id="pair-form" class="pair-form hidden" novalidate>
           <header class="pair-header">
+            <img class="pair-face" src="assets/faces/v1_smile.png" alt="" width="64" height="64" />
             <h1 class="pair-brand">Khanshoof</h1>
             <p class="pair-title">Pair a display</p>
           </header>
@@ -145,7 +147,7 @@
         </form>
 
         <div id="pair-success" class="pair-success hidden">
-          <div class="pair-success-check" aria-hidden="true">✓</div>
+          <img class="pair-success-face" src="assets/faces/v1_heart.png" alt="" width="96" height="96" />
           <h1 class="pair-success-title">Display paired</h1>
           <p class="pair-success-name" id="pair-success-name">—</p>
           <div class="pair-success-actions">

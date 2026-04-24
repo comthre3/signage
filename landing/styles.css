@@ -762,3 +762,43 @@ a:hover { color: var(--peach-deep); }
   padding-top: 24px;
   margin-top: 8px;
 }
+
+/* ── Khanshoof mascot faces ──────────────────────────────────── */
+.nav-face {
+  width: 32px;
+  height: 32px;
+  image-rendering: pixelated;
+  border-radius: 6px;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+.footer-face {
+  width: 28px;
+  height: 28px;
+  image-rendering: pixelated;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.hero-face {
+  image-rendering: pixelated;
+  width: min(100%, 520px);
+  height: auto;
+  display: block;
+  animation: faceCycle 4.8s steps(1, end) infinite;
+}
+
+@keyframes faceCycle {
+  0%, 15%   { content: url('assets/faces/v1_smile.png'); }
+  16%, 31%  { content: url('assets/faces/v1_wink.png'); }
+  32%, 47%  { content: url('assets/faces/v1_kawaii.png'); }
+  48%, 63%  { content: url('assets/faces/v1_heart.png'); }
+  64%, 79%  { content: url('assets/faces/v1_star.png'); }
+  80%, 100% { content: url('assets/faces/v1_big.png'); }
+}
+
+/* Reduced motion: hold on smile */
+@media (prefers-reduced-motion: reduce) {
+  .hero-face { animation: none; }
+}

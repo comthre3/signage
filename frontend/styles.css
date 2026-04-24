@@ -1531,3 +1531,31 @@ label {
   color: var(--cocoa);
   padding: 40px 0;
 }
+
+/* ── Khanshoof mascot faces ──────────────────────────────────── */
+.brand-face {
+  width: 32px;
+  height: 32px;
+  image-rendering: pixelated;
+  vertical-align: middle;
+  margin-right: 10px;
+  border-radius: 6px;
+}
+
+.pair-face {
+  width: 64px;
+  height: 64px;
+  image-rendering: pixelated;
+  margin: 0 auto 4px;
+  display: block;
+}
+
+.pair-success-face {
+  width: 96px;
+  height: 96px;
+  image-rendering: pixelated;
+  display: block;
+}
+
+/* Replace the green check with the mascot — hide the old check div when face is present */
+.pair-success .pair-success-check { display: none; }

@@ -167,3 +167,25 @@ body {
   color: #A89382;
   margin: 0;
 }
+
+/* ── Animated Khanshoof mascot on pairing view ──────────────── */
+.pairing-face {
+  width: clamp(120px, 16vh, 200px);
+  height: clamp(120px, 16vh, 200px);
+  image-rendering: pixelated;
+  display: block;
+  animation: pairingFaceCycle 4.8s steps(1, end) infinite;
+}
+
+@keyframes pairingFaceCycle {
+  0%, 15%   { content: url('assets/faces/v1_smile.png'); }
+  16%, 31%  { content: url('assets/faces/v1_wink.png'); }
+  32%, 47%  { content: url('assets/faces/v1_kawaii.png'); }
+  48%, 63%  { content: url('assets/faces/v1_heart.png'); }
+  64%, 79%  { content: url('assets/faces/v1_star.png'); }
+  80%, 100% { content: url('assets/faces/v1_big.png'); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pairing-face { animation: none; }
+}
