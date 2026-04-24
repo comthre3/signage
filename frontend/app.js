@@ -1542,3 +1542,98 @@ document.querySelectorAll('input[name="pair-target"]').forEach((el) => {
     updatePairSubmitEnabled();
   });
 });
+
+/* ── Pair-view submit ───────────────────────────────────────── */
+function showPairError(message) {
+  const el = document.getElementById("pair-error");
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+function mapPairErrorMessage(err) {
+  const detail = (err && err.data && typeof err.data.detail === "string")
+    ? err.data.detail
+    : (err?.message || "");
+  const status = err?.status;
+  if (status === 404 && /pairing code/i.test(detail)) {
+    return "That code isn't recognised. Check the TV screen and try again.";
+  }
+  if (status === 400 && /expired/i.test(detail)) {
+    return "Code expired. Refresh the TV to get a new one.";
+  }
+  if (status === 409) {
+    return "That code's been used. Refresh the TV to get a new one.";
+  }
+  if (status === 400 && /bound to a different screen/i.test(detail)) {
+    return "This code belongs to a different display. Refresh the TV to get a new one.";
+  }
+  if (status === 402) {
+    return "You've hit your plan's screen limit. Upgrade to add more.";
+  }
+  if (status === 403) {
+    return "Your account doesn't have permission to pair displays.";
+  }
+  if (!status) {
+    return "Can't reach server. Please try again.";
+  }
+  return "Something went wrong — please try again.";
+}
+
+async function onPairSubmit(e) {
+  e.preventDefault();
+  clearPairError();
+  const btn = document.getElementById("pair-submit");
+  const code = normalizePairCode(document.getElementById("pair-code-input").value);
+  const target = document.querySelector('input[name="pair-target"]:checked')?.value;
+
+  await withLoading(btn, async () => {
+    try {
+      let screenId = null;
+      let screenName = "";
+
+      if (target === "new") {
+        const name = document.getElementById("pair-new-name").value.trim();
+        const screen = await api("/screens", {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        });
+        screenId = screen.id;
+        screenName = screen.name || name;
+      } else {
+        const sel = document.getElementById("pair-existing-select");
+        screenId = Number(sel.value);
+        screenName = sel.options[sel.selectedIndex]?.textContent || `Screen #${screenId}`;
+      }
+
+      await api("/screens/claim", {
+        method: "POST",
+        body: JSON.stringify({ code, screen_id: screenId }),
+      });
+
+      document.getElementById("pair-success-name").textContent = screenName;
+      setPairState("success");
+    } catch (err) {
+      console.error(err);
+      showPairError(mapPairErrorMessage(err));
+    }
+  });
+}
+
+async function onPairAnother() {
+  history.replaceState({}, "", "/pair");
+  await showPairView("");
+}
+
+function onPairViewDashboard() {
+  history.pushState({}, "", "/");
+  document.getElementById("pair-view").classList.add("hidden");
+  showDashboard();
+  bootData().catch((err) => {
+    console.error(err);
+    toast("Failed to load dashboard. Check your connection.", "error", 6000);
+  });
+}
+
+document.getElementById("pair-form")         .addEventListener("submit", onPairSubmit);
+document.getElementById("pair-another-btn")  .addEventListener("click",  onPairAnother);
+document.getElementById("pair-dashboard-btn").addEventListener("click",  onPairViewDashboard);
