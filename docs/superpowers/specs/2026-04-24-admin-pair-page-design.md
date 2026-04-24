@@ -6,7 +6,7 @@
 
 ## Purpose
 
-When a user scans the QR code shown on a TV by the player, their phone opens `https://app.sawwii.com/pair?code=XXXXX`. This page must let them pick which screen the TV belongs to and claim the code — completing the pairing handshake the TV is waiting on via `GET /screens/poll/{code}`.
+When a user scans the QR code shown on a TV by the player, their phone opens `https://app.khanshoof.com/pair?code=XXXXX`. This page must let them pick which screen the TV belongs to and claim the code — completing the pairing handshake the TV is waiting on via `GET /screens/poll/{code}`.
 
 Currently that URL falls back to the admin dashboard, which is confusing and dead-ends the flow. This spec builds the missing phone-first pairing page.
 
@@ -18,7 +18,7 @@ Currently that URL falls back to the admin dashboard, which is confusing and dea
 - Four-state controller: loading, form, success, error-inline.
 - Form: editable code input + radio picker (existing screen dropdown OR create new screen inline) + claim button.
 - Success state with "Pair another display" + "View dashboard" actions.
-- Phone-first responsive layout, reusing the existing pastel Sawwii theme.
+- Phone-first responsive layout, reusing the existing pastel Khanshoof theme.
 
 **Out of scope**
 - Backend changes — every endpoint this view uses already exists (`POST /auth/login`, `GET /screens`, `POST /screens`, `POST /screens/claim`).
@@ -132,7 +132,7 @@ No new global state. `showPairView` reads `state.screens` if already populated (
 
 ### Styling
 
-Matches the existing pastel Sawwii palette (`--cream`, `--peach`, `--peach-deep`, `--plum`, IBM Plex Serif + Sans/Mono). Phone-first single-column, generous touch targets (≥ 44 px), `clamp()`-based sizing identical in spirit to the player pairing view. The code input uses `font-family: var(--mono)`, letter-spacing, and centered alignment so the 5-char code reads like an OTP field.
+Matches the existing pastel Khanshoof palette (`--cream`, `--peach`, `--peach-deep`, `--plum`, IBM Plex Serif + Sans/Mono). Phone-first single-column, generous touch targets (≥ 44 px), `clamp()`-based sizing identical in spirit to the player pairing view. The code input uses `font-family: var(--mono)`, letter-spacing, and centered alignment so the 5-char code reads like an OTP field.
 
 ## Error handling
 

@@ -6,7 +6,7 @@
 
 **Architecture:** Extend the existing admin SPA — no new entrypoints, no backend changes. `boot()` in `frontend/app.js` gains a path branch that detects `location.pathname === "/pair"` and calls a new `showPairView(code)` controller. The controller renders a `#pair-view` panel that is a sibling of `#auth-panel` and `#dashboard` with three internal states (loading / form / success) toggled via `.hidden`. Unauthenticated pair visits stash a `pair_resume` key in `sessionStorage`, then the existing login success path replays the pair view after auth.
 
-**Tech Stack:** Vanilla JS (no framework, no build step), nginx static serve, existing pastel Sawwii CSS tokens (`--cream`, `--peach`, `--peach-deep`, `--plum`, IBM Plex Sans/Serif/Mono). Reuses `api()`, `setAuth()`, `showAuthPanel()`, `showDashboard()`, `withLoading()`, `toast()`.
+**Tech Stack:** Vanilla JS (no framework, no build step), nginx static serve, existing pastel Khanshoof CSS tokens (`--cream`, `--peach`, `--peach-deep`, `--plum`, IBM Plex Sans/Serif/Mono). Reuses `api()`, `setAuth()`, `showAuthPanel()`, `showDashboard()`, `withLoading()`, `toast()`.
 
 **Backend endpoints used (all pre-existing):**
 - `GET /screens` — list org's screens
@@ -93,7 +93,7 @@ async function api(path, options = {}) {
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build frontend
 ```
 
-Visit `https://app.sawwii.com/`, attempt login with `nobody@example.com` / `x`. Expect the red toast to read `Invalid credentials` (clean message parsed from `data.detail`, not a raw JSON blob).
+Visit `https://app.khanshoof.com/`, attempt login with `nobody@example.com` / `x`. Expect the red toast to read `Invalid credentials` (clean message parsed from `data.detail`, not a raw JSON blob).
 
 - [ ] **Step 3: Commit**
 
@@ -132,7 +132,7 @@ Replace with:
 
         <form id="pair-form" class="pair-form hidden" novalidate>
           <header class="pair-header">
-            <h1 class="pair-brand">Sawwii</h1>
+            <h1 class="pair-brand">Khanshoof</h1>
             <p class="pair-title">Pair a display</p>
           </header>
 
@@ -201,7 +201,7 @@ Replace with:
 
 ```bash
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build frontend
-curl -s https://app.sawwii.com/ | grep -cE 'id="pair-view"|id="pair-form"|id="pair-success"|id="pair-code-input"|id="pair-existing-select"|id="pair-new-name"|id="pair-another-btn"|id="pair-dashboard-btn"'
+curl -s https://app.khanshoof.com/ | grep -cE 'id="pair-view"|id="pair-form"|id="pair-success"|id="pair-code-input"|id="pair-existing-select"|id="pair-new-name"|id="pair-another-btn"|id="pair-dashboard-btn"'
 ```
 
 Expected: `8` (all 8 anchors present in the served HTML).
@@ -474,7 +474,7 @@ Open `frontend/styles.css`, scroll to the end of the file, and append:
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build frontend
 ```
 
-Visit `https://app.sawwii.com/pair` logged out (or in incognito). The auth panel should still display as before — `#pair-view` is hidden so the new CSS should have no visible impact yet. No console errors.
+Visit `https://app.khanshoof.com/pair` logged out (or in incognito). The auth panel should still display as before — `#pair-view` is hidden so the new CSS should have no visible impact yet. No console errors.
 
 - [ ] **Step 3: Commit**
 
@@ -682,9 +682,9 @@ async function boot() {
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build frontend
 ```
 
-1. Log in at `https://app.sawwii.com/`.
-2. Navigate to `https://app.sawwii.com/pair?code=ABCDE` (paste into URL bar).
-3. Expect the pair view to render: "Sawwii / Pair a display" header, code field pre-filled with `ABCDE`, radio group showing "Existing screen" (with dropdown populated from your org's screens) and "Create new screen". Pair button stays disabled because no existing screen is picked yet.
+1. Log in at `https://app.khanshoof.com/`.
+2. Navigate to `https://app.khanshoof.com/pair?code=ABCDE` (paste into URL bar).
+3. Expect the pair view to render: "Khanshoof / Pair a display" header, code field pre-filled with `ABCDE`, radio group showing "Existing screen" (with dropdown populated from your org's screens) and "Create new screen". Pair button stays disabled because no existing screen is picked yet.
 4. Pick an existing screen from the dropdown — Pair button becomes enabled.
 5. Switch to "Create new screen" — name input appears, Pair disabled again until a name is typed.
 6. Type a name — Pair enabled.
@@ -815,8 +815,8 @@ document.getElementById("pair-dashboard-btn").addEventListener("click",  onPairV
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build frontend
 ```
 
-1. Open a player in incognito at `https://play.sawwii.com/` — note the code it shows (e.g. `K7M2Q`).
-2. In another tab (logged-in admin), go to `https://app.sawwii.com/pair?code=K7M2Q`.
+1. Open a player in incognito at `https://play.khanshoof.com/` — note the code it shows (e.g. `K7M2Q`).
+2. In another tab (logged-in admin), go to `https://app.khanshoof.com/pair?code=K7M2Q`.
 3. Pick "Create new screen", name it "Test Lobby", click Pair display.
 4. Expect the success state: green check, "Display paired", "Test Lobby", and two buttons.
 5. Within 3 s, the player tab should swap from the pairing view to content (or "No content assigned" if empty).
@@ -963,11 +963,11 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build frontend
 ```
 
-1. Open an incognito window. Go to `https://app.sawwii.com/pair?code=WXYZ2` (the code doesn't need to be valid; we're testing the redirect, not a real claim).
+1. Open an incognito window. Go to `https://app.khanshoof.com/pair?code=WXYZ2` (the code doesn't need to be valid; we're testing the redirect, not a real claim).
 2. Expect the login form to appear (not the dashboard, not the pair view).
 3. Log in with real credentials.
 4. Expect the URL bar to show `/pair?code=WXYZ2` and the pair view to render with `WXYZ2` pre-filled in the code field.
-5. (Optional) close the tab without logging in, open a new incognito tab, go straight to `https://app.sawwii.com/` — expect the normal auth panel and, after login, the normal dashboard (the stash from the previous tab died with the previous tab's `sessionStorage`).
+5. (Optional) close the tab without logging in, open a new incognito tab, go straight to `https://app.khanshoof.com/` — expect the normal auth panel and, after login, the normal dashboard (the stash from the previous tab died with the previous tab's `sessionStorage`).
 
 - [ ] **Step 4: Commit**
 
@@ -990,7 +990,7 @@ Expected: `38 passed`.
 
 - [ ] **Step 2: Run the full smoke matrix**
 
-Run each scenario exactly once in a real browser on a phone (or narrow-viewport desktop). Use the player at `https://play.sawwii.com/` to generate codes and the admin at `https://app.sawwii.com/` to claim them.
+Run each scenario exactly once in a real browser on a phone (or narrow-viewport desktop). Use the player at `https://play.khanshoof.com/` to generate codes and the admin at `https://app.khanshoof.com/` to claim them.
 
 | # | Scenario | Expected |
 |---|----------|----------|
@@ -1023,4 +1023,4 @@ Edit `/home/ahmed/.claude/projects/-home-ahmed-signage/memory/project_signage_sa
 
 - [ ] **Step 5: Confirm production rendering**
 
-Visit `https://app.sawwii.com/pair?code=TEST1` logged in and `https://play.sawwii.com/` in incognito. Both should render cleanly post-merge. No console errors.
+Visit `https://app.khanshoof.com/pair?code=TEST1` logged in and `https://play.khanshoof.com/` in incognito. Both should render cleanly post-merge. No console errors.

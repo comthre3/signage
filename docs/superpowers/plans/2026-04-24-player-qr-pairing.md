@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** When an unpaired TV opens `play.sawwii.com`, show a full-screen pairing view with a 5-char code + QR pointing to `https://app.sawwii.com/pair?code=…`. The player polls the backend and swaps to content the moment an admin claims the code. Expired codes auto-refresh. Already-paired devices keep using their stored `screen_token` unchanged.
+**Goal:** When an unpaired TV opens `play.khanshoof.com`, show a full-screen pairing view with a 5-char code + QR pointing to `https://app.khanshoof.com/pair?code=…`. The player polls the backend and swaps to content the moment an admin claims the code. Expired codes auto-refresh. Already-paired devices keep using their stored `screen_token` unchanged.
 
 **Architecture:** No new backend work — Plan 1's endpoints (`POST /screens/request_code`, `GET /screens/poll/{code}`) are already merged on `main`. All changes are in `player/`. A small vendored QR library (`qrcode-generator`, no deps) renders the QR offline. The existing `boot()` in `player.js` grows a third branch for the "no token anywhere" case; the legacy `?code=` short-path (calls `POST /screens/pair`) stays intact and is retired in Plan 4. Invalid/revoked tokens are detected by a 401/404 on content or layout fetches — player clears the bad token and restarts `boot()` into the pairing view.
 
@@ -14,7 +14,7 @@
 - On `status: "expired"`: immediately call `/screens/request_code` again and re-render.
 - On `status: "paired"`: persist `screen_token`, tear down pairing view, call the existing `fetchLayout()`/`fetchContent()` path.
 - QR payload: `${APP_URL}/pair?code=${code}` — Plan 3 will implement that admin page; until then the QR still resolves to the admin SPA domain (404 is acceptable during Plan 2 smoke since claim works via the API too).
-- Pastel Sawwii styling inherits `--cream`/`--peach`/`--plum` and IBM Plex Serif, same family as admin + landing.
+- Pastel Khanshoof styling inherits `--cream`/`--peach`/`--plum` and IBM Plex Serif, same family as admin + landing.
 
 ---
 
@@ -81,7 +81,7 @@ Replace the existing `<head>` and `<body>` of `player/index.html` with:
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sawwii Player</title>
+    <title>Khanshoof Player</title>
     <link rel="stylesheet" href="styles.css" />
     <script src="config.js"></script>
     <script src="vendor/qrcode.js"></script>
@@ -93,12 +93,12 @@ Replace the existing `<head>` and `<body>` of `player/index.html` with:
       <div id="zones" class="zones-layout hidden"></div>
 
       <section id="pairing" class="pairing hidden" aria-live="polite">
-        <h1 class="pairing-brand">Sawwii</h1>
+        <h1 class="pairing-brand">Khanshoof</h1>
         <p class="pairing-intro">Pair this display to your account</p>
         <div class="pairing-code" id="pairing-code" aria-label="Pairing code">—</div>
         <div class="pairing-qr" id="pairing-qr" aria-label="QR code for pairing URL"></div>
         <ol class="pairing-steps">
-          <li>On your phone, open <strong id="pairing-url">app.sawwii.com/pair</strong></li>
+          <li>On your phone, open <strong id="pairing-url">app.khanshoof.com/pair</strong></li>
           <li>Enter the code above, or scan the QR to jump there</li>
           <li>Pick which screen this is — the display updates automatically</li>
         </ol>
@@ -130,11 +130,11 @@ exec nginx -g 'daemon off;'
 
 ```bash
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build player
-curl -s https://play.sawwii.com/vendor/qrcode.js | head -1
-curl -s https://play.sawwii.com/config.js
+curl -s https://play.khanshoof.com/vendor/qrcode.js | head -1
+curl -s https://play.khanshoof.com/config.js
 ```
 
-Expected: first command prints the qrcode.js header comment. Second prints both `window.API_BASE_URL = "https://api.sawwii.com";` and `window.APP_URL = "https://app.sawwii.com";`.
+Expected: first command prints the qrcode.js header comment. Second prints both `window.API_BASE_URL = "https://api.khanshoof.com";` and `window.APP_URL = "https://app.khanshoof.com";`.
 
 - [ ] **Step 5: Commit**
 
@@ -145,7 +145,7 @@ git -C /home/ahmed/signage commit -m "feat(player): vendor qrcode-generator + ex
 
 ---
 
-## Task 2: Pairing-view CSS (Sawwii pastel theme)
+## Task 2: Pairing-view CSS (Khanshoof pastel theme)
 
 **Files:**
 - Modify: `player/styles.css`
@@ -330,7 +330,7 @@ body {
 
 ```bash
 git -C /home/ahmed/signage add player/styles.css
-git -C /home/ahmed/signage commit -m "feat(player): pastel Sawwii styling for pairing view"
+git -C /home/ahmed/signage commit -m "feat(player): pastel Khanshoof styling for pairing view"
 ```
 
 ---
@@ -353,7 +353,7 @@ const pairingQrEl = document.getElementById("pairing-qr");
 const pairingUrlEl = document.getElementById("pairing-url");
 const pairingMetaEl = document.getElementById("pairing-meta");
 
-const APP_URL = (window.APP_URL || "").trim() || "https://app.sawwii.com";
+const APP_URL = (window.APP_URL || "").trim() || "https://app.khanshoof.com";
 const PAIR_POLL_INTERVAL_MS = 3000;
 
 let activePairCode = null;
@@ -451,14 +451,14 @@ async function startPairingFlow() {
 docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build player
 ```
 
-Open `https://play.sawwii.com/` in a new incognito window (so no stored `screen_token`). Expected:
+Open `https://play.khanshoof.com/` in a new incognito window (so no stored `screen_token`). Expected:
 - Pastel pairing view fills the screen.
 - A 5-char code renders in big type (e.g. `K7M2Q`).
 - QR renders to the right/below.
-- URL text reads `app.sawwii.com/pair`.
+- URL text reads `app.khanshoof.com/pair`.
 - Meta line: "Waiting for your phone…".
 
-Scan the QR with a phone — it should open `https://app.sawwii.com/pair?code=K7M2Q` (will 404 until Plan 3; that's expected).
+Scan the QR with a phone — it should open `https://app.khanshoof.com/pair?code=K7M2Q` (will 404 until Plan 3; that's expected).
 
 - [ ] **Step 6: Commit**
 
@@ -645,12 +645,12 @@ docker-compose -f /home/ahmed/signage/docker-compose.yml up -d --build player
 ```
 
 Test the happy path:
-1. Open `https://play.sawwii.com/` incognito. Pairing view renders with code e.g. `K7M2Q`.
+1. Open `https://play.khanshoof.com/` incognito. Pairing view renders with code e.g. `K7M2Q`.
 2. In a second browser logged in as admin, create a screen (or pick an existing one) and call:
 
 ```bash
 # Grab session cookie from /auth/login first, then:
-curl -X POST https://api.sawwii.com/screens/claim \
+curl -X POST https://api.khanshoof.com/screens/claim \
   -H "Content-Type: application/json" \
   -b "session=<SESSION_COOKIE>" \
   -d '{"code":"K7M2Q","screen_id":<SCREEN_ID>}'
@@ -776,13 +776,13 @@ docker-compose -f /home/ahmed/signage/docker-compose.yml run --rm backend pytest
 
 Expected: `38 passed` (no change — no backend edits in this plan).
 
-- [ ] **Step 2: End-to-end happy path on `play.sawwii.com`**
+- [ ] **Step 2: End-to-end happy path on `play.khanshoof.com`**
 
 Walk through the full user-facing flow in a real browser:
 
-1. Clear `localStorage` on `play.sawwii.com`. Open the player full-screen on a TV (or desktop browser at full res).
+1. Clear `localStorage` on `play.khanshoof.com`. Open the player full-screen on a TV (or desktop browser at full res).
 2. Confirm: pastel pairing view, legible code at 5 m viewing distance, QR scannable.
-3. From a phone logged in as admin at `app.sawwii.com`, create a screen and claim the code via an ad-hoc API call or curl (Plan 3 will add the phone-side UI).
+3. From a phone logged in as admin at `app.khanshoof.com`, create a screen and claim the code via an ad-hoc API call or curl (Plan 3 will add the phone-side UI).
 4. Confirm: within 3 s the player swaps to content and `localStorage.screen_token` is set.
 5. Reload the player tab → content loads directly, no pairing view.
 6. Delete that screen in admin → within 15 s the player returns to the pairing view with a new code.
