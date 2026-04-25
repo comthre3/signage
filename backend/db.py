@@ -339,3 +339,4 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_payments_pending_key "
             "ON payments(organization_id, tier, term_months) WHERE status='pending'"
         )
+        cursor.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS niupay_payment_link TEXT NULL")

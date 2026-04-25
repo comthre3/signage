@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
 
 logger = logging.getLogger("signage")
@@ -1830,3 +1831,103 @@ def delete_media(media_id: int, user: dict = Depends(require_roles("admin", "edi
     execute("DELETE FROM media WHERE id = ?", (media_id,))
     execute("DELETE FROM playlist_items WHERE media_id = ?", (media_id,))
     return {"status": "deleted"}
+
+
+# ── Billing ──────────────────────────────────────────────────────────
+
+class BillingCheckoutRequest(BaseModel):
+    tier: str = Field(..., description="starter|growth|business|pro")
+    term_months: int = Field(..., description="1, 6, or 12")
+
+
+def _billing_callback_base() -> tuple[str, str]:
+    api_base = os.environ.get("API_BASE_URL", "https://api.khanshoof.com").rstrip("/")
+    app_base = os.environ.get("APP_URL",      "https://app.khanshoof.com").rstrip("/")
+    return api_base, app_base
+
+
+def _billing_callback_secret() -> str:
+    secret = os.environ.get("NIUPAY_CALLBACK_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=500, detail="Billing not configured")
+    return secret
+
+
+@app.post("/billing/checkout")
+def billing_checkout(
+    payload: BillingCheckoutRequest,
+    user: dict = Depends(require_roles("admin")),
+) -> dict:
+    if payload.tier not in ALLOWED_TIERS:
+        raise HTTPException(status_code=422, detail="Unknown tier")
+    if payload.term_months not in ALLOWED_TERMS:
+        raise HTTPException(status_code=422, detail="Unknown term")
+
+    amount_kwd, amount_usd = _compute_amounts(payload.tier, payload.term_months)
+    org = org_id(user)
+
+    # Rate-limit: reuse pending row < 60 s old
+    existing = query_one(
+        """
+        SELECT trackid, niupay_payment_link FROM payments
+         WHERE organization_id = ?
+           AND tier            = ?
+           AND term_months     = ?
+           AND status          = 'pending'
+           AND created_at      > now() - interval '60 seconds'
+           AND niupay_payment_link IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        (org, payload.tier, payload.term_months),
+    )
+    if existing:
+        return {
+            "payment_url": existing["niupay_payment_link"],
+            "trackid": existing["trackid"],
+        }
+
+    trackid = "pay_" + secrets.token_hex(16)
+    api_base, app_base = _billing_callback_base()
+    secret = _billing_callback_secret()
+    response_url = f"{api_base}/billing/callback/{trackid}?s={secret}"
+    success_url  = f"{app_base}/billing?status=success&trackid={trackid}"
+    error_url    = f"{app_base}/billing?status=error&trackid={trackid}"
+
+    # Insert pending row FIRST so the callback can find it even if the request races
+    execute(
+        """
+        INSERT INTO payments
+          (organization_id, user_id, trackid, tier, term_months,
+           amount_kwd, amount_usd_display, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+        """,
+        (org, user["id"], trackid, payload.tier, payload.term_months,
+         amount_kwd, str(amount_usd)),
+    )
+
+    try:
+        resp = create_knet_request(
+            trackid=trackid,
+            amount_kwd=amount_kwd,
+            response_url=response_url,
+            success_url=success_url,
+            error_url=error_url,
+        )
+    except Exception as exc:
+        execute("UPDATE payments SET status='failed', niupay_result=? WHERE trackid=?",
+                (f"request_error:{exc.__class__.__name__}", trackid))
+        raise HTTPException(status_code=502, detail="Payment gateway unreachable")
+
+    payment_link = resp.get("paymentLink")
+    payment_id   = resp.get("paymentID")
+    if not resp.get("status") or not payment_link:
+        execute("UPDATE payments SET status='failed', niupay_result=? WHERE trackid=?",
+                ("niupay_bad_response", trackid))
+        raise HTTPException(status_code=502, detail="Payment gateway rejected the request")
+
+    execute(
+        "UPDATE payments SET niupay_payment_id=?, niupay_payment_link=?, updated_at=now() WHERE trackid=?",
+        (payment_id, payment_link, trackid),
+    )
+    return {"payment_url": payment_link, "trackid": trackid}
