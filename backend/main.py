@@ -2011,3 +2011,28 @@ def billing_status(trackid: str, user: dict = Depends(get_current_user)) -> dict
         "amount_usd_display":   str(row["amount_usd_display"]),
         "paid_through_at":      org["paid_through_at"].isoformat() if org and org.get("paid_through_at") else None,
     }
+
+
+@app.get("/billing/history")
+def billing_history(user: dict = Depends(require_roles("admin"))) -> list[dict]:
+    rows = query_all(
+        """
+        SELECT trackid, tier, term_months, amount_kwd, amount_usd_display,
+               status, created_at, updated_at
+          FROM payments
+         WHERE organization_id = ?
+           AND status IN ('captured', 'failed')
+         ORDER BY created_at DESC
+         LIMIT 50
+        """,
+        (org_id(user),),
+    )
+    return [
+        {
+            **r,
+            "amount_usd_display": str(r["amount_usd_display"]),
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+        }
+        for r in rows
+    ]
