@@ -27,6 +27,7 @@
           <button data-section="media">Media</button>
           <button data-section="playlists">Playlists</button>
           <button data-section="users">Users</button>
+          <button data-section="billing">Billing</button>
         </nav>
         <div class="auth-status">
           <button id="connection-toggle" class="secondary-btn">⚙ Connection</button>
@@ -155,6 +156,36 @@
             <button type="button" id="pair-dashboard-btn" class="pair-secondary">View dashboard</button>
           </div>
         </div>
+      </section>
+
+      <section id="billing-view" class="panel billing-view hidden">
+        <header class="billing-header">
+          <h1>Billing</h1>
+          <p class="billing-sub">Upgrade your plan — paid via KNET.</p>
+        </header>
+
+        <section class="billing-current" id="billing-current">
+          <h2>Current plan</h2>
+          <div class="billing-current-body" id="billing-current-body">Loading…</div>
+        </section>
+
+        <section class="billing-upgrade">
+          <h2>Upgrade</h2>
+          <div class="billing-term-tabs" role="tablist">
+            <button class="billing-term active" data-term="1"  role="tab" aria-selected="true">Monthly</button>
+            <button class="billing-term"        data-term="6"  role="tab" aria-selected="false">6 months</button>
+            <button class="billing-term"        data-term="12" role="tab" aria-selected="false">12 months</button>
+          </div>
+          <div class="billing-tier-grid" id="billing-tier-grid"></div>
+          <p id="billing-banner" class="billing-banner hidden" role="alert"></p>
+        </section>
+
+        <section class="billing-history">
+          <h2>Past payments</h2>
+          <div id="billing-history-body" class="billing-history-body">
+            <p class="billing-empty">No payments yet.</p>
+          </div>
+        </section>
       </section>
 
       <div id="dashboard" class="hidden">
