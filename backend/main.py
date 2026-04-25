@@ -288,11 +288,11 @@ def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
 
 def validate_password(password: str) -> None:
     if len(password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        raise http_error(400, "password_too_short", "Password must be at least 8 characters")
     if not re.search(r"[A-Za-z]", password):
-        raise HTTPException(status_code=400, detail="Password must include a letter")
+        raise http_error(400, "password_no_letter", "Password must include a letter")
     if not re.search(r"\d", password):
-        raise HTTPException(status_code=400, detail="Password must include a number")
+        raise http_error(400, "password_no_number", "Password must include a number")
 
 
 def is_online(last_seen: Optional[str]) -> bool:
@@ -580,9 +580,9 @@ def signup_request(payload: SignupStartRequest) -> dict:
     email = payload.email.strip().lower()
     business_name = payload.business_name.strip()
     if not is_valid_email(email):
-        raise HTTPException(status_code=400, detail="Invalid email address")
+        raise http_error(400, "invalid_email", "Invalid email address")
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
-        raise HTTPException(status_code=400, detail="Email is already registered")
+        raise http_error(400, "email_taken", "Email is already registered")
 
     now = datetime.now(timezone.utc)
     existing = query_one("SELECT last_sent_at FROM pending_signups WHERE email = ?", (email,))
@@ -590,10 +590,7 @@ def signup_request(payload: SignupStartRequest) -> dict:
         try:
             last_sent_dt = datetime.fromisoformat(existing["last_sent_at"])
             if (now - last_sent_dt).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
-                )
+                raise http_error(429, "otp_cooldown", f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.")
         except ValueError:
             pass
 
@@ -640,7 +637,7 @@ def signup_verify(payload: SignupVerifyRequest) -> dict:
     email = payload.email.strip().lower()
     row = query_one("SELECT * FROM pending_signups WHERE email = ?", (email,))
     if not row:
-        raise HTTPException(status_code=400, detail="No pending signup for this email")
+        raise http_error(400, "no_pending_signup", "No pending signup for this email")
 
     now = datetime.now(timezone.utc)
     try:
@@ -648,17 +645,17 @@ def signup_verify(payload: SignupVerifyRequest) -> dict:
     except (TypeError, ValueError):
         expires_dt = now - timedelta(seconds=1)
     if now > expires_dt:
-        raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
+        raise http_error(400, "otp_expired", "Code expired. Please request a new one.")
 
     if (row.get("attempts") or 0) >= OTP_MAX_ATTEMPTS:
-        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Request a new code.")
+        raise http_error(400, "otp_attempts_exceeded", "Too many incorrect attempts. Request a new code.")
 
     if not verify_otp(payload.otp, row.get("otp_hash")):
         execute(
             "UPDATE pending_signups SET attempts = attempts + 1 WHERE email = ?",
             (email,),
         )
-        raise HTTPException(status_code=400, detail="Incorrect code")
+        raise http_error(400, "otp_incorrect", "Incorrect code")
 
     verification_token = secrets.token_hex(16)
     verification_expires = (now + timedelta(seconds=VERIFICATION_TOKEN_TTL_SECONDS)).isoformat()
@@ -690,7 +687,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
         (payload.verification_token,),
     )
     if not row:
-        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+        raise http_error(400, "invalid_verification_token", "Invalid or expired verification token")
 
     now = datetime.now(timezone.utc)
     try:
@@ -698,14 +695,14 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
     except (TypeError, ValueError):
         vt_expires_dt = now - timedelta(seconds=1)
     if now > vt_expires_dt:
-        raise HTTPException(status_code=400, detail="Verification token expired. Please restart signup.")
+        raise http_error(400, "verification_token_expired", "Verification token expired. Please restart signup.")
 
     email = row["email"]
     business_name = row["business_name"]
 
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
         execute("DELETE FROM pending_signups WHERE email = ?", (email,))
-        raise HTTPException(status_code=400, detail="Email is already registered")
+        raise http_error(400, "email_taken", "Email is already registered")
 
     slug_base = slugify(business_name)
     slug = slug_base
@@ -778,7 +775,7 @@ def get_organization(user: dict = Depends(get_current_user)) -> dict:
 def login(payload: LoginRequest) -> dict:
     user = query_one("SELECT * FROM users WHERE username = ?", (payload.username,))
     if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise http_error(401, "invalid_credentials", "Invalid credentials")
     cleanup_sessions()
     token = uuid.uuid4().hex
     execute(
@@ -808,7 +805,7 @@ def change_password(
 ) -> dict:
     db_user = query_one("SELECT * FROM users WHERE id = ?", (user["id"],))
     if not db_user or not verify_password(payload.current_password, db_user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid current password")
+        raise http_error(400, "invalid_current_password", "Invalid current password")
     validate_password(payload.new_password)
     execute(
         "UPDATE users SET password_hash = ? WHERE id = ?",
@@ -843,9 +840,9 @@ def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
 @app.post("/users")
 def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
-        raise HTTPException(status_code=400, detail="Username already exists")
+        raise http_error(400, "username_taken", "Username already exists")
     if payload.role not in ROLE_LEVELS:
-        raise HTTPException(status_code=400, detail="Invalid role")
+        raise http_error(400, "invalid_role", "Invalid role")
     validate_password(payload.password)
     user_id = execute(
         "INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -883,7 +880,7 @@ def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_
         )
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
-            raise HTTPException(status_code=400, detail="Invalid role")
+            raise http_error(400, "invalid_role", "Invalid role")
         execute(
             "UPDATE users SET role = ?, is_admin = ? WHERE id = ?",
             (payload.role, int(payload.role == "admin"), user_id),
@@ -1023,10 +1020,7 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
         current = int(count_row["n"] if count_row else 0)
         limit = int(org["screen_limit"])
         if current >= limit:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
-            )
+            raise http_error(402, "plan_limit", "Plan limit reached")
     pair_code = generate_unique_pair_code()
     token = generate_unique_token()
     screen_id = execute(

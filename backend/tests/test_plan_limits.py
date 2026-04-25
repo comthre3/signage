@@ -21,7 +21,7 @@ def test_starter_plan_blocks_fourth_screen(client, signed_up_org):
         headers=_bearer(token),
     )
     assert r.status_code == 402, f"expected 402, got {r.status_code}: {r.text}"
-    assert "limit" in r.json()["detail"].lower()
+    assert r.json()["detail"]["code"] == "plan_limit"
 
 
 def test_organization_screens_used_counter(client, signed_up_org):
