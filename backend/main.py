@@ -165,6 +165,15 @@ def verify_password(password: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
+def http_error(status: int, code: str, message: str) -> HTTPException:
+    """Structured error response: detail = {code, message}.
+
+    Frontend reads `code` to look up a localized string; falls back to
+    `message` (English) if the code is unrecognized.
+    """
+    return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 OTP_RESEND_COOLDOWN_SECONDS = int(os.getenv("OTP_RESEND_COOLDOWN_SECONDS", "60"))
