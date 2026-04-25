@@ -754,6 +754,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
             "screen_limit": plan["screen_limit"],
             "subscription_status": "trialing",
             "trial_ends_at": trial_ends_at,
+            "locale": "en",
         },
     }
 
@@ -801,6 +802,7 @@ def login(payload: LoginRequest) -> dict:
         "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
         (user["id"], token, utc_now_iso(), utc_now_iso()),
     )
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
     return {
         "token": token,
         "user": {
@@ -808,6 +810,16 @@ def login(payload: LoginRequest) -> dict:
             "username": user["username"],
             "role": user.get("role") or ("admin" if user["is_admin"] else "viewer"),
             "is_admin": bool(user["is_admin"]),
+        },
+        "organization": {
+            "id": org["id"],
+            "name": org["name"],
+            "slug": org["slug"],
+            "plan": org["plan"],
+            "screen_limit": org["screen_limit"],
+            "subscription_status": org["subscription_status"],
+            "trial_ends_at": org["trial_ends_at"],
+            "locale": org["locale"],
         },
     }
 
@@ -836,11 +848,22 @@ def change_password(
 
 @app.get("/auth/me")
 def me(user: dict = Depends(get_current_user)) -> dict:
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
     return {
         "id": user["id"],
         "username": user["username"],
         "role": user["role"],
         "is_admin": user["is_admin"],
+        "organization": {
+            "id": org["id"],
+            "name": org["name"],
+            "slug": org["slug"],
+            "plan": org["plan"],
+            "screen_limit": org["screen_limit"],
+            "subscription_status": org["subscription_status"],
+            "trial_ends_at": org["trial_ends_at"],
+            "locale": org["locale"],
+        },
     }
 
 

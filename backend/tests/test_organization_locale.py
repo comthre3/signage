@@ -48,3 +48,30 @@ def test_patch_organization_locale_requires_admin(client, signed_up_org):
         headers={"Authorization": f"Bearer {editor_token}"},
     )
     assert resp.status_code == 403
+
+
+def test_signup_complete_response_includes_locale(signed_up_org):
+    assert signed_up_org["org"]["locale"] == "en"
+
+
+def test_login_response_includes_org_locale(client, signed_up_org, unique_business):
+    r = client.post(
+        "/auth/login",
+        json={
+            "username": unique_business["email"],
+            "password": unique_business["password"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "organization" in body
+    assert body["organization"]["locale"] == "en"
+
+
+def test_me_response_includes_org_locale(client, signed_up_org):
+    token = signed_up_org["token"]
+    r = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "organization" in body
+    assert body["organization"]["locale"] == "en"
