@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
+from email_utils import is_valid_email, send_via_resend
 
 logger = logging.getLogger("signage")
 logging.basicConfig(level=logging.INFO)
@@ -193,14 +194,51 @@ def verify_otp(otp: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
-def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
-    """Dev stub for outbound signup email.
+def _signup_otp_email_html(business_name: str, otp: str) -> str:
+    return (
+        f"<div style=\"font-family:system-ui,sans-serif;color:#2a2438;max-width:480px\">"
+        f"<h1 style=\"font-size:18px;margin:0 0 16px\">Welcome to Khanshoof</h1>"
+        f"<p style=\"margin:0 0 12px\">Hi {business_name}, here's your verification code:</p>"
+        f"<p style=\"font-size:32px;letter-spacing:6px;font-weight:700;"
+        f"background:#fef6e4;padding:16px 24px;border-radius:12px;display:inline-block;"
+        f"margin:8px 0\">{otp}</p>"
+        f"<p style=\"font-size:13px;color:#6b6480;margin:16px 0 0\">"
+        f"This code expires in 10 minutes. If you didn't request it, ignore this email.</p>"
+        f"</div>"
+    )
 
-    DEV_MODE writes the OTP to the container log so operators can recover it
-    locally without a provider. Production use (Resend) is wired in a separate
-    plan once the khanshoof.com DNS is pointed and an API key is issued.
+
+def _signup_otp_email_text(business_name: str, otp: str) -> str:
+    return (
+        f"Hi {business_name},\n\n"
+        f"Your Khanshoof verification code: {otp}\n\n"
+        f"This code expires in 10 minutes. If you didn't request it, ignore this email.\n"
+    )
+
+
+def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
+    """Send the signup OTP via Resend; fall back to logging if no API key.
+
+    Failures are swallowed (logged but not raised) so a flaky email provider
+    never 500s the signup endpoint — the OTP is still in the DB and the user
+    can hit "resend".
     """
     logger.info("SIGNUP_OTP for %s (%s): %s", to_email, business_name, otp)
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    if not api_key:
+        return
+    from_addr = os.getenv("RESEND_FROM", "Khanshoof <noreply@khanshoof.com>")
+    try:
+        send_via_resend(
+            api_key=api_key,
+            from_addr=from_addr,
+            to=to_email,
+            subject="Your Khanshoof verification code",
+            html=_signup_otp_email_html(business_name, otp),
+            text=_signup_otp_email_text(business_name, otp),
+        )
+    except Exception as exc:
+        logger.error("Resend send failed for %s: %s", to_email, exc)
 
 
 ROLE_LEVELS = {"viewer": 1, "editor": 2, "admin": 3}
@@ -532,7 +570,7 @@ def list_plans() -> dict:
 def signup_request(payload: SignupStartRequest) -> dict:
     email = payload.email.strip().lower()
     business_name = payload.business_name.strip()
-    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+    if not is_valid_email(email):
         raise HTTPException(status_code=400, detail="Invalid email address")
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
         raise HTTPException(status_code=400, detail="Email is already registered")
