@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
@@ -16,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
 
 logger = logging.getLogger("signage")
@@ -210,6 +212,31 @@ PLANS = {
     "pro":        {"screen_limit": 25,   "price_usd_monthly": 49.99, "label": "Pro"},
     "enterprise": {"screen_limit": 9999, "price_usd_monthly":  0.0,  "label": "Enterprise"},
 }
+
+# ── Billing pricing table ────────────────────────────────────────────
+USD_TO_KWD = Decimal("0.306")   # fixed rate; update manually when KWD moves >2%
+PLAN_PRICING_USD: dict[str, Decimal] = {
+    "starter":  Decimal("9.99"),
+    "growth":   Decimal("12.99"),
+    "business": Decimal("24.99"),
+    "pro":      Decimal("49.99"),
+}
+PLAN_SCREEN_LIMITS: dict[str, int] = {
+    "starter": 3, "growth": 5, "business": 10, "pro": 25,
+}
+TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}   # 6m = 5×monthly (save 1); 12m = 10×monthly (save 2)
+ALLOWED_TIERS  = frozenset(PLAN_PRICING_USD.keys())
+ALLOWED_TERMS  = frozenset(TERM_MULTIPLIERS.keys())
+TERM_DAYS      = 30                                       # days per month credited on CAPTURED
+
+def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
+    """Return (amount_kwd_int, amount_usd_display) for a tier/term combo."""
+    monthly_usd = PLAN_PRICING_USD[tier]
+    mult = TERM_MULTIPLIERS[term_months]
+    amount_usd = (monthly_usd * mult).quantize(Decimal("0.01"))
+    amount_kwd_exact = amount_usd * USD_TO_KWD
+    amount_kwd = int(amount_kwd_exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return amount_kwd, amount_usd
 
 
 def validate_password(password: str) -> None:
@@ -642,7 +669,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
 
     plan_key = "starter"
     plan = PLANS[plan_key]
-    trial_ends_at = (now + timedelta(days=14)).isoformat()
+    trial_ends_at = (now + timedelta(days=5)).isoformat()
 
     new_org_id = execute(
         """
@@ -1804,3 +1831,208 @@ def delete_media(media_id: int, user: dict = Depends(require_roles("admin", "edi
     execute("DELETE FROM media WHERE id = ?", (media_id,))
     execute("DELETE FROM playlist_items WHERE media_id = ?", (media_id,))
     return {"status": "deleted"}
+
+
+# ── Billing ──────────────────────────────────────────────────────────
+
+class BillingCheckoutRequest(BaseModel):
+    tier: str = Field(..., description="starter|growth|business|pro")
+    term_months: int = Field(..., description="1, 6, or 12")
+
+
+def _billing_callback_base() -> tuple[str, str]:
+    api_base = os.environ.get("API_BASE_URL", "https://api.khanshoof.com").rstrip("/")
+    app_base = os.environ.get("APP_URL",      "https://app.khanshoof.com").rstrip("/")
+    return api_base, app_base
+
+
+def _billing_callback_secret() -> str:
+    secret = os.environ.get("NIUPAY_CALLBACK_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=500, detail="Billing not configured")
+    return secret
+
+
+@app.post("/billing/checkout")
+def billing_checkout(
+    payload: BillingCheckoutRequest,
+    user: dict = Depends(require_roles("admin")),
+) -> dict:
+    if payload.tier not in ALLOWED_TIERS:
+        raise HTTPException(status_code=422, detail="Unknown tier")
+    if payload.term_months not in ALLOWED_TERMS:
+        raise HTTPException(status_code=422, detail="Unknown term")
+
+    amount_kwd, amount_usd = _compute_amounts(payload.tier, payload.term_months)
+    org = org_id(user)
+
+    # Rate-limit: reuse pending row < 60 s old
+    existing = query_one(
+        """
+        SELECT trackid, niupay_payment_link FROM payments
+         WHERE organization_id = ?
+           AND tier            = ?
+           AND term_months     = ?
+           AND status          = 'pending'
+           AND created_at      > now() - interval '60 seconds'
+           AND niupay_payment_link IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        (org, payload.tier, payload.term_months),
+    )
+    if existing:
+        return {
+            "payment_url": existing["niupay_payment_link"],
+            "trackid": existing["trackid"],
+        }
+
+    trackid = "pay_" + secrets.token_hex(16)
+    api_base, app_base = _billing_callback_base()
+    secret = _billing_callback_secret()
+    response_url = f"{api_base}/billing/callback/{trackid}?s={secret}"
+    success_url  = f"{app_base}/billing?status=success&trackid={trackid}"
+    error_url    = f"{app_base}/billing?status=error&trackid={trackid}"
+
+    # Insert pending row FIRST so the callback can find it even if the request races
+    execute(
+        """
+        INSERT INTO payments
+          (organization_id, user_id, trackid, tier, term_months,
+           amount_kwd, amount_usd_display, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+        """,
+        (org, user["id"], trackid, payload.tier, payload.term_months,
+         amount_kwd, str(amount_usd)),
+    )
+
+    try:
+        resp = create_knet_request(
+            trackid=trackid,
+            amount_kwd=amount_kwd,
+            response_url=response_url,
+            success_url=success_url,
+            error_url=error_url,
+        )
+    except Exception as exc:
+        execute("UPDATE payments SET status='failed', niupay_result=? WHERE trackid=?",
+                (f"request_error:{exc.__class__.__name__}", trackid))
+        raise HTTPException(status_code=502, detail="Payment gateway unreachable")
+
+    payment_link = resp.get("paymentLink")
+    payment_id   = resp.get("paymentID")
+    if not resp.get("status") or not payment_link:
+        execute("UPDATE payments SET status='failed', niupay_result=? WHERE trackid=?",
+                ("niupay_bad_response", trackid))
+        raise HTTPException(status_code=502, detail="Payment gateway rejected the request")
+
+    execute(
+        "UPDATE payments SET niupay_payment_id=?, niupay_payment_link=?, updated_at=now() WHERE trackid=?",
+        (payment_id, payment_link, trackid),
+    )
+    return {"payment_url": payment_link, "trackid": trackid}
+
+
+class BillingCallbackBody(BaseModel):
+    result: str | None = None
+    trackid: str | None = None
+    paymentID: str | None = None
+    tranid: str | None = None
+    ref: str | None = None
+    niutrack: str | None = None
+
+
+@app.post("/billing/callback/{trackid}")
+def billing_callback(trackid: str, body: BillingCallbackBody, s: str = ""):
+    if not secrets.compare_digest(s, _billing_callback_secret()):
+        raise HTTPException(status_code=404)
+
+    if body.trackid and body.trackid != trackid:
+        raise HTTPException(status_code=400, detail="trackid mismatch")
+
+    row = query_one("SELECT * FROM payments WHERE trackid = ?", (trackid,))
+    if not row:
+        return {"ok": True}   # no-leak 200
+
+    if row["status"] in ("captured", "failed"):
+        return {"ok": True}   # idempotent
+
+    captured = (body.result or "").upper() == "CAPTURED"
+    if captured:
+        term = int(row["term_months"])
+        execute(
+            """
+            UPDATE payments
+               SET status='captured',
+                   niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
+                   updated_at=now()
+             WHERE trackid=?
+            """,
+            (body.result, body.tranid, body.ref, body.paymentID, trackid),
+        )
+        execute(
+            """
+            UPDATE organizations
+               SET plan               = ?,
+                   plan_term_months   = ?,
+                   screen_limit       = ?,
+                   subscription_status= 'active',
+                   paid_through_at    = now() + make_interval(days => ?)
+             WHERE id = ?
+            """,
+            (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], term * TERM_DAYS, row["organization_id"]),
+        )
+    else:
+        execute(
+            """
+            UPDATE payments
+               SET status='failed',
+                   niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
+                   updated_at=now()
+             WHERE trackid=?
+            """,
+            (body.result, body.tranid, body.ref, body.paymentID, trackid),
+        )
+
+    return {"ok": True}
+
+
+@app.get("/billing/status/{trackid}")
+def billing_status(trackid: str, user: dict = Depends(get_current_user)) -> dict:
+    row = query_one("SELECT * FROM payments WHERE trackid = ?", (trackid,))
+    if not row or row["organization_id"] != org_id(user):
+        raise HTTPException(status_code=404, detail="Unknown trackid")
+    org = query_one("SELECT paid_through_at FROM organizations WHERE id = ?", (row["organization_id"],))
+    return {
+        "status":               row["status"],
+        "tier":                 row["tier"],
+        "term_months":          row["term_months"],
+        "amount_kwd":           row["amount_kwd"],
+        "amount_usd_display":   str(row["amount_usd_display"]),
+        "paid_through_at":      org["paid_through_at"].isoformat() if org and org.get("paid_through_at") else None,
+    }
+
+
+@app.get("/billing/history")
+def billing_history(user: dict = Depends(require_roles("admin"))) -> list[dict]:
+    rows = query_all(
+        """
+        SELECT trackid, tier, term_months, amount_kwd, amount_usd_display,
+               status, created_at, updated_at
+          FROM payments
+         WHERE organization_id = ?
+           AND status IN ('captured', 'failed')
+         ORDER BY created_at DESC
+         LIMIT 50
+        """,
+        (org_id(user),),
+    )
+    return [
+        {
+            **r,
+            "amount_usd_display": str(r["amount_usd_display"]),
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+        }
+        for r in rows
+    ]

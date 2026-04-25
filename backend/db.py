@@ -305,3 +305,38 @@ def init_db() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_templates_org   ON screen_zone_templates (organization_id)")
 
         cursor.execute("UPDATE users SET role = 'admin' WHERE role = 'viewer' AND is_admin = 1")
+
+        cursor.execute(
+            """
+            ALTER TABLE organizations
+              ADD COLUMN IF NOT EXISTS paid_through_at   TIMESTAMPTZ NULL,
+              ADD COLUMN IF NOT EXISTS plan_term_months  INTEGER     NULL
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payments (
+              id                  SERIAL PRIMARY KEY,
+              organization_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              user_id             INTEGER NOT NULL REFERENCES users(id),
+              trackid             TEXT    NOT NULL UNIQUE,
+              tier                TEXT    NOT NULL,
+              term_months         INTEGER NOT NULL,
+              amount_kwd          INTEGER NOT NULL,
+              amount_usd_display  NUMERIC(10,2) NOT NULL,
+              status              TEXT    NOT NULL DEFAULT 'pending',
+              niupay_payment_id   TEXT    NULL,
+              niupay_tranid       TEXT    NULL,
+              niupay_result       TEXT    NULL,
+              niupay_ref          TEXT    NULL,
+              created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+              updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS ix_payments_org_status ON payments(organization_id, status)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS ix_payments_pending_key "
+            "ON payments(organization_id, tier, term_months) WHERE status='pending'"
+        )
+        cursor.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS niupay_payment_link TEXT NULL")
