@@ -1477,6 +1477,7 @@ async function showPairView(initialCode) {
 
 async function boot() {
   const isPairPath = location.pathname === "/pair";
+  const isBillingPath = location.pathname === "/billing";
   const pairCodeParam = isPairPath
     ? new URLSearchParams(location.search).get("code") || ""
     : "";
@@ -1496,6 +1497,8 @@ async function boot() {
     setAuth(authToken, me);
     if (isPairPath) {
       await showPairView(pairCodeParam);
+    } else if (isBillingPath) {
+      await showBilling();
     } else {
       showDashboard();
       await bootData();
@@ -1651,3 +1654,203 @@ function onPairViewDashboard() {
 document.getElementById("pair-form")         .addEventListener("submit", onPairSubmit);
 document.getElementById("pair-another-btn")  .addEventListener("click",  onPairAnother);
 document.getElementById("pair-dashboard-btn").addEventListener("click",  onPairViewDashboard);
+
+/* ── Billing view ───────────────────────────────────────────── */
+const USD_TO_KWD = 0.306;
+const PLAN_TIERS = [
+  { tier: "starter",  label: "Starter",  usd: 9.99,  screens: 3  },
+  { tier: "growth",   label: "Growth",   usd: 12.99, screens: 5  },
+  { tier: "business", label: "Business", usd: 24.99, screens: 10 },
+  { tier: "pro",      label: "Pro",      usd: 49.99, screens: 25 },
+];
+const BILLING_TERMS = [
+  { months: 1,  multiplier: 1,  saveLabel: "" },
+  { months: 6,  multiplier: 5,  saveLabel: "save 1 month" },
+  { months: 12, multiplier: 10, saveLabel: "save 2 months" },
+];
+
+let billingCurrentTerm = 1;
+let billingPollTimer = null;
+let billingPollStartedAt = 0;
+
+function billingAmountsFor(tier, months) {
+  const plan = PLAN_TIERS.find((p) => p.tier === tier);
+  const term = BILLING_TERMS.find((t) => t.months === months);
+  if (!plan || !term) return null;
+  const usd = +(plan.usd * term.multiplier).toFixed(2);
+  const kwd = Math.round(usd * USD_TO_KWD);
+  return { usd, kwd };
+}
+
+function showBillingPanel() {
+  document.getElementById("auth-panel").classList.add("hidden");
+  document.getElementById("dashboard").classList.add("hidden");
+  document.getElementById("pair-view").classList.add("hidden");
+  document.getElementById("billing-view").classList.remove("hidden");
+}
+
+function renderBillingCurrent(org) {
+  const body = document.getElementById("billing-current-body");
+  if (!org) {
+    body.textContent = "—";
+    return;
+  }
+  const plan = PLAN_TIERS.find((p) => p.tier === org.plan) || { label: org.plan, screens: org.screen_limit };
+  if (org.subscription_status === "trialing" && org.trial_ends_at) {
+    const daysLeft = Math.max(0, Math.ceil((new Date(org.trial_ends_at) - new Date()) / 86400000));
+    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · Trial · ${daysLeft} day${daysLeft === 1 ? "" : "s"} left · up to ${plan.screens} screens`;
+  } else if (org.paid_through_at) {
+    const ends = new Date(org.paid_through_at).toLocaleDateString();
+    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · paid through ${escHtml(ends)} · up to ${plan.screens} screens`;
+  } else {
+    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · up to ${plan.screens} screens`;
+  }
+}
+
+function renderBillingTiers() {
+  const grid = document.getElementById("billing-tier-grid");
+  const termInfo = BILLING_TERMS.find((t) => t.months === billingCurrentTerm);
+  grid.innerHTML = "";
+  for (const plan of PLAN_TIERS) {
+    const amounts = billingAmountsFor(plan.tier, billingCurrentTerm);
+    const saveMarkup = termInfo.saveLabel
+      ? `<span class="billing-tier-save">${escHtml(termInfo.saveLabel)}</span>` : "";
+    const card = document.createElement("div");
+    card.className = "billing-tier";
+    card.innerHTML = `
+      <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
+      <div class="billing-tier-limit">up to ${plan.screens} screens</div>
+      <div class="billing-tier-usd">$${amounts.usd.toFixed(2)}${billingCurrentTerm === 1 ? " / month" : ""}</div>
+      <div class="billing-tier-kwd">≈ ${amounts.kwd} KWD</div>
+      ${saveMarkup}
+      <button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
+        Pay ${amounts.kwd} KWD${termInfo.saveLabel ? " · " + escHtml(termInfo.saveLabel) : ""}
+      </button>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+async function loadBillingHistory() {
+  const body = document.getElementById("billing-history-body");
+  try {
+    const rows = await api("/billing/history");
+    if (!rows.length) {
+      body.innerHTML = '<p class="billing-empty">No payments yet.</p>';
+      return;
+    }
+    body.innerHTML = rows.map((r) => {
+      const when = new Date(r.updated_at || r.created_at).toLocaleDateString();
+      return `<div class="billing-history-row ${r.status === 'failed' ? 'failed' : ''}">
+        <span>${escHtml(r.tier)} · ${r.term_months} month${r.term_months === 1 ? '' : 's'} · ${escHtml(when)}</span>
+        <span>${r.amount_kwd} KWD · ${escHtml(r.status)}</span>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    body.innerHTML = '<p class="billing-empty">Couldn\'t load history.</p>';
+  }
+}
+
+async function showBilling() {
+  showBillingPanel();
+  renderBillingTiers();
+  try {
+    const me = await api("/auth/me");
+    renderBillingCurrent(me.organization);
+  } catch (err) { renderBillingCurrent(null); }
+  loadBillingHistory();
+  maybeResumeBillingStatus();
+}
+
+function setBillingBanner(kind, message) {
+  const el = document.getElementById("billing-banner");
+  el.textContent = message;
+  el.classList.remove("hidden", "success", "error");
+  el.classList.add(kind);
+}
+function clearBillingBanner() {
+  document.getElementById("billing-banner").classList.add("hidden");
+}
+
+async function onBillingPay(tier) {
+  clearBillingBanner();
+  const grid = document.getElementById("billing-tier-grid");
+  const buttons = grid.querySelectorAll(".billing-tier-btn");
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const data = await api("/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify({ tier, term_months: billingCurrentTerm }),
+    });
+    sessionStorage.setItem("billing_pending_trackid", data.trackid);
+    window.location.href = data.payment_url;
+  } catch (err) {
+    buttons.forEach((b) => (b.disabled = false));
+    setBillingBanner("error", err?.data?.detail || err.message || "Payment failed to start.");
+  }
+}
+
+function stopBillingPoll() {
+  if (billingPollTimer) { clearTimeout(billingPollTimer); billingPollTimer = null; }
+}
+
+function maybeResumeBillingStatus() {
+  const params = new URLSearchParams(location.search);
+  const status = params.get("status");
+  const trackid = params.get("trackid") || sessionStorage.getItem("billing_pending_trackid");
+  if (!trackid || !status) return;
+  sessionStorage.removeItem("billing_pending_trackid");
+  setBillingBanner("success", "Confirming payment…");
+  billingPollStartedAt = Date.now();
+  pollBillingStatus(trackid);
+}
+
+async function pollBillingStatus(trackid) {
+  try {
+    const data = await api(`/billing/status/${encodeURIComponent(trackid)}`);
+    if (data.status === "captured") {
+      setBillingBanner("success", `Plan upgraded · ${data.tier} · paid through ${new Date(data.paid_through_at).toLocaleDateString()}`);
+      const me = await api("/auth/me");
+      renderBillingCurrent(me.organization);
+      loadBillingHistory();
+      history.replaceState({}, "", "/billing");
+      return;
+    }
+    if (data.status === "failed") {
+      setBillingBanner("error", "Payment declined. You can try again.");
+      history.replaceState({}, "", "/billing");
+      return;
+    }
+    // still pending
+    if (Date.now() - billingPollStartedAt > 15000) {
+      setBillingBanner("success", "Payment is still processing — check back in a minute.");
+      return;
+    }
+    billingPollTimer = setTimeout(() => pollBillingStatus(trackid), 2000);
+  } catch (err) {
+    setBillingBanner("error", "Couldn't confirm payment status.");
+  }
+}
+
+document.querySelectorAll(".billing-term").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".billing-term").forEach((b) => {
+      b.classList.toggle("active", b === btn);
+      b.setAttribute("aria-selected", b === btn ? "true" : "false");
+    });
+    billingCurrentTerm = Number(btn.dataset.term);
+    renderBillingTiers();
+  });
+});
+
+document.getElementById("billing-tier-grid").addEventListener("click", (e) => {
+  const btn = e.target.closest(".billing-tier-btn");
+  if (!btn) return;
+  onBillingPay(btn.dataset.tier);
+});
+
+document.querySelector('nav button[data-section="billing"]')?.addEventListener("click", (e) => {
+  e.preventDefault();
+  history.pushState({}, "", "/billing");
+  showBilling();
+});
