@@ -805,7 +805,7 @@ def change_password(
 ) -> dict:
     db_user = query_one("SELECT * FROM users WHERE id = ?", (user["id"],))
     if not db_user or not verify_password(payload.current_password, db_user["password_hash"]):
-        raise http_error(400, "invalid_current_password", "Invalid current password")
+        raise http_error(401, "invalid_current_password", "Invalid current password")
     validate_password(payload.new_password)
     execute(
         "UPDATE users SET password_hash = ? WHERE id = ?",
@@ -1020,7 +1020,11 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
         current = int(count_row["n"] if count_row else 0)
         limit = int(org["screen_limit"])
         if current >= limit:
-            raise http_error(402, "plan_limit", "Plan limit reached")
+            raise http_error(
+                402,
+                "plan_limit",
+                f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+            )
     pair_code = generate_unique_pair_code()
     token = generate_unique_token()
     screen_id = execute(
