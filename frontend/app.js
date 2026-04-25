@@ -1252,7 +1252,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
       setAuth(data.token, data.user);
       showDashboard();
       await bootData();
-      toast(`Welcome to Khanshoof, ${signupState.business_name}! Your 14-day trial is active.`, "success", 6000);
+      toast(`Welcome to Khanshoof, ${signupState.business_name}! Your 5-day trial is active.`, "success", 6000);
       signupState.email = "";
       signupState.business_name = "";
       signupState.verification_token = "";

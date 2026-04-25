@@ -642,7 +642,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
 
     plan_key = "starter"
     plan = PLANS[plan_key]
-    trial_ends_at = (now + timedelta(days=14)).isoformat()
+    trial_ends_at = (now + timedelta(days=5)).isoformat()
 
     new_org_id = execute(
         """
