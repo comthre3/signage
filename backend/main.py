@@ -253,36 +253,35 @@ def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
 ROLE_LEVELS = {"viewer": 1, "editor": 2, "admin": 3}
 
 PLANS = {
-    "starter":    {"screen_limit": 3,    "price_usd_monthly":  9.99, "label": "Starter"},
-    "growth":     {"screen_limit": 5,    "price_usd_monthly": 12.99, "label": "Growth"},
-    "business":   {"screen_limit": 10,   "price_usd_monthly": 24.99, "label": "Business"},
-    "pro":        {"screen_limit": 25,   "price_usd_monthly": 49.99, "label": "Pro"},
-    "enterprise": {"screen_limit": 9999, "price_usd_monthly":  0.0,  "label": "Enterprise"},
+    "starter":    {"screen_limit": 3,    "price_kwd_monthly": 3,  "label": "Starter"},
+    "growth":     {"screen_limit": 5,    "price_kwd_monthly": 4,  "label": "Growth"},
+    "business":   {"screen_limit": 10,   "price_kwd_monthly": 8,  "label": "Business"},
+    "pro":        {"screen_limit": 25,   "price_kwd_monthly": 15, "label": "Pro"},
+    "enterprise": {"screen_limit": 9999, "price_kwd_monthly": 0,  "label": "Enterprise"},
 }
 
-# ── Billing pricing table ────────────────────────────────────────────
-USD_TO_KWD = Decimal("0.306")   # fixed rate; update manually when KWD moves >2%
-PLAN_PRICING_USD: dict[str, Decimal] = {
-    "starter":  Decimal("9.99"),
-    "growth":   Decimal("12.99"),
-    "business": Decimal("24.99"),
-    "pro":      Decimal("49.99"),
+KWD_TO_USD = Decimal("3.267")
+PLAN_PRICING_KWD: dict[str, Decimal] = {
+    "starter":  Decimal("3"),
+    "growth":   Decimal("4"),
+    "business": Decimal("8"),
+    "pro":      Decimal("15"),
 }
 PLAN_SCREEN_LIMITS: dict[str, int] = {
     "starter": 3, "growth": 5, "business": 10, "pro": 25,
 }
-TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}   # 6m = 5×monthly (save 1); 12m = 10×monthly (save 2)
-ALLOWED_TIERS  = frozenset(PLAN_PRICING_USD.keys())
+TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}
+ALLOWED_TIERS  = frozenset(PLAN_PRICING_KWD.keys())
 ALLOWED_TERMS  = frozenset(TERM_MULTIPLIERS.keys())
-TERM_DAYS      = 30                                       # days per month credited on CAPTURED
+TERM_DAYS      = 30
 
 def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
     """Return (amount_kwd_int, amount_usd_display) for a tier/term combo."""
-    monthly_usd = PLAN_PRICING_USD[tier]
+    monthly_kwd = PLAN_PRICING_KWD[tier]
     mult = TERM_MULTIPLIERS[term_months]
-    amount_usd = (monthly_usd * mult).quantize(Decimal("0.01"))
-    amount_kwd_exact = amount_usd * USD_TO_KWD
-    amount_kwd = int(amount_kwd_exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    amount_kwd_dec = monthly_kwd * mult
+    amount_kwd = int(amount_kwd_dec)
+    amount_usd = (amount_kwd_dec * KWD_TO_USD).quantize(Decimal("0.01"))
     return amount_kwd, amount_usd
 
 

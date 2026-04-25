@@ -802,3 +802,9 @@ a:hover { color: var(--peach-deep); }
 @media (prefers-reduced-motion: reduce) {
   .hero-face { animation: none; }
 }
+
+.pricing-usd-approx {
+  font-size: 13px;
+  color: var(--text-muted, #6b6480);
+  margin-top: 4px;
+}

@@ -1656,12 +1656,12 @@ document.getElementById("pair-another-btn")  .addEventListener("click",  onPairA
 document.getElementById("pair-dashboard-btn").addEventListener("click",  onPairViewDashboard);
 
 /* ── Billing view ───────────────────────────────────────────── */
-const USD_TO_KWD = 0.306;
+const KWD_TO_USD = 3.267;
 const PLAN_TIERS = [
-  { tier: "starter",  label: "Starter",  usd: 9.99,  screens: 3  },
-  { tier: "growth",   label: "Growth",   usd: 12.99, screens: 5  },
-  { tier: "business", label: "Business", usd: 24.99, screens: 10 },
-  { tier: "pro",      label: "Pro",      usd: 49.99, screens: 25 },
+  { tier: "starter",  label: "Starter",  kwd: 3,  screens: 3  },
+  { tier: "growth",   label: "Growth",   kwd: 4,  screens: 5  },
+  { tier: "business", label: "Business", kwd: 8,  screens: 10 },
+  { tier: "pro",      label: "Pro",      kwd: 15, screens: 25 },
 ];
 const BILLING_TERMS = [
   { months: 1,  multiplier: 1,  saveLabel: "" },
@@ -1677,9 +1677,9 @@ function billingAmountsFor(tier, months) {
   const plan = PLAN_TIERS.find((p) => p.tier === tier);
   const term = BILLING_TERMS.find((t) => t.months === months);
   if (!plan || !term) return null;
-  const usd = +(plan.usd * term.multiplier).toFixed(2);
-  const kwd = Math.round(usd * USD_TO_KWD);
-  return { usd, kwd };
+  const kwd = plan.kwd * term.multiplier;
+  const usdApprox = (kwd * KWD_TO_USD).toFixed(2);
+  return { kwd, usdApprox };
 }
 
 function showBillingPanel() {
@@ -1720,8 +1720,8 @@ function renderBillingTiers() {
     card.innerHTML = `
       <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
       <div class="billing-tier-limit">up to ${plan.screens} screens</div>
-      <div class="billing-tier-usd">$${amounts.usd.toFixed(2)}${billingCurrentTerm === 1 ? " / month" : ""}</div>
-      <div class="billing-tier-kwd">≈ ${amounts.kwd} KWD</div>
+      <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " / month" : ""}</div>
+      <div class="billing-tier-usd">≈ $${amounts.usdApprox}</div>
       ${saveMarkup}
       <button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
         Pay ${amounts.kwd} KWD${termInfo.saveLabel ? " · " + escHtml(termInfo.saveLabel) : ""}
