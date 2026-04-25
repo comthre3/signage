@@ -1931,3 +1931,83 @@ def billing_checkout(
         (payment_id, payment_link, trackid),
     )
     return {"payment_url": payment_link, "trackid": trackid}
+
+
+class BillingCallbackBody(BaseModel):
+    result: str | None = None
+    trackid: str | None = None
+    paymentID: str | None = None
+    tranid: str | None = None
+    ref: str | None = None
+    niutrack: str | None = None
+
+
+@app.post("/billing/callback/{trackid}")
+def billing_callback(trackid: str, body: BillingCallbackBody, s: str = ""):
+    if not secrets.compare_digest(s, _billing_callback_secret()):
+        raise HTTPException(status_code=404)
+
+    if body.trackid and body.trackid != trackid:
+        raise HTTPException(status_code=400, detail="trackid mismatch")
+
+    row = query_one("SELECT * FROM payments WHERE trackid = ?", (trackid,))
+    if not row:
+        return {"ok": True}   # no-leak 200
+
+    if row["status"] in ("captured", "failed"):
+        return {"ok": True}   # idempotent
+
+    captured = (body.result or "").upper() == "CAPTURED"
+    if captured:
+        term = int(row["term_months"])
+        execute(
+            """
+            UPDATE payments
+               SET status='captured',
+                   niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
+                   updated_at=now()
+             WHERE trackid=?
+            """,
+            (body.result, body.tranid, body.ref, body.paymentID, trackid),
+        )
+        execute(
+            """
+            UPDATE organizations
+               SET plan               = ?,
+                   plan_term_months   = ?,
+                   screen_limit       = ?,
+                   subscription_status= 'active',
+                   paid_through_at    = now() + make_interval(days => ?)
+             WHERE id = ?
+            """,
+            (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], term * TERM_DAYS, row["organization_id"]),
+        )
+    else:
+        execute(
+            """
+            UPDATE payments
+               SET status='failed',
+                   niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
+                   updated_at=now()
+             WHERE trackid=?
+            """,
+            (body.result, body.tranid, body.ref, body.paymentID, trackid),
+        )
+
+    return {"ok": True}
+
+
+@app.get("/billing/status/{trackid}")
+def billing_status(trackid: str, user: dict = Depends(get_current_user)) -> dict:
+    row = query_one("SELECT * FROM payments WHERE trackid = ?", (trackid,))
+    if not row or row["organization_id"] != org_id(user):
+        raise HTTPException(status_code=404, detail="Unknown trackid")
+    org = query_one("SELECT paid_through_at FROM organizations WHERE id = ?", (row["organization_id"],))
+    return {
+        "status":               row["status"],
+        "tier":                 row["tier"],
+        "term_months":          row["term_months"],
+        "amount_kwd":           row["amount_kwd"],
+        "amount_usd_display":   str(row["amount_usd_display"]),
+        "paid_through_at":      org["paid_through_at"].isoformat() if org and org.get("paid_through_at") else None,
+    }
