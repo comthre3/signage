@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
@@ -210,6 +211,31 @@ PLANS = {
     "pro":        {"screen_limit": 25,   "price_usd_monthly": 49.99, "label": "Pro"},
     "enterprise": {"screen_limit": 9999, "price_usd_monthly":  0.0,  "label": "Enterprise"},
 }
+
+# ── Billing pricing table ────────────────────────────────────────────
+USD_TO_KWD = Decimal("0.306")   # fixed rate; update manually when KWD moves >2%
+PLAN_PRICING_USD: dict[str, Decimal] = {
+    "starter":  Decimal("9.99"),
+    "growth":   Decimal("12.99"),
+    "business": Decimal("24.99"),
+    "pro":      Decimal("49.99"),
+}
+PLAN_SCREEN_LIMITS: dict[str, int] = {
+    "starter": 3, "growth": 5, "business": 10, "pro": 25,
+}
+TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}   # 6m = 5×monthly (save 1); 12m = 10×monthly (save 2)
+ALLOWED_TIERS  = frozenset(PLAN_PRICING_USD.keys())
+ALLOWED_TERMS  = frozenset(TERM_MULTIPLIERS.keys())
+TERM_DAYS      = 30                                       # days per month credited on CAPTURED
+
+def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
+    """Return (amount_kwd_int, amount_usd_display) for a tier/term combo."""
+    monthly_usd = PLAN_PRICING_USD[tier]
+    mult = TERM_MULTIPLIERS[term_months]
+    amount_usd = (monthly_usd * mult).quantize(Decimal("0.01"))
+    amount_kwd_exact = amount_usd * USD_TO_KWD
+    amount_kwd = int(amount_kwd_exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return amount_kwd, amount_usd
 
 
 def validate_password(password: str) -> None:
