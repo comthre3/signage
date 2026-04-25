@@ -771,6 +771,25 @@ def get_organization(user: dict = Depends(get_current_user)) -> dict:
     return org
 
 
+class OrganizationLocaleUpdate(BaseModel):
+    locale: str = Field(..., min_length=2, max_length=2)
+
+
+@app.patch("/organizations/me")
+def patch_organization_me(
+    payload: OrganizationLocaleUpdate,
+    user: dict = Depends(require_roles("admin")),
+) -> dict:
+    if payload.locale not in ("en", "ar"):
+        raise http_error(400, "invalid_locale", "Locale must be 'en' or 'ar'")
+    execute(
+        "UPDATE organizations SET locale = ? WHERE id = ?",
+        (payload.locale, org_id(user)),
+    )
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))
+    return org
+
+
 @app.post("/auth/login")
 def login(payload: LoginRequest) -> dict:
     user = query_one("SELECT * FROM users WHERE username = ?", (payload.username,))
