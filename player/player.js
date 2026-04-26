@@ -130,7 +130,7 @@ async function onPaired(screenToken) {
   activePairCode = null;
   localStorage.setItem("screen_token", screenToken);
   hidePairingView();
-  setStatus("Loading content...");
+  setStatus(Khan.t("status.loading_content", "Loading content..."));
   // Re-run the same post-auth path boot() uses
   await resumeAfterPair(screenToken);
 }
@@ -223,7 +223,7 @@ function createVideoNode(url, loop) {
 
 function scheduleNext() {
   if (currentItems.length === 0) {
-    setStatus("No content assigned");
+    setStatus(Khan.t("status.no_content", "No content assigned"));
     return;
   }
   const item = currentItems[currentIndex];
@@ -373,7 +373,7 @@ function renderContentData(data) {
     currentItems = [];
     clearPlayback();
     contentEl.innerHTML = "";
-    setStatus("No content assigned");
+    setStatus(Khan.t("status.no_content", "No content assigned"));
     return;
   }
   const signature = buildSignature(items);
@@ -409,12 +409,12 @@ async function startPairingFlow() {
     const data = await requestPairingCode();
     activePairCode = data.code;
     renderPairingCode(data.code);
-    pairingMetaEl.textContent = "Waiting for your phone…";
+    pairingMetaEl.textContent = Khan.t("pairing.waiting", "Waiting for your phone…");
     schedulePairPoll();
   } catch (err) {
     console.error(err);
     pairingCodeEl.textContent = "—";
-    pairingMetaEl.textContent = "Can't reach server. Retrying…";
+    pairingMetaEl.textContent = Khan.t("pairing.no_server", "Can't reach server. Retrying…");
     setTimeout(startPairingFlow, 5000);
   }
 }
@@ -432,14 +432,14 @@ async function runPairPoll() {
       return;
     }
     if (data.status === "expired") {
-      pairingMetaEl.textContent = "Code expired — getting a new one…";
+      pairingMetaEl.textContent = Khan.t("pairing.expired", "Code expired — getting a new one…");
       await startPairingFlow();
       return;
     }
     schedulePairPoll();
   } catch (err) {
     console.error(err);
-    pairingMetaEl.textContent = "Reconnecting…";
+    pairingMetaEl.textContent = Khan.t("pairing.reconnecting", "Reconnecting…");
     schedulePairPoll();
   }
 }
@@ -463,12 +463,12 @@ function startRefreshLoop() {
         })
         .catch((err) => {
           console.error(err);
-          setStatus("Connection issue");
+          setStatus(Khan.t("status.connection_issue", "Connection issue"));
         });
     } else {
       fetchContent().catch((err) => {
         console.error(err);
-        setStatus("Connection issue");
+        setStatus(Khan.t("status.connection_issue", "Connection issue"));
       });
     }
   }, 15000);
@@ -486,7 +486,7 @@ async function boot() {
     screenToken;
 
   if (!screenToken && codeParam) {
-    setStatus("Pairing...");
+    setStatus(Khan.t("status.pairing", "Pairing..."));
     screenToken = await pairWithCode(codeParam);
     if (!isPreview) {
       localStorage.setItem("screen_token", screenToken);
@@ -498,7 +498,7 @@ async function boot() {
     return;
   }
 
-  setStatus("Loading content...");
+  setStatus(Khan.t("status.loading_content", "Loading content..."));
   const layout = await fetchLayout();
   if (layout?.zones && layout.zones.length > 0) {
     layoutSignature = getLayoutSignature(layout.zones);
@@ -514,7 +514,18 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
-boot().catch((err) => {
-  console.error(err);
-  setStatus("Failed to start player");
-});
+(async function bootI18nThenBoot() {
+  try {
+    const locale = Khan.detectInitialLocale();
+    await Khan.loadLocale(locale);
+    Khan.applyTranslations(document);
+  } catch (err) {
+    console.error("[i18n] boot failed", err);
+  }
+  try {
+    await boot();
+  } catch (err) {
+    console.error(err);
+    setStatus(Khan.t("status.failed_to_start", "Failed to start player"));
+  }
+})();

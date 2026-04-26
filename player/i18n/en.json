@@ -1,1 +1,20 @@
-{}
+{
+  "meta.title": "Khanshoof Player",
+  "pairing.intro": "Pair this display to your account",
+  "pairing.code_aria": "Pairing code",
+  "pairing.qr_aria": "QR code for pairing URL",
+  "pairing.step1_a": "On your phone, open",
+  "pairing.step2": "Enter the code above, or scan the QR to jump there",
+  "pairing.step3": "Pick which screen this is — the display updates automatically",
+  "pairing.meta": "Code refreshes every 10 minutes",
+  "pairing.waiting": "Waiting for your phone…",
+  "pairing.no_server": "Can't reach server. Retrying…",
+  "pairing.expired": "Code expired — getting a new one…",
+  "pairing.reconnecting": "Reconnecting…",
+  "status.connecting": "Connecting...",
+  "status.loading_content": "Loading content...",
+  "status.no_content": "No content assigned",
+  "status.connection_issue": "Connection issue",
+  "status.pairing": "Pairing...",
+  "status.failed_to_start": "Failed to start player"
+}

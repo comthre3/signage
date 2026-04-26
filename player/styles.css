@@ -12,6 +12,14 @@ body {
   font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
 }
 
+:lang(ar) #pairing,
+:lang(ar) .pairing-intro,
+:lang(ar) .pairing-steps,
+:lang(ar) .pairing-meta,
+:lang(ar) #status {
+  font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+}
+
 #player {
   position: relative;
   width: 100%;
