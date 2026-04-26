@@ -41,6 +41,11 @@
   --gutter: 24px;
 }
 
+:lang(ar) {
+  --font-body:    'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-display: 'IBM Plex Sans Arabic', 'IBM Plex Serif', Georgia, serif;
+}
+
 /* ── Reset ──────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -808,3 +813,15 @@ a:hover { color: var(--peach-deep); }
   color: var(--text-muted, #6b6480);
   margin-top: 4px;
 }
+
+.lang-toggle {
+  background: var(--butter);
+  color: var(--plum);
+  border: 1px solid var(--peach);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  cursor: pointer;
+}
+.lang-toggle:hover { filter: brightness(0.97); }
