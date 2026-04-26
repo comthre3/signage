@@ -1,0 +1,20 @@
+{
+  "meta.title": "مشغّل خنشوف",
+  "pairing.intro": "اقرن هذه الشاشة بحسابك",
+  "pairing.code_aria": "رمز الإقران",
+  "pairing.qr_aria": "رمز QR لرابط الإقران",
+  "pairing.step1_a": "على هاتفك، افتح",
+  "pairing.step2": "أدخل الرمز أعلاه، أو امسح رمز QR للانتقال مباشرة",
+  "pairing.step3": "اختر أي شاشة هذه — تتحدث الشاشة تلقائياً",
+  "pairing.meta": "يتجدد الرمز كل 10 دقائق",
+  "pairing.waiting": "في انتظار هاتفك…",
+  "pairing.no_server": "تعذّر الوصول إلى الخادم. إعادة المحاولة…",
+  "pairing.expired": "انتهت صلاحية الرمز — جارٍ الحصول على رمز جديد…",
+  "pairing.reconnecting": "جارٍ إعادة الاتصال…",
+  "status.connecting": "جارٍ الاتصال...",
+  "status.loading_content": "جارٍ تحميل المحتوى...",
+  "status.no_content": "لم يُعيَّن أي محتوى",
+  "status.connection_issue": "مشكلة في الاتصال",
+  "status.pairing": "جارٍ الإقران...",
+  "status.failed_to_start": "فشل تشغيل المشغّل"
+}

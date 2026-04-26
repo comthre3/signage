@@ -23,6 +23,7 @@ from slowapi.util import get_remote_address
 
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
+from email_utils import is_valid_email, send_via_resend
 
 logger = logging.getLogger("signage")
 logging.basicConfig(level=logging.INFO)
@@ -193,6 +194,15 @@ def verify_password(password: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
+def http_error(status: int, code: str, message: str) -> HTTPException:
+    """Structured error response: detail = {code, message}.
+
+    Frontend reads `code` to look up a localized string; falls back to
+    `message` (English) if the code is unrecognized.
+    """
+    return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 OTP_RESEND_COOLDOWN_SECONDS = int(os.getenv("OTP_RESEND_COOLDOWN_SECONDS", "60"))
@@ -222,59 +232,95 @@ def verify_otp(otp: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
-def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
-    """Dev stub for outbound signup email.
+def _signup_otp_email_html(business_name: str, otp: str) -> str:
+    return (
+        f"<div style=\"font-family:system-ui,sans-serif;color:#2a2438;max-width:480px\">"
+        f"<h1 style=\"font-size:18px;margin:0 0 16px\">Welcome to Khanshoof</h1>"
+        f"<p style=\"margin:0 0 12px\">Hi {business_name}, here's your verification code:</p>"
+        f"<p style=\"font-size:32px;letter-spacing:6px;font-weight:700;"
+        f"background:#fef6e4;padding:16px 24px;border-radius:12px;display:inline-block;"
+        f"margin:8px 0\">{otp}</p>"
+        f"<p style=\"font-size:13px;color:#6b6480;margin:16px 0 0\">"
+        f"This code expires in 10 minutes. If you didn't request it, ignore this email.</p>"
+        f"</div>"
+    )
 
-    DEV_MODE writes the OTP to the container log so operators can recover it
-    locally without a provider. Production use (Resend) is wired in a separate
-    plan once the khanshoof.com DNS is pointed and an API key is issued.
+
+def _signup_otp_email_text(business_name: str, otp: str) -> str:
+    return (
+        f"Hi {business_name},\n\n"
+        f"Your Khanshoof verification code: {otp}\n\n"
+        f"This code expires in 10 minutes. If you didn't request it, ignore this email.\n"
+    )
+
+
+def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
+    """Send the signup OTP via Resend; fall back to logging if no API key.
+
+    Failures are swallowed (logged but not raised) so a flaky email provider
+    never 500s the signup endpoint — the OTP is still in the DB and the user
+    can hit "resend".
     """
     logger.info("SIGNUP_OTP for %s (%s): %s", to_email, business_name, otp)
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    if not api_key:
+        return
+    from_addr = os.getenv("RESEND_FROM", "Khanshoof <noreply@khanshoof.com>")
+    try:
+        send_via_resend(
+            api_key=api_key,
+            from_addr=from_addr,
+            to=to_email,
+            subject="Your Khanshoof verification code",
+            html=_signup_otp_email_html(business_name, otp),
+            text=_signup_otp_email_text(business_name, otp),
+        )
+    except Exception as exc:
+        logger.error("Resend send failed for %s: %s", to_email, exc)
 
 
 ROLE_LEVELS = {"viewer": 1, "editor": 2, "admin": 3}
 
 PLANS = {
-    "starter":    {"screen_limit": 3,    "price_usd_monthly":  9.99, "label": "Starter"},
-    "growth":     {"screen_limit": 5,    "price_usd_monthly": 12.99, "label": "Growth"},
-    "business":   {"screen_limit": 10,   "price_usd_monthly": 24.99, "label": "Business"},
-    "pro":        {"screen_limit": 25,   "price_usd_monthly": 49.99, "label": "Pro"},
-    "enterprise": {"screen_limit": 9999, "price_usd_monthly":  0.0,  "label": "Enterprise"},
+    "starter":    {"screen_limit": 3,    "price_kwd_monthly": 3,  "label": "Starter"},
+    "growth":     {"screen_limit": 5,    "price_kwd_monthly": 4,  "label": "Growth"},
+    "business":   {"screen_limit": 10,   "price_kwd_monthly": 8,  "label": "Business"},
+    "pro":        {"screen_limit": 25,   "price_kwd_monthly": 15, "label": "Pro"},
+    "enterprise": {"screen_limit": 9999, "price_kwd_monthly": 0,  "label": "Enterprise"},
 }
 
-# ── Billing pricing table ────────────────────────────────────────────
-USD_TO_KWD = Decimal("0.306")   # fixed rate; update manually when KWD moves >2%
-PLAN_PRICING_USD: dict[str, Decimal] = {
-    "starter":  Decimal("9.99"),
-    "growth":   Decimal("12.99"),
-    "business": Decimal("24.99"),
-    "pro":      Decimal("49.99"),
+KWD_TO_USD = Decimal("3.267")
+PLAN_PRICING_KWD: dict[str, Decimal] = {
+    "starter":  Decimal("3"),
+    "growth":   Decimal("4"),
+    "business": Decimal("8"),
+    "pro":      Decimal("15"),
 }
 PLAN_SCREEN_LIMITS: dict[str, int] = {
     "starter": 3, "growth": 5, "business": 10, "pro": 25,
 }
-TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}   # 6m = 5×monthly (save 1); 12m = 10×monthly (save 2)
-ALLOWED_TIERS  = frozenset(PLAN_PRICING_USD.keys())
+TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}
+ALLOWED_TIERS  = frozenset(PLAN_PRICING_KWD.keys())
 ALLOWED_TERMS  = frozenset(TERM_MULTIPLIERS.keys())
-TERM_DAYS      = 30                                       # days per month credited on CAPTURED
+TERM_DAYS      = 30
 
 def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
     """Return (amount_kwd_int, amount_usd_display) for a tier/term combo."""
-    monthly_usd = PLAN_PRICING_USD[tier]
+    monthly_kwd = PLAN_PRICING_KWD[tier]
     mult = TERM_MULTIPLIERS[term_months]
-    amount_usd = (monthly_usd * mult).quantize(Decimal("0.01"))
-    amount_kwd_exact = amount_usd * USD_TO_KWD
-    amount_kwd = int(amount_kwd_exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    amount_kwd_dec = monthly_kwd * mult
+    amount_kwd = int(amount_kwd_dec)
+    amount_usd = (amount_kwd_dec * KWD_TO_USD).quantize(Decimal("0.01"))
     return amount_kwd, amount_usd
 
 
 def validate_password(password: str) -> None:
     if len(password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        raise http_error(400, "password_too_short", "Password must be at least 8 characters")
     if not re.search(r"[A-Za-z]", password):
-        raise HTTPException(status_code=400, detail="Password must include a letter")
+        raise http_error(400, "password_no_letter", "Password must include a letter")
     if not re.search(r"\d", password):
-        raise HTTPException(status_code=400, detail="Password must include a number")
+        raise http_error(400, "password_no_number", "Password must include a number")
 
 
 def is_online(last_seen: Optional[str]) -> bool:
@@ -575,10 +621,10 @@ def _is_local_request(request: Request) -> bool:
 def signup_request(request: Request, payload: SignupStartRequest) -> dict:
     email = payload.email.strip().lower()
     business_name = payload.business_name.strip()
-    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
-        raise HTTPException(status_code=400, detail="Invalid email address")
+    if not is_valid_email(email):
+        raise http_error(400, "invalid_email", "Invalid email address")
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
-        raise HTTPException(status_code=400, detail="Email is already registered")
+        raise http_error(400, "email_taken", "Email is already registered")
 
     now = datetime.now(timezone.utc)
     existing = query_one("SELECT last_sent_at FROM pending_signups WHERE email = ?", (email,))
@@ -586,10 +632,7 @@ def signup_request(request: Request, payload: SignupStartRequest) -> dict:
         try:
             last_sent_dt = datetime.fromisoformat(existing["last_sent_at"])
             if (now - last_sent_dt).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
-                )
+                raise http_error(429, "otp_cooldown", f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.")
         except ValueError:
             pass
 
@@ -636,7 +679,7 @@ def signup_verify(payload: SignupVerifyRequest) -> dict:
     email = payload.email.strip().lower()
     row = query_one("SELECT * FROM pending_signups WHERE email = ?", (email,))
     if not row:
-        raise HTTPException(status_code=400, detail="No pending signup for this email")
+        raise http_error(400, "no_pending_signup", "No pending signup for this email")
 
     now = datetime.now(timezone.utc)
     try:
@@ -644,17 +687,17 @@ def signup_verify(payload: SignupVerifyRequest) -> dict:
     except (TypeError, ValueError):
         expires_dt = now - timedelta(seconds=1)
     if now > expires_dt:
-        raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
+        raise http_error(400, "otp_expired", "Code expired. Please request a new one.")
 
     if (row.get("attempts") or 0) >= OTP_MAX_ATTEMPTS:
-        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Request a new code.")
+        raise http_error(400, "otp_attempts_exceeded", "Too many incorrect attempts. Request a new code.")
 
     if not verify_otp(payload.otp, row.get("otp_hash")):
         execute(
             "UPDATE pending_signups SET attempts = attempts + 1 WHERE email = ?",
             (email,),
         )
-        raise HTTPException(status_code=400, detail="Incorrect code")
+        raise http_error(400, "otp_incorrect", "Incorrect code")
 
     verification_token = secrets.token_hex(16)
     verification_expires = (now + timedelta(seconds=VERIFICATION_TOKEN_TTL_SECONDS)).isoformat()
@@ -686,7 +729,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
         (payload.verification_token,),
     )
     if not row:
-        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+        raise http_error(400, "invalid_verification_token", "Invalid or expired verification token")
 
     now = datetime.now(timezone.utc)
     try:
@@ -694,14 +737,14 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
     except (TypeError, ValueError):
         vt_expires_dt = now - timedelta(seconds=1)
     if now > vt_expires_dt:
-        raise HTTPException(status_code=400, detail="Verification token expired. Please restart signup.")
+        raise http_error(400, "verification_token_expired", "Verification token expired. Please restart signup.")
 
     email = row["email"]
     business_name = row["business_name"]
 
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
         execute("DELETE FROM pending_signups WHERE email = ?", (email,))
-        raise HTTPException(status_code=400, detail="Email is already registered")
+        raise http_error(400, "email_taken", "Email is already registered")
 
     slug_base = slugify(business_name)
     slug = slug_base
@@ -753,6 +796,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
             "screen_limit": plan["screen_limit"],
             "subscription_status": "trialing",
             "trial_ends_at": trial_ends_at,
+            "locale": "en",
         },
     }
 
@@ -770,18 +814,38 @@ def get_organization(user: dict = Depends(get_current_user)) -> dict:
     return org
 
 
+class OrganizationLocaleUpdate(BaseModel):
+    locale: str = Field(..., min_length=2, max_length=2)
+
+
+@app.patch("/organizations/me")
+def patch_organization_me(
+    payload: OrganizationLocaleUpdate,
+    user: dict = Depends(require_roles("admin")),
+) -> dict:
+    if payload.locale not in ("en", "ar"):
+        raise http_error(400, "invalid_locale", "Locale must be 'en' or 'ar'")
+    execute(
+        "UPDATE organizations SET locale = ? WHERE id = ?",
+        (payload.locale, org_id(user)),
+    )
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))
+    return org
+
+
 @app.post("/auth/login")
 @limiter.limit("10/5minutes")
 def login(request: Request, payload: LoginRequest) -> dict:
     user = query_one("SELECT * FROM users WHERE username = ?", (payload.username,))
     if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise http_error(401, "invalid_credentials", "Invalid credentials")
     cleanup_sessions()
     token = uuid.uuid4().hex
     execute(
         "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
         (user["id"], token, utc_now_iso(), utc_now_iso()),
     )
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
     return {
         "token": token,
         "user": {
@@ -789,6 +853,16 @@ def login(request: Request, payload: LoginRequest) -> dict:
             "username": user["username"],
             "role": user.get("role") or ("admin" if user["is_admin"] else "viewer"),
             "is_admin": bool(user["is_admin"]),
+        },
+        "organization": {
+            "id": org["id"],
+            "name": org["name"],
+            "slug": org["slug"],
+            "plan": org["plan"],
+            "screen_limit": org["screen_limit"],
+            "subscription_status": org["subscription_status"],
+            "trial_ends_at": org["trial_ends_at"],
+            "locale": org["locale"],
         },
     }
 
@@ -805,7 +879,7 @@ def change_password(
 ) -> dict:
     db_user = query_one("SELECT * FROM users WHERE id = ?", (user["id"],))
     if not db_user or not verify_password(payload.current_password, db_user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid current password")
+        raise http_error(401, "invalid_current_password", "Invalid current password")
     validate_password(payload.new_password)
     execute(
         "UPDATE users SET password_hash = ? WHERE id = ?",
@@ -817,11 +891,22 @@ def change_password(
 
 @app.get("/auth/me")
 def me(user: dict = Depends(get_current_user)) -> dict:
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
     return {
         "id": user["id"],
         "username": user["username"],
         "role": user["role"],
         "is_admin": user["is_admin"],
+        "organization": {
+            "id": org["id"],
+            "name": org["name"],
+            "slug": org["slug"],
+            "plan": org["plan"],
+            "screen_limit": org["screen_limit"],
+            "subscription_status": org["subscription_status"],
+            "trial_ends_at": org["trial_ends_at"],
+            "locale": org["locale"],
+        },
     }
 
 
@@ -840,9 +925,9 @@ def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
 @app.post("/users")
 def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
-        raise HTTPException(status_code=400, detail="Username already exists")
+        raise http_error(400, "username_taken", "Username already exists")
     if payload.role not in ROLE_LEVELS:
-        raise HTTPException(status_code=400, detail="Invalid role")
+        raise http_error(400, "invalid_role", "Invalid role")
     validate_password(payload.password)
     user_id = execute(
         "INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -880,7 +965,7 @@ def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_
         )
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
-            raise HTTPException(status_code=400, detail="Invalid role")
+            raise http_error(400, "invalid_role", "Invalid role")
         execute(
             "UPDATE users SET role = ?, is_admin = ? WHERE id = ?",
             (payload.role, int(payload.role == "admin"), user_id),
@@ -1020,9 +1105,10 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
         current = int(count_row["n"] if count_row else 0)
         limit = int(org["screen_limit"])
         if current >= limit:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+            raise http_error(
+                402,
+                "plan_limit",
+                f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
             )
     pair_code = generate_unique_pair_code()
     token = generate_unique_token()

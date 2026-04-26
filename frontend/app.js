@@ -122,6 +122,14 @@ function updateResolutionCustomVisibility() {
 }
 
 /* ── API ─────────────────────────────────────────────────────── */
+function localizeError(detail, fallback) {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && detail.code) {
+    return Khan.t(`error.${detail.code}`, detail.message);
+  }
+  return fallback || "Something went wrong";
+}
+
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
@@ -131,8 +139,8 @@ async function api(path, options = {}) {
     const text = await res.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    const msg = (data && typeof data === "object" && typeof data.detail === "string")
-      ? data.detail
+    const msg = data && data.detail
+      ? localizeError(data.detail, text)
       : (text || "Request failed");
     const err = new Error(msg);
     err.status = res.status;
@@ -240,7 +248,7 @@ function renderSites() {
       if (!confirm(`Delete site "${site.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/sites/${site.id}`, { method: "DELETE" });
-        toast("Site deleted.", "success");
+        toast(Khan.t("toast.site_deleted"), "success");
         await loadSites();
         await loadScreens();
       });
@@ -280,7 +288,7 @@ function renderPlaylists() {
       if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/playlists/${playlist.id}`, { method: "DELETE" });
-        toast("Playlist deleted.", "success");
+        toast(Khan.t("toast.playlist_deleted"), "success");
         await loadPlaylists();
         await loadScreens();
       });
@@ -335,7 +343,7 @@ function renderMedia() {
       if (!confirm(`Delete "${item.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/media/${item.id}`, { method: "DELETE" });
-        toast("Media deleted.", "success");
+        toast(Khan.t("toast.media_deleted"), "success");
         await loadMedia();
       });
     });
@@ -376,14 +384,14 @@ function renderUsers() {
       await withLoading(e.currentTarget, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ password }) });
         input.value = "";
-        toast("Password updated.", "success");
+        toast(Khan.t("toast.password_updated"), "success");
       });
     });
     card.querySelector(`[data-user-delete="${user.id}"]`).addEventListener("click", async (e) => {
       if (!confirm(`Delete user "${user.username}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/users/${user.id}`, { method: "DELETE" });
-        toast("User deleted.", "success");
+        toast(Khan.t("toast.user_deleted"), "success");
         await loadUsers();
       });
     });
@@ -392,7 +400,7 @@ function renderUsers() {
     card.querySelector(`[data-user-role-save="${user.id}"]`).addEventListener("click", async (e) => {
       await withLoading(e.currentTarget, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ role: roleSelect.value }) });
-        toast("Role updated.", "success");
+        toast(Khan.t("toast.role_updated"), "success");
         await loadUsers();
       });
     });
@@ -445,7 +453,7 @@ function renderGroups() {
       if (!confirm(`Delete group "${group.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/groups/${group.id}`, { method: "DELETE" });
-        toast("Group deleted.", "success");
+        toast(Khan.t("toast.group_deleted"), "success");
         await loadUsers();
       });
     });
@@ -497,7 +505,7 @@ function renderScreens() {
       await withLoading(e.currentTarget, async () => {
         const playlistId = select.value ? Number(select.value) : null;
         await api(`/screens/${screen.id}`, { method: "PUT", body: JSON.stringify({ playlist_id: playlistId }) });
-        toast("Screen saved.", "success");
+        toast(Khan.t("toast.screen_saved"), "success");
         await loadScreens();
       });
     });
@@ -523,7 +531,7 @@ function renderScreens() {
       if (!confirm(`Delete screen "${screen.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/screens/${screen.id}`, { method: "DELETE" });
-        toast("Screen deleted.", "success");
+        toast(Khan.t("toast.screen_deleted"), "success");
         await loadScreens();
       });
     });
@@ -751,7 +759,7 @@ async function openScreenAccessEditor(screenId) {
       const selected = Array.from(groupsList.querySelectorAll("[data-screen-group]:checked"))
         .map((input) => Number(input.dataset.screenGroup.split(":")[1]));
       await api(`/screens/${screenId}/groups`, { method: "PUT", body: JSON.stringify({ group_ids: selected }) });
-      toast("Access settings saved.", "success");
+      toast(Khan.t("toast.access_saved"), "success");
       panel.classList.add("hidden");
       await loadScreens();
     });
@@ -805,7 +813,7 @@ function bindZoneEditorEvents() {
         }),
       });
       document.getElementById("zone-template-name").value = "";
-      toast("Template saved.", "success");
+      toast(Khan.t("toast.template_saved"), "success");
       await loadZoneTemplates();
     });
   });
@@ -816,7 +824,7 @@ function bindZoneEditorEvents() {
       await api(`/screens/${zonesState.screenId}/zone-templates/apply`, { method: "POST", body: JSON.stringify({ template_id: templateId }) });
       const data = await api(`/screens/${zonesState.screenId}/zones`);
       setZones(data.zones || []);
-      toast("Template applied.", "success");
+      toast(Khan.t("toast.template_applied"), "success");
     });
   });
   document.querySelectorAll("[data-zone-preset]").forEach((btn) => {
@@ -836,7 +844,7 @@ function bindZoneEditorEvents() {
           })),
         }),
       });
-      toast("Zones saved.", "success");
+      toast(Khan.t("toast.zones_saved"), "success");
     });
   });
   document.getElementById("zones-cancel")?.addEventListener("click", closeZonesEditor);
@@ -956,7 +964,7 @@ document.getElementById("site-form").addEventListener("submit", async (e) => {
   await withLoading(btn, async () => {
     await api("/sites", { method: "POST", body: JSON.stringify({ name, slug: slug || null }) });
     e.target.reset();
-    toast("Site created.", "success");
+    toast(Khan.t("toast.site_created"), "success");
     await loadSites();
   });
 });
@@ -976,7 +984,7 @@ document.getElementById("screen-form").addEventListener("submit", async (e) => {
       await api("/screens", { method: "POST", body: JSON.stringify(payload) });
       e.target.reset();
       updateResolutionCustomVisibility();
-      toast("Screen created.", "success");
+      toast(Khan.t("toast.screen_created"), "success");
       await loadScreens();
     } catch (err) {
       toast(err.message || "Failed to add screen.", "error");
@@ -1000,7 +1008,7 @@ document.getElementById("media-form").addEventListener("submit", async (e) => {
     });
     if (!res.ok) { const text = await res.text(); throw new Error(text || "Upload failed"); }
     input.value = "";
-    toast("Media uploaded.", "success");
+    toast(Khan.t("toast.media_uploaded"), "success");
     await loadMedia();
   });
 });
@@ -1014,7 +1022,7 @@ document.getElementById("media-url-form").addEventListener("submit", async (e) =
   await withLoading(btn, async () => {
     await api("/media/url", { method: "POST", body: JSON.stringify({ name, url }) });
     e.target.reset();
-    toast("Website added.", "success");
+    toast(Khan.t("toast.website_added"), "success");
     await loadMedia();
   });
 });
@@ -1049,7 +1057,7 @@ document.getElementById("playlist-form").addEventListener("submit", async (e) =>
   await withLoading(btn, async () => {
     await api("/playlists", { method: "POST", body: JSON.stringify({ name }) });
     e.target.reset();
-    toast("Playlist created.", "success");
+    toast(Khan.t("toast.playlist_created"), "success");
     await loadPlaylists();
   });
 });
@@ -1065,7 +1073,7 @@ document.getElementById("playlist-add-item").addEventListener("click", async (e)
   if (!playlistId || !mediaId) return;
   await withLoading(e.currentTarget, async () => {
     await api(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ media_id: Number(mediaId), duration_seconds: duration }) });
-    toast("Item added.", "success");
+    toast(Khan.t("toast.item_added"), "success");
     await loadPlaylistItems(playlistId);
   });
 });
@@ -1177,7 +1185,7 @@ document.getElementById("signup-request-form").addEventListener("submit", async 
         document.getElementById("signup-otp").value = data.dev_otp;
       }
       signupShowStep("verify");
-      toast("Code sent. Check the email (or dev log).", "success");
+      toast(Khan.t("toast.code_sent"), "success");
     });
   } catch (err) {
     toast(err.message || "Couldn't send code.", "error");
@@ -1216,7 +1224,7 @@ document.getElementById("signup-resend").addEventListener("click", async (e) => 
     if (data.dev_otp) {
       document.getElementById("signup-otp").value = data.dev_otp;
     }
-    toast("New code sent.", "success");
+    toast(Khan.t("toast.new_code_sent"), "success");
   } catch (err) {
     toast(err.message || "Couldn't resend code.", "error");
   }
@@ -1237,7 +1245,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
   const password        = document.getElementById("signup-new-password").value;
   const confirmPassword = document.getElementById("signup-confirm-password").value;
   if (password !== confirmPassword) {
-    toast("Passwords do not match.", "error");
+    toast(Khan.t("toast.passwords_no_match"), "error");
     return;
   }
   try {
@@ -1280,7 +1288,7 @@ document.getElementById("user-form").addEventListener("submit", async (e) => {
   await withLoading(btn, async () => {
     await api("/users", { method: "POST", body: JSON.stringify(payload) });
     e.target.reset();
-    toast("User created.", "success");
+    toast(Khan.t("toast.user_created"), "success");
     await loadUsers();
   });
 });
@@ -1294,7 +1302,7 @@ document.getElementById("group-form").addEventListener("submit", async (e) => {
   await withLoading(btn, async () => {
     await api("/groups", { method: "POST", body: JSON.stringify({ name }) });
     e.target.reset();
-    toast("Group created.", "success");
+    toast(Khan.t("toast.group_created"), "success");
     await loadUsers();
   });
 });
@@ -1321,7 +1329,7 @@ connectionForm?.addEventListener("submit", (e) => {
   localStorage.setItem(CONNECTION_STORAGE_KEY, connectionMode.value);
   localStorage.setItem(CONNECTION_API_KEY,     connectionApi.value.trim());
   localStorage.setItem(CONNECTION_PLAYER_KEY,  connectionPlayer.value.trim());
-  toast("Saved — reload to apply.", "info");
+  toast(Khan.t("toast.settings_saved"), "info");
 });
 
 connectionReset?.addEventListener("click", () => {
@@ -1329,7 +1337,7 @@ connectionReset?.addEventListener("click", () => {
   localStorage.removeItem(CONNECTION_API_KEY);
   localStorage.removeItem(CONNECTION_PLAYER_KEY);
   connectionMode.value = "local"; connectionApi.value = ""; connectionPlayer.value = "";
-  toast("Reset — reload to apply.", "info");
+  toast(Khan.t("toast.settings_reset"), "info");
 });
 
 /* ── Boot ────────────────────────────────────────────────────── */
@@ -1475,14 +1483,48 @@ async function showPairView(initialCode) {
   updatePairSubmitEnabled();
 }
 
+function bindLangToggle() {
+  const btn = document.getElementById("lang-toggle");
+  if (!btn || btn.dataset.bound === "1") return;
+  btn.dataset.bound = "1";
+  btn.addEventListener("click", async () => {
+    const next = Khan.currentLocale() === "en" ? "ar" : "en";
+    if (authToken && currentUser?.is_admin) {
+      try {
+        await api("/organizations/me", { method: "PATCH", body: JSON.stringify({ locale: next }) });
+      } catch (err) {
+        console.error("PATCH /organizations/me failed", err);
+      }
+    }
+    Khan.setLocale(next);
+    location.reload();
+  });
+}
+
 async function boot() {
+  let orgLocale;
+  if (authToken) {
+    try {
+      const me = await api("/auth/me");
+      setAuth(authToken, me);
+      orgLocale = me.organization?.locale;
+    } catch (err) {
+      // fall through to cookie/browser detection
+    }
+  }
+  const locale = Khan.detectInitialLocale(orgLocale);
+  await Khan.loadLocale(locale);
+  Khan.applyTranslations(document);
+
+  bindLangToggle();
+
   const isPairPath = location.pathname === "/pair";
   const isBillingPath = location.pathname === "/billing";
   const pairCodeParam = isPairPath
     ? new URLSearchParams(location.search).get("code") || ""
     : "";
 
-  if (!authToken) {
+  if (!authToken || !currentUser) {
     if (isPairPath) {
       sessionStorage.setItem("pair_resume", JSON.stringify({ path: "/pair", code: pairCodeParam }));
     }
@@ -1492,28 +1534,21 @@ async function boot() {
     return;
   }
 
-  try {
-    const me = await api("/auth/me");
-    setAuth(authToken, me);
-    if (isPairPath) {
-      await showPairView(pairCodeParam);
-    } else if (isBillingPath) {
-      await showBilling();
-    } else {
-      showDashboard();
-      await bootData();
-      updateResolutionCustomVisibility();
-      if (location.hash === '#signup') showAuthTab('signup');
-    }
-  } catch (err) {
-    console.error(err);
-    handleAuthFailure();
+  if (isPairPath) {
+    await showPairView(pairCodeParam);
+  } else if (isBillingPath) {
+    await showBilling();
+  } else {
+    showDashboard();
+    await bootData();
+    updateResolutionCustomVisibility();
+    if (location.hash === '#signup') showAuthTab('signup');
   }
 }
 
 boot().catch((err) => {
   console.error(err);
-  toast("Failed to load dashboard. Check your connection.", "error", 6000);
+  toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
 });
 
 /* ── Misc bindings ───────────────────────────────────────────── */
@@ -1647,7 +1682,7 @@ function onPairViewDashboard() {
   showDashboard();
   bootData().catch((err) => {
     console.error(err);
-    toast("Failed to load dashboard. Check your connection.", "error", 6000);
+    toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
   });
 }
 
@@ -1656,12 +1691,12 @@ document.getElementById("pair-another-btn")  .addEventListener("click",  onPairA
 document.getElementById("pair-dashboard-btn").addEventListener("click",  onPairViewDashboard);
 
 /* ── Billing view ───────────────────────────────────────────── */
-const USD_TO_KWD = 0.306;
+const KWD_TO_USD = 3.267;
 const PLAN_TIERS = [
-  { tier: "starter",  label: "Starter",  usd: 9.99,  screens: 3  },
-  { tier: "growth",   label: "Growth",   usd: 12.99, screens: 5  },
-  { tier: "business", label: "Business", usd: 24.99, screens: 10 },
-  { tier: "pro",      label: "Pro",      usd: 49.99, screens: 25 },
+  { tier: "starter",  label: "Starter",  kwd: 3,  screens: 3  },
+  { tier: "growth",   label: "Growth",   kwd: 4,  screens: 5  },
+  { tier: "business", label: "Business", kwd: 8,  screens: 10 },
+  { tier: "pro",      label: "Pro",      kwd: 15, screens: 25 },
 ];
 const BILLING_TERMS = [
   { months: 1,  multiplier: 1,  saveLabel: "" },
@@ -1677,9 +1712,9 @@ function billingAmountsFor(tier, months) {
   const plan = PLAN_TIERS.find((p) => p.tier === tier);
   const term = BILLING_TERMS.find((t) => t.months === months);
   if (!plan || !term) return null;
-  const usd = +(plan.usd * term.multiplier).toFixed(2);
-  const kwd = Math.round(usd * USD_TO_KWD);
-  return { usd, kwd };
+  const kwd = plan.kwd * term.multiplier;
+  const usdApprox = (kwd * KWD_TO_USD).toFixed(2);
+  return { kwd, usdApprox };
 }
 
 function showBillingPanel() {
@@ -1720,8 +1755,8 @@ function renderBillingTiers() {
     card.innerHTML = `
       <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
       <div class="billing-tier-limit">up to ${plan.screens} screens</div>
-      <div class="billing-tier-usd">$${amounts.usd.toFixed(2)}${billingCurrentTerm === 1 ? " / month" : ""}</div>
-      <div class="billing-tier-kwd">≈ ${amounts.kwd} KWD</div>
+      <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " / month" : ""}</div>
+      <div class="billing-tier-usd">≈ $${amounts.usdApprox}</div>
       ${saveMarkup}
       <button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
         Pay ${amounts.kwd} KWD${termInfo.saveLabel ? " · " + escHtml(termInfo.saveLabel) : ""}

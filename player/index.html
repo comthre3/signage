@@ -3,32 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Khanshoof Player</title>
+    <title data-i18n="meta.title">Khanshoof Player</title>
     <link rel="icon" type="image/png" href="assets/faces/v1_smile.png" />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;700&family=IBM+Plex+Sans+Arabic:wght@400;500;700&family=IBM+Plex+Serif:wght@500;700&family=IBM+Plex+Mono:wght@400&display=swap" />
     <script src="config.js"></script>
     <script src="vendor/qrcode.js"></script>
   </head>
   <body>
     <div id="player">
-      <div id="status">Connecting...</div>
+      <div id="status" data-i18n="status.connecting">Connecting...</div>
       <div id="content" class="single-content"></div>
       <div id="zones" class="zones-layout hidden"></div>
 
       <section id="pairing" class="pairing hidden" aria-live="polite">
         <img class="pairing-face" src="assets/faces/v1_smile.png" alt="" width="160" height="160" />
         <h1 class="pairing-brand">Khanshoof</h1>
-        <p class="pairing-intro">Pair this display to your account</p>
-        <div class="pairing-code" id="pairing-code" aria-label="Pairing code">—</div>
-        <div class="pairing-qr" id="pairing-qr" aria-label="QR code for pairing URL"></div>
+        <p class="pairing-intro" data-i18n="pairing.intro">Pair this display to your account</p>
+        <div class="pairing-code" id="pairing-code" data-i18n-aria-label="pairing.code_aria" aria-label="Pairing code">—</div>
+        <div class="pairing-qr" id="pairing-qr" data-i18n-aria-label="pairing.qr_aria" aria-label="QR code for pairing URL"></div>
         <ol class="pairing-steps">
-          <li>On your phone, open <strong id="pairing-url">app.khanshoof.com/pair</strong></li>
-          <li>Enter the code above, or scan the QR to jump there</li>
-          <li>Pick which screen this is — the display updates automatically</li>
+          <li><span data-i18n="pairing.step1_a">On your phone, open</span> <strong id="pairing-url">app.khanshoof.com/pair</strong></li>
+          <li data-i18n="pairing.step2">Enter the code above, or scan the QR to jump there</li>
+          <li data-i18n="pairing.step3">Pick which screen this is — the display updates automatically</li>
         </ol>
-        <p class="pairing-meta" id="pairing-meta">Code refreshes every 10 minutes</p>
+        <p class="pairing-meta" id="pairing-meta" data-i18n="pairing.meta">Code refreshes every 10 minutes</p>
       </section>
     </div>
+    <script src="i18n.js"></script>
     <script src="player.js"></script>
   </body>
 </html>

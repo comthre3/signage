@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Khanshoof</title>
+    <title data-i18n="meta.title">Khanshoof</title>
     <link rel="icon" type="image/png" href="assets/faces/v1_smile.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -16,23 +16,26 @@
     <header>
       <div class="header-top">
         <h1><img class="brand-face" src="assets/faces/v1_kawaii.png" alt="" width="32" height="32" />Khanshoof</h1>
-        <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+        <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" data-i18n-aria-label="nav.toggle_aria">
           <span></span><span></span><span></span>
         </button>
       </div>
       <div class="header-row" id="header-row">
         <nav id="main-nav">
-          <button data-section="sites">Sites</button>
-          <button data-section="screens">Screens</button>
-          <button data-section="media">Media</button>
-          <button data-section="playlists">Playlists</button>
-          <button data-section="users">Users</button>
-          <button data-section="billing">Billing</button>
+          <button data-section="sites" data-i18n="nav.sites">Sites</button>
+          <button data-section="screens" data-i18n="nav.screens">Screens</button>
+          <button data-section="media" data-i18n="nav.media">Media</button>
+          <button data-section="playlists" data-i18n="nav.playlists">Playlists</button>
+          <button data-section="users" data-i18n="nav.users">Users</button>
+          <button data-section="billing" data-i18n="nav.billing">Billing</button>
         </nav>
         <div class="auth-status">
-          <button id="connection-toggle" class="secondary-btn">⚙ Connection</button>
+          <button id="lang-toggle" class="secondary-btn lang-toggle" aria-label="Switch language">
+            <span data-i18n="lang.toggle_label">عربي</span>
+          </button>
+          <button id="connection-toggle" class="secondary-btn"><span data-i18n="auth.connection">⚙ Connection</span></button>
           <span id="auth-user"></span>
-          <button id="logout-btn" class="secondary-btn hidden">Sign Out</button>
+          <button id="logout-btn" class="secondary-btn hidden" data-i18n="auth.signout">Sign Out</button>
         </div>
       </div>
     </header>
@@ -40,49 +43,49 @@
     <main>
       <section id="auth-panel" class="panel">
         <div class="auth-tabs" role="tablist">
-          <button type="button" class="auth-tab active" id="auth-tab-login"  role="tab" aria-selected="true">Sign In</button>
-          <button type="button" class="auth-tab"        id="auth-tab-signup" role="tab" aria-selected="false">Create Account</button>
+          <button type="button" class="auth-tab active" id="auth-tab-login"  role="tab" aria-selected="true" data-i18n="auth.signin_tab">Sign In</button>
+          <button type="button" class="auth-tab"        id="auth-tab-signup" role="tab" aria-selected="false" data-i18n="auth.signup_tab">Create Account</button>
         </div>
 
         <form id="login-form" class="auth-form">
-          <input type="text"     id="login-username" placeholder="Email or username" required autocomplete="username" />
-          <input type="password" id="login-password" placeholder="Password"           required autocomplete="current-password" />
-          <button type="submit">Sign In</button>
-          <div class="helper-text">
+          <input type="text"     id="login-username" placeholder="Email or username" data-i18n-placeholder="auth.email_or_username" required autocomplete="username" />
+          <input type="password" id="login-password" placeholder="Password"           data-i18n-placeholder="auth.password" required autocomplete="current-password" />
+          <button type="submit" data-i18n="auth.signin_submit">Sign In</button>
+          <div class="helper-text" data-i18n="auth.helper_signup_cta">
             New here? Click <strong>Create Account</strong> to start a 5-day free trial — no card required.
           </div>
         </form>
 
         <form id="signup-request-form" class="auth-form hidden">
-          <input type="text"  id="signup-business" placeholder="Business name" required maxlength="100" autocomplete="organization" />
-          <input type="email" id="signup-email"    placeholder="Work email"    required autocomplete="email" />
-          <button type="submit">Send Code</button>
-          <div class="helper-text">
+          <input type="text"  id="signup-business" placeholder="Business name" data-i18n-placeholder="auth.business_name" required maxlength="100" autocomplete="organization" />
+          <input type="email" id="signup-email"    placeholder="Work email"    data-i18n-placeholder="auth.work_email" required autocomplete="email" />
+          <button type="submit" data-i18n="auth.send_code">Send Code</button>
+          <div class="helper-text" data-i18n="auth.helper_verify_cta">
             We'll email you a 6-digit code to verify your address before you set a password.
           </div>
         </form>
 
         <form id="signup-verify-form" class="auth-form hidden">
-          <div class="helper-text" id="signup-verify-intro">
+          <div class="helper-text" id="signup-verify-intro" data-i18n="auth.verify_intro">
             Enter the 6-digit code sent to <strong id="signup-verify-email">—</strong>.
           </div>
-          <input type="text" id="signup-otp" placeholder="123456" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" />
-          <button type="submit">Verify</button>
+          <input type="text" id="signup-otp" placeholder="123456" data-i18n-placeholder="auth.otp_placeholder" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" />
+          <button type="submit" data-i18n="auth.verify_code">Verify</button>
           <div class="helper-text">
-            <a href="#" id="signup-resend">Resend code</a> ·
-            <a href="#" id="signup-change-email">Use a different email</a>
+            <a href="#" id="signup-resend" data-i18n="auth.resend_code">Resend code</a> ·
+            <a href="#" id="signup-change-email" data-i18n="auth.change_email">Use a different email</a>
           </div>
           <div class="helper-text hidden" id="signup-dev-otp"></div>
         </form>
 
         <form id="signup-password-form" class="auth-form hidden">
-          <div class="helper-text">
+          <div class="helper-text" data-i18n="auth.email_verified">
             Email verified. Set a password to finish creating your account.
           </div>
-          <input type="password" id="signup-new-password"     placeholder="Password (min 8, letters + numbers)" required autocomplete="new-password" minlength="8" />
-          <input type="password" id="signup-confirm-password" placeholder="Confirm password"                    required autocomplete="new-password" minlength="8" />
-          <button type="submit">Create Account</button>
-          <div class="helper-text">
+          <input type="password" id="signup-new-password"     placeholder="Password (min 8, letters + numbers)" data-i18n-placeholder="auth.new_password" required autocomplete="new-password" minlength="8" />
+          <input type="password" id="signup-confirm-password" placeholder="Confirm password"                    data-i18n-placeholder="auth.confirm_password" required autocomplete="new-password" minlength="8" />
+          <button type="submit" data-i18n="auth.create_account">Create Account</button>
+          <div class="helper-text" data-i18n="auth.starter_trial_note">
             You'll get the <strong>Starter</strong> plan (up to 3 screens) free for 5 days. Cancel anytime.
           </div>
         </form>
@@ -90,18 +93,18 @@
 
       <section id="pair-view" class="panel pair-view hidden" aria-live="polite">
         <div id="pair-loading" class="pair-loading hidden">
-          <p>Loading…</p>
+          <p data-i18n="pair.loading">Loading…</p>
         </div>
 
         <form id="pair-form" class="pair-form hidden" novalidate>
           <header class="pair-header">
             <img class="pair-face" src="assets/faces/v1_smile.png" alt="" width="64" height="64" />
             <h1 class="pair-brand">Khanshoof</h1>
-            <p class="pair-title">Pair a display</p>
+            <p class="pair-title" data-i18n="pair.title">Pair a display</p>
           </header>
 
           <label class="pair-field">
-            <span class="pair-label">Pairing code</span>
+            <span class="pair-label" data-i18n="pair.code_label">Pairing code</span>
             <input
               type="text"
               id="pair-code-input"
@@ -113,77 +116,79 @@
               maxlength="5"
               pattern="[A-Z2-9]{5}"
               placeholder="ABCDE"
+              data-i18n-placeholder="pair.code_placeholder"
               required
             />
           </label>
 
           <fieldset class="pair-field pair-choice">
-            <legend class="pair-label">Which screen is this?</legend>
+            <legend class="pair-label" data-i18n="pair.which_screen">Which screen is this?</legend>
 
             <label class="pair-radio">
               <input type="radio" name="pair-target" id="pair-target-existing" value="existing" checked />
-              <span>Existing screen</span>
+              <span data-i18n="pair.existing_screen">Existing screen</span>
             </label>
             <select id="pair-existing-select" class="pair-select">
-              <option value="">— Pick a screen —</option>
+              <option value="" data-i18n="pair.pick_screen">— Pick a screen —</option>
             </select>
 
             <label class="pair-radio">
               <input type="radio" name="pair-target" id="pair-target-new" value="new" />
-              <span>Create new screen</span>
+              <span data-i18n="pair.create_screen">Create new screen</span>
             </label>
             <input
               type="text"
               id="pair-new-name"
               class="pair-new-name hidden"
               placeholder="Screen name (e.g. Lobby TV)"
+              data-i18n-placeholder="pair.new_screen_name"
               maxlength="80"
               autocomplete="off"
             />
           </fieldset>
 
-          <button type="submit" id="pair-submit" class="pair-submit" disabled>Pair display</button>
+          <button type="submit" id="pair-submit" class="pair-submit" disabled data-i18n="pair.submit">Pair display</button>
 
           <p id="pair-error" class="pair-error hidden" role="alert"></p>
         </form>
 
         <div id="pair-success" class="pair-success hidden">
           <img class="pair-success-face" src="assets/faces/v1_heart.png" alt="" width="96" height="96" />
-          <h1 class="pair-success-title">Display paired</h1>
+          <h1 class="pair-success-title" data-i18n="pair.success_title">Display paired</h1>
           <p class="pair-success-name" id="pair-success-name">—</p>
           <div class="pair-success-actions">
-            <button type="button" id="pair-another-btn" class="pair-primary">Pair another display</button>
-            <button type="button" id="pair-dashboard-btn" class="pair-secondary">View dashboard</button>
+            <button type="button" id="pair-another-btn" class="pair-primary" data-i18n="pair.another_btn">Pair another display</button>
+            <button type="button" id="pair-dashboard-btn" class="pair-secondary" data-i18n="pair.dashboard_btn">View dashboard</button>
           </div>
         </div>
       </section>
 
       <section id="billing-view" class="panel billing-view hidden">
         <header class="billing-header">
-          <h1>Billing</h1>
-          <p class="billing-sub">Upgrade your plan — paid via KNET.</p>
+          <h1 data-i18n="billing.title">Billing</h1>
+          <p class="billing-sub" data-i18n="billing.subtitle">Upgrade your plan — paid via KNET.</p>
         </header>
 
         <section class="billing-current" id="billing-current">
-          <h2>Current plan</h2>
-          <div class="billing-current-body" id="billing-current-body">Loading…</div>
+          <h2 data-i18n="billing.current_plan">Current plan</h2>
+          <div class="billing-current-body" id="billing-current-body" data-i18n="billing.loading">Loading…</div>
         </section>
 
         <section class="billing-upgrade">
-          <h2>Upgrade</h2>
+          <h2 data-i18n="billing.upgrade">Upgrade</h2>
           <div class="billing-term-tabs" role="tablist">
-            <button class="billing-term active" data-term="1"  role="tab" aria-selected="true">Monthly</button>
-            <button class="billing-term"        data-term="6"  role="tab" aria-selected="false">6 months</button>
-            <button class="billing-term"        data-term="12" role="tab" aria-selected="false">12 months</button>
+            <button class="billing-term active" data-term="1"  role="tab" aria-selected="true" data-i18n="billing.term_monthly">Monthly</button>
+            <button class="billing-term"        data-term="6"  role="tab" aria-selected="false" data-i18n="billing.term_6mo">6 months</button>
+            <button class="billing-term"        data-term="12" role="tab" aria-selected="false" data-i18n="billing.term_12mo">12 months</button>
           </div>
           <div class="billing-tier-grid" id="billing-tier-grid"></div>
           <p id="billing-banner" class="billing-banner hidden" role="alert"></p>
         </section>
 
         <section class="billing-history">
-          <h2>Past payments</h2>
+          <h2 data-i18n="billing.past_payments">Past payments</h2>
           <div id="billing-history-body" class="billing-history-body">
-            <p class="billing-empty">No payments yet.</p>
+            <p class="billing-empty" data-i18n="billing.no_payments">No payments yet.</p>
           </div>
         </section>
       </section>
@@ -204,166 +209,166 @@
           <div id="plan-card-trial" class="helper-text hidden"></div>
         </section>
         <section id="connection-panel" class="panel hidden">
-          <h2>Connection Settings</h2>
+          <h2 data-i18n="auth.connection_settings">Connection Settings</h2>
           <form id="connection-form">
             <select id="connection-mode">
-              <option value="local">Local / Tailscale</option>
-              <option value="external">Cloudflare</option>
+              <option value="local" data-i18n="auth.connection_local">Local / Tailscale</option>
+              <option value="external" data-i18n="auth.connection_external">Cloudflare</option>
             </select>
-            <input type="text" id="connection-api"    placeholder="API Base URL" />
-            <input type="text" id="connection-player" placeholder="Player Base URL" />
-            <button type="submit">Save</button>
-            <button type="button" id="connection-reset" class="secondary-btn">Reset</button>
+            <input type="text" id="connection-api"    placeholder="API Base URL" data-i18n-placeholder="auth.connection_api" />
+            <input type="text" id="connection-player" placeholder="Player Base URL" data-i18n-placeholder="auth.connection_player" />
+            <button type="submit" data-i18n="auth.connection_save">Save</button>
+            <button type="button" id="connection-reset" class="secondary-btn" data-i18n="auth.connection_reset">Reset</button>
           </form>
-          <div class="helper-text">Changes take effect after page reload.</div>
+          <div class="helper-text" data-i18n="auth.connection_reload_note">Changes take effect after page reload.</div>
         </section>
 
         <section id="sites" class="panel">
-          <h2>Sites</h2>
+          <h2 data-i18n="sites.heading">Sites</h2>
           <form id="site-form">
-            <input type="text" id="site-name" placeholder="Site name" required />
-            <input type="text" id="site-slug" placeholder="Slug (optional)" />
-            <button type="submit">Add Site</button>
+            <input type="text" id="site-name" placeholder="Site name" data-i18n-placeholder="sites.name_placeholder" required />
+            <input type="text" id="site-slug" placeholder="Slug (optional)" data-i18n-placeholder="sites.slug_placeholder" />
+            <button type="submit" data-i18n="sites.add_btn">Add Site</button>
           </form>
           <div id="sites-list" class="list"></div>
         </section>
 
         <section id="screens" class="panel hidden">
-          <h2>Screens</h2>
+          <h2 data-i18n="screens.heading">Screens</h2>
           <form id="screen-form">
-            <input type="text" id="screen-name"     placeholder="Screen name" required />
-            <input type="text" id="screen-location" placeholder="Location" />
+            <input type="text" id="screen-name"     placeholder="Screen name" data-i18n-placeholder="screens.name_placeholder" required />
+            <input type="text" id="screen-location" placeholder="Location" data-i18n-placeholder="screens.location_placeholder" />
             <select id="screen-resolution">
-              <option value="">Resolution</option>
+              <option value="" data-i18n="screens.resolution_label">Resolution</option>
               <option value="1920x1080">FHD (1920×1080)</option>
               <option value="2560x1440">2K (2560×1440)</option>
               <option value="3840x2160">4K UHD (3840×2160)</option>
               <option value="4096x2160">4K DCI (4096×2160)</option>
-              <option value="custom">Custom…</option>
+              <option value="custom" data-i18n="screens.resolution_custom">Custom…</option>
             </select>
-            <input type="text" id="screen-resolution-custom" placeholder="e.g. 1280x720" class="hidden" />
+            <input type="text" id="screen-resolution-custom" placeholder="e.g. 1280x720" data-i18n-placeholder="screens.custom_resolution_placeholder" class="hidden" />
             <select id="screen-orientation">
-              <option value="">Orientation</option>
-              <option value="landscape">Landscape</option>
-              <option value="portrait">Portrait</option>
+              <option value="" data-i18n="screens.orientation_label">Orientation</option>
+              <option value="landscape" data-i18n="screens.orientation_landscape">Landscape</option>
+              <option value="portrait" data-i18n="screens.orientation_portrait">Portrait</option>
             </select>
             <select id="screen-site">
-              <option value="">Site</option>
+              <option value="" data-i18n="screens.site_label">Site</option>
             </select>
-            <button type="submit">Add Screen</button>
+            <button type="submit" data-i18n="screens.add_btn">Add Screen</button>
           </form>
           <div id="screens-list" class="list"></div>
 
           <div id="screen-access-panel" class="panel hidden">
-            <h3>Screen Access</h3>
+            <h3 data-i18n="screens.access_heading">Screen Access</h3>
             <div class="screen-access-fields">
               <label>
-                Owner
+                <span data-i18n="screens.access_owner">Owner</span>
                 <select id="screen-owner-select">
-                  <option value="">Unassigned</option>
+                  <option value="" data-i18n="screens.access_unassigned">Unassigned</option>
                 </select>
               </label>
               <label>
-                Groups
+                <span data-i18n="screens.access_groups">Groups</span>
                 <div id="screen-groups-list"></div>
               </label>
             </div>
             <div class="zones-footer">
-              <button type="button" class="save-btn" id="screen-access-save">Save Access</button>
-              <button type="button" class="secondary-btn" id="screen-access-cancel">Close</button>
+              <button type="button" class="save-btn" id="screen-access-save" data-i18n="screens.access_save">Save Access</button>
+              <button type="button" class="secondary-btn" id="screen-access-cancel" data-i18n="screens.access_cancel">Close</button>
             </div>
           </div>
 
           <div id="zones-editor" class="panel zones-panel hidden">
             <div class="zones-header">
-              <h3>Screen Zones</h3>
+              <h3 data-i18n="screens.zones_heading">Screen Zones</h3>
               <div class="zones-actions">
-                <button type="button" class="secondary-btn" id="zone-add">+ Zone</button>
+                <button type="button" class="secondary-btn" id="zone-add" data-i18n="screens.zone_add">+ Zone</button>
                 <label class="checkbox">
                   <input type="checkbox" id="zone-snap" checked />
-                  Snap
+                  <span data-i18n="screens.zone_snap">Snap</span>
                 </label>
                 <select id="zone-grid">
-                  <option value="0.05">Grid 5%</option>
-                  <option value="0.1">Grid 10%</option>
-                  <option value="0.02">Grid 2%</option>
+                  <option value="0.05" data-i18n="screens.grid_5">Grid 5%</option>
+                  <option value="0.1" data-i18n="screens.grid_10">Grid 10%</option>
+                  <option value="0.02" data-i18n="screens.grid_2">Grid 2%</option>
                 </select>
-                <button type="button" class="secondary-btn" data-zone-preset="single">Full</button>
-                <button type="button" class="secondary-btn" data-zone-preset="columns-2">2 Col</button>
-                <button type="button" class="secondary-btn" data-zone-preset="columns-3">3 Col</button>
-                <button type="button" class="secondary-btn" data-zone-preset="rows-2">2 Row</button>
-                <button type="button" class="secondary-btn" data-zone-preset="hero-side">Hero+Side</button>
+                <button type="button" class="secondary-btn" data-zone-preset="single" data-i18n="screens.preset_full">Full</button>
+                <button type="button" class="secondary-btn" data-zone-preset="columns-2" data-i18n="screens.preset_2col">2 Col</button>
+                <button type="button" class="secondary-btn" data-zone-preset="columns-3" data-i18n="screens.preset_3col">3 Col</button>
+                <button type="button" class="secondary-btn" data-zone-preset="rows-2" data-i18n="screens.preset_2row">2 Row</button>
+                <button type="button" class="secondary-btn" data-zone-preset="hero-side" data-i18n="screens.preset_hero_side">Hero+Side</button>
               </div>
             </div>
             <div class="zones-templates">
-              <input type="text" id="zone-template-name" placeholder="Template name" />
-              <button type="button" class="secondary-btn" id="zone-template-save">Save Template</button>
-              <select id="zone-template-select"><option value="">Apply template…</option></select>
-              <button type="button" class="secondary-btn" id="zone-template-apply">Apply</button>
+              <input type="text" id="zone-template-name" placeholder="Template name" data-i18n-placeholder="screens.template_name" />
+              <button type="button" class="secondary-btn" id="zone-template-save" data-i18n="screens.template_save">Save Template</button>
+              <select id="zone-template-select"><option value="" data-i18n="screens.template_apply_label">Apply template…</option></select>
+              <button type="button" class="secondary-btn" id="zone-template-apply" data-i18n="screens.template_apply_btn">Apply</button>
             </div>
             <div id="zones-canvas"></div>
             <div id="zones-list"></div>
             <div class="zones-footer">
-              <button type="button" class="save-btn" id="zones-save">Save Zones</button>
-              <button type="button" class="secondary-btn" id="zones-cancel">Close</button>
+              <button type="button" class="save-btn" id="zones-save" data-i18n="screens.zones_save">Save Zones</button>
+              <button type="button" class="secondary-btn" id="zones-cancel" data-i18n="screens.zones_cancel">Close</button>
             </div>
           </div>
 
           <div id="preview-panel" class="panel preview-panel hidden">
-            <h3>Live Preview</h3>
+            <h3 data-i18n="screens.preview_heading">Live Preview</h3>
             <div id="preview-meta"></div>
-            <iframe id="preview-frame" title="Screen preview"></iframe>
+            <iframe id="preview-frame" title="Screen preview" data-i18n-title="screens.preview_iframe_title"></iframe>
           </div>
         </section>
 
         <section id="media" class="panel hidden">
-          <h2>Media Library</h2>
+          <h2 data-i18n="media.heading">Media Library</h2>
           <form id="media-url-form" class="media-url-form">
-            <input type="text" id="media-url-name" placeholder="Website name" required />
+            <input type="text" id="media-url-name" placeholder="Website name" data-i18n-placeholder="media.url_name_placeholder" required />
             <input type="url"  id="media-url"      placeholder="https://example.com" required />
-            <button type="submit">Add Website</button>
+            <button type="submit" data-i18n="media.add_website">Add Website</button>
           </form>
           <form id="media-form" class="dropzone">
             <input type="file" id="media-file" />
             <div class="dropzone-content">
-              <div class="dropzone-title">Drag &amp; drop files here</div>
-              <div class="dropzone-subtitle">or click to select — images &amp; video</div>
+              <div class="dropzone-title" data-i18n="media.dropzone_title">Drag &amp; drop files here</div>
+              <div class="dropzone-subtitle" data-i18n="media.dropzone_subtitle">or click to select — images &amp; video</div>
             </div>
-            <button type="submit" class="secondary-btn">Upload</button>
+            <button type="submit" class="secondary-btn" data-i18n="media.upload_btn">Upload</button>
           </form>
           <div id="media-list" class="list"></div>
         </section>
 
         <section id="playlists" class="panel hidden">
-          <h2>Playlists</h2>
+          <h2 data-i18n="playlists.heading">Playlists</h2>
           <form id="playlist-form">
-            <input type="text" id="playlist-name" placeholder="Playlist name" required />
-            <button type="submit">Create</button>
+            <input type="text" id="playlist-name" placeholder="Playlist name" data-i18n-placeholder="playlists.name_placeholder" required />
+            <button type="submit" data-i18n="playlists.create_btn">Create</button>
           </form>
           <div class="playlist-controls">
-            <select id="playlist-select"><option value="">Select playlist</option></select>
-            <select id="playlist-media"><option value="">Select media</option></select>
-            <input type="number" id="playlist-duration" placeholder="Duration (s)" min="1" max="3600" value="10" />
-            <button id="playlist-add-item" type="button" class="save-btn">Add Item</button>
+            <select id="playlist-select"><option value="" data-i18n="playlists.select_playlist">Select playlist</option></select>
+            <select id="playlist-media"><option value="" data-i18n="playlists.select_media">Select media</option></select>
+            <input type="number" id="playlist-duration" placeholder="Duration (s)" data-i18n-placeholder="playlists.duration_placeholder" min="1" max="3600" value="10" />
+            <button id="playlist-add-item" type="button" class="save-btn" data-i18n="playlists.add_item">Add Item</button>
           </div>
           <div id="playlists-list" class="list"></div>
         </section>
 
         <section id="users" class="panel hidden">
-          <h2>Users &amp; Groups</h2>
+          <h2 data-i18n="users.heading">Users &amp; Groups</h2>
           <form id="user-form">
-            <input type="text"     id="user-username" placeholder="Username" required />
-            <input type="password" id="user-password" placeholder="Password" required />
+            <input type="text"     id="user-username" placeholder="Username" data-i18n-placeholder="users.username_placeholder" required />
+            <input type="password" id="user-password" placeholder="Password" data-i18n-placeholder="users.password_placeholder" required />
             <select id="user-role">
-              <option value="viewer">Viewer</option>
-              <option value="editor">Editor</option>
-              <option value="admin">Admin</option>
+              <option value="viewer" data-i18n="users.role_viewer">Viewer</option>
+              <option value="editor" data-i18n="users.role_editor">Editor</option>
+              <option value="admin" data-i18n="users.role_admin">Admin</option>
             </select>
-            <button type="submit">Create User</button>
+            <button type="submit" data-i18n="users.create_user">Create User</button>
           </form>
           <form id="group-form">
-            <input type="text" id="group-name" placeholder="Group name" required />
-            <button type="submit">Create Group</button>
+            <input type="text" id="group-name" placeholder="Group name" data-i18n-placeholder="users.group_name_placeholder" required />
+            <button type="submit" data-i18n="users.create_group">Create Group</button>
           </form>
           <div id="users-list"  class="list"></div>
           <div id="groups-list" class="list" style="margin-top:16px"></div>
@@ -371,6 +376,7 @@
       </div>
     </main>
 
+    <script src="i18n.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
