@@ -83,7 +83,7 @@ body {
 #status {
   position: absolute;
   top: 16px;
-  left: 16px;
+  inset-inline-start: 16px;
   background: rgba(0, 0, 0, 0.6);
   padding: 6px 10px;
   border-radius: 4px;
@@ -160,7 +160,7 @@ body {
   font-size: clamp(14px, 1.8vh, 22px);
   color: #5D4A66;
   max-width: 560px;
-  padding-left: 24px;
+  padding-inline-start: 24px;
   line-height: 1.6;
   margin: 0;
 }
@@ -196,4 +196,20 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .pairing-face { animation: none; }
+}
+
+/* RTL direction-aware overrides */
+code, kbd, samp, pre,
+.mono, .monospace,
+.code,
+[dir="ltr"] {
+  direction: ltr;
+  text-align: start;
+}
+
+/* Pairing codes are alphanumeric — stay LTR even in Arabic mode */
+[dir="rtl"] .pairing-code,
+[dir="rtl"] #pairing-url,
+[dir="rtl"] #pairing-code {
+  direction: ltr;
 }

@@ -737,7 +737,7 @@ label {
 #toast-container {
   position: fixed;
   bottom: 24px;
-  right: 24px;
+  inset-inline-end: 24px;
   z-index: 9990;
   display: flex;
   flex-direction: column;
@@ -767,13 +767,13 @@ label {
   animation: toastOut 0.2s ease forwards;
 }
 
-.toast-success { border-left: 6px solid var(--mint); }
+.toast-success { border-inline-start: 6px solid var(--mint); }
 .toast-success::before { content: '✓ '; color: var(--plum); font-weight: 700; }
 
-.toast-error { border-left: 6px solid var(--red); }
+.toast-error { border-inline-start: 6px solid var(--red); }
 .toast-error::before { content: '✕ '; color: var(--red); font-weight: 700; }
 
-.toast-info { border-left: 6px solid var(--lavender); }
+.toast-info { border-inline-start: 6px solid var(--lavender); }
 .toast-info::before { content: 'ℹ '; color: var(--plum); font-weight: 700; }
 
 @keyframes toastIn {
@@ -1548,7 +1548,7 @@ label {
   height: 32px;
   image-rendering: pixelated;
   vertical-align: middle;
-  margin-right: 10px;
+  margin-inline-end: 10px;
   border-radius: 6px;
 }
 
@@ -1728,3 +1728,21 @@ label {
 }
 .billing-history-row.failed { opacity: 0.7; }
 .billing-empty { color: var(--cocoa); font-size: 14px; margin: 0; }
+
+/* RTL direction-aware overrides */
+[dir="rtl"] .nav-toggle {
+  transform: scaleX(-1);
+}
+
+/* Force LTR on URLs, IDs, code, mono inputs (they read in Latin even in Arabic UI) */
+input[type="url"],
+input[type="email"],
+input[name*="token"],
+input[name*="id"],
+code, kbd, samp, pre,
+.mono, .monospace,
+.code,
+[dir="ltr"] {
+  direction: ltr;
+  text-align: start;
+}
