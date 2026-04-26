@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -12,10 +13,13 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
@@ -84,7 +88,32 @@ SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "86400"))
 PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "300"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 
-app = FastAPI(title="Menu Signage Backend")
+DOCS_ENABLED = os.getenv("DOCS_ENABLED", "0").lower() in ("1", "true", "yes")
+
+app = FastAPI(
+    title="Menu Signage Backend",
+    version="",
+    docs_url="/docs" if DOCS_ENABLED else None,
+    redoc_url="/redoc" if DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if DOCS_ENABLED else None,
+)
+
+_RATE_LIMITS_ENABLED = os.getenv("RATE_LIMITS_ENABLED", "1").lower() in ("1", "true", "yes")
+limiter = Limiter(key_func=get_remote_address, enabled=_RATE_LIMITS_ENABLED)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: https:; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self' https://api.khanshoof.com"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
 def parse_allowed_origins(value: str) -> list[str]:
@@ -97,8 +126,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_allowed_origins(ALLOWED_ORIGINS),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -131,8 +160,8 @@ def generate_unique_token() -> str:
 
 
 PAIR_CODE_CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-PAIR_CODE_LENGTH = 5
-PAIR_CODE_TTL_SECONDS = int(os.getenv("PAIR_CODE_TTL_SECONDS", "600"))
+PAIR_CODE_LENGTH = 6
+PAIR_CODE_TTL_SECONDS = int(os.getenv("PAIR_CODE_TTL_SECONDS", "300"))
 
 
 def generate_pair_code_v2() -> str:
@@ -1431,7 +1460,8 @@ class PairRequestStart(BaseModel):
 
 
 @app.post("/screens/request_code")
-def request_pair_code(payload: PairRequestStart | None = None) -> dict:
+@limiter.limit("10/minute")
+def request_pair_code(request: Request, payload: PairRequestStart | None = None) -> dict:
     now = datetime.now(timezone.utc)
     code = generate_unique_pair_code_v2()
     device_id = secrets.token_hex(16)
@@ -1452,7 +1482,8 @@ def request_pair_code(payload: PairRequestStart | None = None) -> dict:
 
 
 @app.get("/screens/poll/{code}")
-def poll_pair_code(code: str) -> dict:
+@limiter.limit("30/minute")
+def poll_pair_code(request: Request, code: str) -> dict:
     row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (code,))
     if not row:
         raise HTTPException(status_code=404, detail="Unknown pairing code")
@@ -1853,6 +1884,24 @@ def _billing_callback_secret() -> str:
     return secret
 
 
+def _verify_billing_callback(raw_body: bytes, headers, query_secret: str) -> bool:
+    """Two-path auth: HMAC body signature (preferred) or query-string shared secret.
+
+    Fails closed if neither verifies. Constant-time compares throughout.
+    """
+    webhook_secret = os.environ.get("BILLING_WEBHOOK_SECRET", "").strip()
+    sig_header = (headers.get("x-niupay-signature") or headers.get("x-webhook-signature") or "").strip()
+    if webhook_secret and sig_header:
+        expected = hmac.new(webhook_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(expected, sig_header):
+            return True
+    callback_secret = os.environ.get("NIUPAY_CALLBACK_SECRET", "")
+    if callback_secret and query_secret:
+        if secrets.compare_digest(query_secret, callback_secret):
+            return True
+    return False
+
+
 @app.post("/billing/checkout")
 def billing_checkout(
     payload: BillingCheckoutRequest,
@@ -1943,9 +1992,15 @@ class BillingCallbackBody(BaseModel):
 
 
 @app.post("/billing/callback/{trackid}")
-def billing_callback(trackid: str, body: BillingCallbackBody, s: str = ""):
-    if not secrets.compare_digest(s, _billing_callback_secret()):
+async def billing_callback(request: Request, trackid: str, s: str = ""):
+    raw_body = await request.body()
+    if not _verify_billing_callback(raw_body, request.headers, s):
         raise HTTPException(status_code=404)
+    try:
+        body_dict = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = BillingCallbackBody(**body_dict)
 
     if body.trackid and body.trackid != trackid:
         raise HTTPException(status_code=400, detail="trackid mismatch")

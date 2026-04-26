@@ -27,7 +27,7 @@ def test_request_code_returns_code_and_device_id(client):
     data = r.json()
     assert VALID_CODE.match(data["code"]), data
     assert len(data["device_id"]) == 32
-    assert data["expires_in_seconds"] == 600
+    assert data["expires_in_seconds"] == 300
     assert "expires_at" in data
 
 
