@@ -95,3 +95,41 @@ def test_billing_callback_rejects_wrong_hmac(monkeypatch, client: TestClient):
         headers={"Content-Type": "application/json", "X-Niupay-Signature": "deadbeef" * 8},
     )
     assert r.status_code == 404
+
+
+# ── dev_otp leak guard ────────────────────────────────────────────────
+
+def test_dev_otp_blocked_when_request_has_forwarding_header(client: TestClient, unique_business):
+    """Even with DEV_MODE=1 and a localhost-looking client, presence of any
+    forwarding header (Cloudflare, nginx) means request is NOT loopback —
+    dev_otp must NOT leak."""
+    r = client.post(
+        "/auth/signup/request",
+        json={
+            "business_name": unique_business["business_name"],
+            "email": unique_business["email"],
+        },
+        headers={"X-Forwarded-For": "1.2.3.4"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "otp_sent"
+    assert "dev_otp" not in body
+
+
+def test_dev_otp_blocked_with_cf_connecting_ip(client: TestClient, unique_business):
+    r = client.post(
+        "/auth/signup/request",
+        json={
+            "business_name": unique_business["business_name"],
+            "email": unique_business["email"],
+        },
+        headers={"CF-Connecting-IP": "1.2.3.4"},
+    )
+    assert r.status_code == 200, r.text
+    assert "dev_otp" not in r.json()
+
+
+# ── login rate limit ─────────────────────────────────────────────────
+# Note: requires RATE_LIMITS_ENABLED=1 to actually trigger; covered live
+# rather than here so the rest of the suite can run with limits off.

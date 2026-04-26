@@ -557,8 +557,22 @@ def list_plans() -> dict:
     return {"plans": [{"key": key, **values} for key, values in PLANS.items()]}
 
 
+def _is_local_request(request: Request) -> bool:
+    """True only when the request did NOT come through a proxy/CDN.
+
+    Production sits behind Cloudflare + nginx, both of which add forwarding
+    headers. Their absence + a loopback client host means we're talking to
+    localhost. Used to gate dev-only debug fields.
+    """
+    if request.headers.get("x-forwarded-for") or request.headers.get("cf-connecting-ip"):
+        return False
+    host = (request.client.host if request.client else "") or ""
+    return host in ("127.0.0.1", "::1", "localhost", "testclient")
+
+
 @app.post("/auth/signup/request")
-def signup_request(payload: SignupStartRequest) -> dict:
+@limiter.limit("10/5minutes")
+def signup_request(request: Request, payload: SignupStartRequest) -> dict:
     email = payload.email.strip().lower()
     business_name = payload.business_name.strip()
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
@@ -607,7 +621,7 @@ def signup_request(payload: SignupStartRequest) -> dict:
 
     send_signup_otp_email(email, business_name, otp)
     response: dict = {"status": "otp_sent", "expires_in_seconds": OTP_TTL_SECONDS}
-    if DEV_MODE:
+    if DEV_MODE and _is_local_request(request):
         response["dev_otp"] = otp
     return response
 
@@ -757,7 +771,8 @@ def get_organization(user: dict = Depends(get_current_user)) -> dict:
 
 
 @app.post("/auth/login")
-def login(payload: LoginRequest) -> dict:
+@limiter.limit("10/5minutes")
+def login(request: Request, payload: LoginRequest) -> dict:
     user = query_one("SELECT * FROM users WHERE username = ?", (payload.username,))
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
