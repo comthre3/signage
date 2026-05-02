@@ -88,7 +88,7 @@ function showSection(id) {
   navButtons.forEach((btn) => {
     btn.classList.toggle("nav-active", btn.dataset.section === id);
   });
-  if (id === "walls" && typeof Walls !== "undefined") Walls.onShow();
+  if (id === "walls") Walls.onShow();
 }
 
 function buildPlayerUrl(base, params) {
@@ -1897,11 +1897,12 @@ const Walls = (() => {
 
   async function api(path, opts = {}) {
     const headers = { "Content-Type": "application/json" };
-    const token = localStorage.getItem("session_token");
+    const token = localStorage.getItem(AUTH_STORAGE_KEY);
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`${API_BASE}${path}`,
       { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
     if (!res.ok && res.status !== 204) {
+      if (res.status === 401) handleAuthFailure();
       let body = {};
       try { body = await res.json(); } catch (_) {}
       const code = body?.detail?.code || `http_${res.status}`;
@@ -1924,7 +1925,7 @@ const Walls = (() => {
     }
     root.innerHTML = state.walls.map(w => `
       <article class="walls-card" data-wall-id="${w.id}">
-        <h4>${escapeHtml(w.name)}</h4>
+        <h4>${escHtml(w.name)}</h4>
         <div class="walls-meta">
           ${w.mode === "mirrored" ? Khan.t("walls.mode_mirrored", "Mirrored")
                                    : Khan.t("walls.mode_spanned", "Spanned")}
@@ -1982,7 +1983,7 @@ const Walls = (() => {
           <label class="same-playlist-only">
             ${Khan.t("walls.playlist", "Playlist")}
             <select name="mirrored_playlist_id" required>
-              ${playlists.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}
+              ${playlists.map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join("")}
             </select>
           </label>
         </fieldset>
@@ -2031,7 +2032,7 @@ const Walls = (() => {
       toast(Khan.t("walls.deleted", "Wall deleted"));
       await loadList();
     } catch (err) {
-      toast(err.message || "delete failed", "error");
+      toast(err.message || Khan.t("walls.delete_failed", "Couldn't delete wall"), "error");
     }
   }
 
@@ -2070,8 +2071,3 @@ const Walls = (() => {
   };
 })();
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
