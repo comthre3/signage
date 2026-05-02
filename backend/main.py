@@ -1850,6 +1850,116 @@ def delete_wall(wall_id: int, user: dict = Depends(require_roles("admin", "edito
     return None
 
 
+class WallRedeemRequest(BaseModel):
+    code: str = Field(..., min_length=PAIR_CODE_LENGTH, max_length=PAIR_CODE_LENGTH)
+
+
+def _generate_unique_wall_pair_code() -> str:
+    while True:
+        code = generate_pair_code_v2()
+        if not query_one("SELECT id FROM wall_pairing_codes WHERE code = ?", (code,)):
+            return code
+
+
+@app.post("/walls/{wall_id}/cells/{row}/{col}/pair")
+def pair_wall_cell(wall_id: int, row: int, col: int,
+                   user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, row, col),
+    )
+    if not cell:
+        raise http_error(404, "wall.cell_not_found", "Cell not found")
+    now = datetime.now(timezone.utc)
+    code = _generate_unique_wall_pair_code()
+    expires_at = (now + timedelta(seconds=PAIR_CODE_TTL_SECONDS)).isoformat()
+    execute(
+        """INSERT INTO wall_pairing_codes (code, wall_id, row_index, col_index,
+               status, expires_at, created_at)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+        (code, wall_id, row, col, expires_at, now.isoformat()),
+    )
+    return {"code": code, "expires_at": expires_at,
+            "expires_in_seconds": PAIR_CODE_TTL_SECONDS}
+
+
+@app.post("/walls/cells/redeem")
+@limiter.limit("30/minute")
+def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
+    row = query_one("SELECT * FROM wall_pairing_codes WHERE code = ?", (payload.code,))
+    if not row:
+        raise http_error(404, "wall.pair_code_unknown", "Code not recognized")
+    now = datetime.now(timezone.utc)
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+    if row["status"] == "claimed":
+        raise http_error(409, "wall.pair_code_used", "This code was already used")
+    if now > expires_dt:
+        execute("UPDATE wall_pairing_codes SET status = 'expired' WHERE id = ?", (row["id"],))
+        raise http_error(410, "wall.pair_code_expired", "Code expired")
+
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (row["wall_id"],))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall is gone")
+
+    name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
+    pair_code = generate_unique_pair_code()
+    screen_token = generate_unique_token()
+    screen_id = execute(
+        """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (wall["organization_id"], name, pair_code, screen_token, now.isoformat()),
+    )
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (row["wall_id"], row["row_index"], row["col_index"]),
+    )
+    execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
+    execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
+    execute(
+        "UPDATE wall_pairing_codes SET status = 'claimed', claimed_at = ? WHERE id = ?",
+        (now.isoformat(), row["id"]),
+    )
+    return {
+        "status": "paired",
+        "screen_token": screen_token,
+        "wall_id": wall["id"],
+        "cell": {"row": row["row_index"], "col": row["col_index"],
+                 "rows": wall["rows"], "cols": wall["cols"]},
+        "mode": wall["mode"],
+    }
+
+
+@app.delete("/walls/{wall_id}/cells/{row}/{col}/pairing", status_code=204)
+def unpair_wall_cell(wall_id: int, row: int, col: int,
+                     user: dict = Depends(require_roles("admin", "editor"))) -> None:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, row, col),
+    )
+    if not cell:
+        raise http_error(404, "wall.cell_not_found", "Cell not found")
+    if cell["screen_id"]:
+        execute("UPDATE screens SET wall_cell_id = NULL WHERE id = ?", (cell["screen_id"],))
+    execute("UPDATE wall_cells SET screen_id = NULL WHERE id = ?", (cell["id"],))
+    try:
+        from walls import broadcast_bye  # type: ignore
+        broadcast_bye(wall_id, row, col, "cell_unpaired")
+    except Exception:
+        pass
+    return None
+
+
 @app.post("/screens/{screen_id}/preview-token")
 def create_preview_token(
     screen_id: int, user: dict = Depends(require_roles("admin", "editor"))
