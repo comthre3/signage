@@ -290,11 +290,72 @@ def init_db() -> None:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS walls (
+                id                   SERIAL PRIMARY KEY,
+                organization_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+                name                 TEXT NOT NULL,
+                mode                 TEXT NOT NULL CHECK (mode IN ('spanned','mirrored')),
+                rows                 INTEGER NOT NULL CHECK (rows BETWEEN 1 AND 8),
+                cols                 INTEGER NOT NULL CHECK (cols BETWEEN 1 AND 8),
+                canvas_width_px      INTEGER,
+                canvas_height_px     INTEGER,
+                bezel_enabled        BOOLEAN NOT NULL DEFAULT false,
+                spanned_playlist_id  INTEGER REFERENCES playlists(id) ON DELETE SET NULL,
+                mirrored_mode        TEXT CHECK (mirrored_mode IN ('same_playlist','synced_rotation')),
+                mirrored_playlist_id INTEGER REFERENCES playlists(id) ON DELETE SET NULL,
+                created_at           TEXT NOT NULL,
+                updated_at           TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_walls_org ON walls(organization_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS wall_cells (
+                id                 SERIAL PRIMARY KEY,
+                wall_id            INTEGER NOT NULL REFERENCES walls(id) ON DELETE CASCADE,
+                row_index          INTEGER NOT NULL,
+                col_index          INTEGER NOT NULL,
+                screen_id          INTEGER REFERENCES screens(id) ON DELETE SET NULL,
+                screen_size_inches NUMERIC(4,1),
+                bezel_top_mm       NUMERIC(5,2),
+                bezel_right_mm     NUMERIC(5,2),
+                bezel_bottom_mm    NUMERIC(5,2),
+                bezel_left_mm      NUMERIC(5,2),
+                playlist_id        INTEGER REFERENCES playlists(id) ON DELETE SET NULL,
+                created_at         TEXT NOT NULL,
+                UNIQUE (wall_id, row_index, col_index)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_wall_cells_wall ON wall_cells(wall_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_wall_cells_screen ON wall_cells(screen_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS wall_pairing_codes (
+                id           SERIAL PRIMARY KEY,
+                code         TEXT NOT NULL UNIQUE,
+                device_id    TEXT,
+                wall_id      INTEGER NOT NULL REFERENCES walls(id) ON DELETE CASCADE,
+                row_index    INTEGER NOT NULL,
+                col_index    INTEGER NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'pending'
+                               CHECK (status IN ('pending','claimed','expired')),
+                expires_at   TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                claimed_at   TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_wall_pairing_codes_wall ON wall_pairing_codes(wall_id)")
+
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS password_hash        TEXT")
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS owner_user_id        INTEGER")
         cursor.execute("ALTER TABLE users        ADD COLUMN IF NOT EXISTS role                 TEXT NOT NULL DEFAULT 'viewer'")
         cursor.execute("ALTER TABLE users        ADD COLUMN IF NOT EXISTS must_change_password INTEGER NOT NULL DEFAULT 0")
         cursor.execute("ALTER TABLE screen_zones ADD COLUMN IF NOT EXISTS transition_ms        INTEGER NOT NULL DEFAULT 600")
+        cursor.execute("ALTER TABLE screens       ADD COLUMN IF NOT EXISTS wall_cell_id INTEGER REFERENCES wall_cells(id) ON DELETE SET NULL")
+        cursor.execute("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS walls_enabled BOOLEAN NOT NULL DEFAULT true")
+        cursor.execute("ALTER TABLE playlists     ADD COLUMN IF NOT EXISTS kind          TEXT NOT NULL DEFAULT 'standard' CHECK (kind IN ('standard','wall_canvas'))")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_screens_wall_cell ON screens(wall_cell_id)")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sites_org       ON sites       (organization_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_playlists_org   ON playlists   (organization_id)")
