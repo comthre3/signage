@@ -88,6 +88,7 @@ function showSection(id) {
   navButtons.forEach((btn) => {
     btn.classList.toggle("nav-active", btn.dataset.section === id);
   });
+  if (id === "walls" && typeof Walls !== "undefined") Walls.onShow();
 }
 
 function buildPlayerUrl(base, params) {
@@ -1889,3 +1890,188 @@ document.querySelector('nav button[data-section="billing"]')?.addEventListener("
   history.pushState({}, "", "/billing");
   showBilling();
 });
+
+// ====== Walls ======
+const Walls = (() => {
+  const state = { walls: [], editing: null, pairing: null };
+
+  async function api(path, opts = {}) {
+    const headers = { "Content-Type": "application/json" };
+    const token = localStorage.getItem("session_token");
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}${path}`,
+      { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+    if (!res.ok && res.status !== 204) {
+      let body = {};
+      try { body = await res.json(); } catch (_) {}
+      const code = body?.detail?.code || `http_${res.status}`;
+      throw Object.assign(new Error(body?.detail?.message || res.statusText), { code });
+    }
+    return res.status === 204 ? null : res.json();
+  }
+
+  async function loadList() {
+    state.walls = await api("/walls");
+    renderList();
+  }
+
+  function renderList() {
+    const root = document.getElementById("walls-list");
+    if (!state.walls.length) {
+      root.innerHTML = `<p class="empty" data-i18n="walls.empty">${
+        Khan.t("walls.empty", "No walls yet. Click \"Create wall\" to start.")}</p>`;
+      return;
+    }
+    root.innerHTML = state.walls.map(w => `
+      <article class="walls-card" data-wall-id="${w.id}">
+        <h4>${escapeHtml(w.name)}</h4>
+        <div class="walls-meta">
+          ${w.mode === "mirrored" ? Khan.t("walls.mode_mirrored", "Mirrored")
+                                   : Khan.t("walls.mode_spanned", "Spanned")}
+          · ${w.rows}×${w.cols}
+        </div>
+        <div class="walls-mosaic" style="grid-template-columns: repeat(${w.cols}, 1fr);">
+          ${(w.cells || []).map(c => `
+            <div class="walls-mosaic-cell ${c.screen_id ? "online" : "offline"}">
+              ${c.screen_id ? "●" : ""}
+            </div>`).join("")}
+        </div>
+        <div class="walls-actions">
+          <button class="btn btn-ghost" data-action="edit">${Khan.t("walls.edit", "Edit")}</button>
+          <button class="btn btn-danger" data-action="delete">${Khan.t("walls.delete", "Delete")}</button>
+        </div>
+      </article>
+    `).join("");
+    root.querySelectorAll("[data-wall-id]").forEach(card => {
+      const id = parseInt(card.dataset.wallId, 10);
+      card.querySelector('[data-action="edit"]').addEventListener("click", () => openEditor(id));
+      card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteWall(id));
+    });
+  }
+
+  async function createWizard() {
+    const playlists = await api("/playlists");
+    const editor = document.getElementById("walls-editor");
+    const body = document.getElementById("walls-editor-body");
+    document.getElementById("walls-editor-title").textContent =
+      Khan.t("walls.wizard_title", "New wall");
+    editor.classList.remove("hidden");
+    body.innerHTML = `
+      <form id="walls-wizard">
+        <label>${Khan.t("walls.name", "Name")}
+          <input name="name" required maxlength="120" /></label>
+        <fieldset>
+          <legend>${Khan.t("walls.mode", "Mode")}</legend>
+          <label><input type="radio" name="mode" value="mirrored" checked />
+            ${Khan.t("walls.mode_mirrored", "Mirrored")}</label>
+          <label><input type="radio" name="mode" value="spanned" disabled />
+            ${Khan.t("walls.mode_spanned_phase2", "Spanned (Phase 2 — coming soon)")}</label>
+        </fieldset>
+        <div class="walls-grid-picker">
+          <label>${Khan.t("walls.rows", "Rows")}
+            <input name="rows" type="number" min="1" max="8" value="1" required /></label>
+          <label>${Khan.t("walls.cols", "Cols")}
+            <input name="cols" type="number" min="1" max="8" value="2" required /></label>
+        </div>
+        <fieldset class="mirrored-fields">
+          <legend>${Khan.t("walls.mirrored_submode", "Mirrored sub-mode")}</legend>
+          <label><input type="radio" name="mirrored_mode" value="same_playlist" checked />
+            ${Khan.t("walls.same_playlist", "Same playlist on all screens")}</label>
+          <label><input type="radio" name="mirrored_mode" value="synced_rotation" />
+            ${Khan.t("walls.synced_rotation", "Different playlist per cell, synchronized rotation")}</label>
+          <label class="same-playlist-only">
+            ${Khan.t("walls.playlist", "Playlist")}
+            <select name="mirrored_playlist_id" required>
+              ${playlists.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}
+            </select>
+          </label>
+        </fieldset>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-primary">${Khan.t("walls.save", "Create")}</button>
+          <button type="button" class="btn btn-ghost" id="walls-wizard-cancel">${Khan.t("walls.cancel", "Cancel")}</button>
+        </div>
+      </form>
+    `;
+    body.querySelector("#walls-wizard-cancel").addEventListener("click", closeEditor);
+    body.querySelector("#walls-wizard").addEventListener("submit", submitWizard);
+    body.querySelectorAll('input[name="mirrored_mode"]').forEach(el => {
+      el.addEventListener("change", () => {
+        const same = body.querySelector('input[name="mirrored_mode"]:checked').value === "same_playlist";
+        body.querySelector(".same-playlist-only").style.display = same ? "" : "none";
+      });
+    });
+  }
+
+  async function submitWizard(ev) {
+    ev.preventDefault();
+    const f = ev.target;
+    const sub = f.mirrored_mode.value;
+    const payload = {
+      name: f.name.value.trim(),
+      mode: f.mode.value,
+      rows: parseInt(f.rows.value, 10),
+      cols: parseInt(f.cols.value, 10),
+      mirrored_mode: sub,
+    };
+    if (sub === "same_playlist") payload.mirrored_playlist_id = parseInt(f.mirrored_playlist_id.value, 10);
+    try {
+      const w = await api("/walls", { method: "POST", body: JSON.stringify(payload) });
+      toast(Khan.t("walls.created", "Wall created"));
+      await loadList();
+      openEditor(w.id);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.create_failed", "Couldn't create wall"), "error");
+    }
+  }
+
+  async function deleteWall(id) {
+    if (!confirm(Khan.t("walls.confirm_delete", "Delete this wall? Paired screens will revert to standalone."))) return;
+    try {
+      await api(`/walls/${id}`, { method: "DELETE" });
+      toast(Khan.t("walls.deleted", "Wall deleted"));
+      await loadList();
+    } catch (err) {
+      toast(err.message || "delete failed", "error");
+    }
+  }
+
+  function closeEditor() {
+    document.getElementById("walls-editor").classList.add("hidden");
+    state.editing = null;
+  }
+
+  // openEditor and pair-flow are filled in by Task 9.
+  async function openEditor(id) {
+    state.editing = id;
+    document.getElementById("walls-editor").classList.remove("hidden");
+    document.getElementById("walls-editor-body").innerHTML =
+      `<p>${Khan.t("walls.editor_loading", "Loading…")}</p>`;
+    // Implementation continues in Task 9.
+    if (typeof Walls.renderEditor === "function") {
+      await Walls.renderEditor(id);
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("walls-create-btn");
+    if (btn) btn.addEventListener("click", createWizard);
+    const close = document.getElementById("walls-editor-close");
+    if (close) close.addEventListener("click", closeEditor);
+  });
+
+  return {
+    onShow: loadList,
+    state,
+    api,
+    loadList,
+    openEditor,
+    closeEditor,
+    renderList,
+  };
+})();
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
