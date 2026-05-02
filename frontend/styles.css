@@ -56,6 +56,9 @@
   --cream-border: #E8DCC6;
   --plum-shadow:  rgba(62, 43, 79, 0.12);
   --grain:        rgba(62, 43, 79, 0.035);
+  --cream-2: var(--cream);
+  --muted: var(--sand);
+  --font-mono: var(--mono);
 }
 
 :lang(ar) {
@@ -1809,3 +1812,49 @@ code, kbd, samp, pre,
   margin-block: 12px;
 }
 .walls-pair-countdown { text-align: center; color: var(--muted, #7d6f59); }
+
+/* Shared utility classes used by walls UI */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--r-md, 8px);
+  border: 1px solid var(--border, #e9ddc6);
+  background: var(--cream, #fff8f0);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.btn:hover { background: var(--cream-2, #fff8ee); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+}
+.btn-ghost:hover { background: var(--cream-2, #fff8ee); }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 12px;
+}
+
+.walls-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-block-start: 16px;
+}
