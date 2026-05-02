@@ -125,3 +125,26 @@ def test_pair_other_org_404(client):
     w = make_wall(client, a1)
     res = client.post(f"/walls/{w['id']}/cells/0/0/pair", headers=auth(a2))
     assert res.status_code == 404
+
+
+def test_screen_content_includes_wall_id_for_paired_cells(client):
+    a = make_admin("c")
+    w = make_wall(client, a)
+    code = client.post(f"/walls/{w['id']}/cells/0/0/pair", headers=auth(a)).json()["code"]
+    redeem = client.post("/walls/cells/redeem", json={"code": code}).json()
+    res = client.get(f"/screens/{redeem['screen_token']}/content")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["wall_id"] == w["id"]
+    assert body["wall_cell"] == {"row": 0, "col": 0, "rows": 1, "cols": 2}
+
+
+def test_screen_content_no_wall_id_for_standalone(client):
+    a = make_admin("std")
+    sid = execute(
+        "INSERT INTO screens (organization_id, name, pair_code, token, created_at) VALUES (?, ?, ?, ?, ?)",
+        (a["org_id"], "S", secrets.token_hex(3), "tok_" + secrets.token_hex(8), utc_now_iso()),
+    )
+    tok = query_one("SELECT token FROM screens WHERE id = ?", (sid,))["token"]
+    res = client.get(f"/screens/{tok}/content")
+    assert "wall_id" not in res.json() or res.json().get("wall_id") is None

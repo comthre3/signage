@@ -1740,6 +1740,17 @@ def screen_content(token: str) -> dict:
 
     payload = build_screen_payload(screen)
     payload["screen"] = sanitize_screen(screen)
+    if screen.get("wall_cell_id"):
+        cell = query_one("SELECT * FROM wall_cells WHERE id = ?", (screen["wall_cell_id"],))
+        if cell:
+            wall = query_one("SELECT * FROM walls WHERE id = ?", (cell["wall_id"],))
+            if wall:
+                payload["wall_id"] = wall["id"]
+                payload["wall_cell"] = {
+                    "row": cell["row_index"], "col": cell["col_index"],
+                    "rows": wall["rows"], "cols": wall["cols"],
+                }
+                payload["wall_mode"] = wall["mode"]
     return payload
 
 
