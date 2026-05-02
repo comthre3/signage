@@ -426,6 +426,16 @@ def sanitize_screen(screen: dict, include_token: bool = False) -> dict:
     return sanitized
 
 
+def serialize_wall(wall: dict, include_cells: bool = True) -> dict:
+    out = dict(wall)
+    if include_cells:
+        out["cells"] = query_all(
+            "SELECT * FROM wall_cells WHERE wall_id = ? ORDER BY row_index, col_index",
+            (wall["id"],),
+        )
+    return out
+
+
 def cleanup_sessions() -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SESSION_TTL_SECONDS)).isoformat()
     execute("DELETE FROM sessions WHERE COALESCE(last_used, created_at) < ?", (cutoff,))
@@ -502,6 +512,39 @@ class ZonePayload(BaseModel):
 
 class ScreenZonesPayload(BaseModel):
     zones: list[ZonePayload] = Field(default_factory=list)
+
+
+class WallCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    mode: str = Field(..., pattern="^(spanned|mirrored)$")
+    rows: int = Field(..., ge=1, le=8)
+    cols: int = Field(..., ge=1, le=8)
+    canvas_width_px: Optional[int] = Field(default=None, ge=320, le=32768)
+    canvas_height_px: Optional[int] = Field(default=None, ge=240, le=32768)
+    bezel_enabled: bool = False
+    spanned_playlist_id: Optional[int] = None
+    mirrored_mode: Optional[str] = Field(default=None, pattern="^(same_playlist|synced_rotation)$")
+    mirrored_playlist_id: Optional[int] = None
+
+
+class WallUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    mirrored_mode: Optional[str] = Field(default=None, pattern="^(same_playlist|synced_rotation)$")
+    mirrored_playlist_id: Optional[int] = None
+    bezel_enabled: Optional[bool] = None
+    canvas_width_px: Optional[int] = Field(default=None, ge=320, le=32768)
+    canvas_height_px: Optional[int] = Field(default=None, ge=240, le=32768)
+
+
+class WallCellUpdate(BaseModel):
+    row_index: int
+    col_index: int
+    playlist_id: Optional[int] = None
+    screen_size_inches: Optional[float] = Field(default=None, ge=5, le=120)
+    bezel_top_mm: Optional[float] = Field(default=None, ge=0, le=200)
+    bezel_right_mm: Optional[float] = Field(default=None, ge=0, le=200)
+    bezel_bottom_mm: Optional[float] = Field(default=None, ge=0, le=200)
+    bezel_left_mm: Optional[float] = Field(default=None, ge=0, le=200)
 
 
 class ZoneTemplateCreate(BaseModel):
@@ -1695,6 +1738,116 @@ def screen_content(token: str) -> dict:
     payload = build_screen_payload(screen)
     payload["screen"] = sanitize_screen(screen)
     return payload
+
+
+# -------------------- Walls --------------------
+
+@app.post("/walls", status_code=201)
+def create_wall(payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    if payload.mode == "mirrored" and not payload.mirrored_mode:
+        raise http_error(422, "wall.mirrored_mode_required",
+                         "Mirrored walls need a sub-mode (same_playlist or synced_rotation).")
+    if payload.mode == "mirrored" and payload.mirrored_mode == "same_playlist" and not payload.mirrored_playlist_id:
+        raise http_error(422, "wall.mirrored_playlist_required",
+                         "Same-playlist mirrored walls need a playlist.")
+    if payload.mirrored_playlist_id is not None:
+        own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
+                        (payload.mirrored_playlist_id, org_id(user)))
+        if not own:
+            raise http_error(404, "playlist.not_found", "Playlist not found")
+    now = utc_now_iso()
+    wall_id = execute(
+        """INSERT INTO walls (organization_id, name, mode, rows, cols,
+               canvas_width_px, canvas_height_px, bezel_enabled,
+               spanned_playlist_id, mirrored_mode, mirrored_playlist_id,
+               created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (org_id(user), payload.name, payload.mode, payload.rows, payload.cols,
+         payload.canvas_width_px, payload.canvas_height_px, payload.bezel_enabled,
+         payload.spanned_playlist_id, payload.mirrored_mode, payload.mirrored_playlist_id,
+         now, now),
+    )
+    for r in range(payload.rows):
+        for c in range(payload.cols):
+            execute(
+                "INSERT INTO wall_cells (wall_id, row_index, col_index, created_at) VALUES (?, ?, ?, ?)",
+                (wall_id, r, c, now),
+            )
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    return serialize_wall(wall)
+
+
+@app.get("/walls")
+def list_walls(user: dict = Depends(get_current_user)) -> list[dict]:
+    walls = query_all(
+        "SELECT * FROM walls WHERE organization_id = ? ORDER BY id DESC",
+        (org_id(user),),
+    )
+    return [serialize_wall(w) for w in walls]
+
+
+@app.get("/walls/{wall_id}")
+def get_wall(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    return serialize_wall(wall)
+
+
+@app.patch("/walls/{wall_id}")
+def patch_wall(wall_id: int, payload: WallUpdate,
+               user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        return serialize_wall(wall)
+    sets = ", ".join(f"{k} = ?" for k in fields.keys())
+    params = list(fields.values()) + [utc_now_iso(), wall_id]
+    execute(f"UPDATE walls SET {sets}, updated_at = ? WHERE id = ?", tuple(params))
+    return serialize_wall(query_one("SELECT * FROM walls WHERE id = ?", (wall_id,)))
+
+
+@app.patch("/walls/{wall_id}/cells")
+def patch_wall_cell(wall_id: int, payload: WallCellUpdate,
+                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    fields = payload.model_dump(exclude_unset=True)
+    if payload.playlist_id is not None:
+        own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
+                        (payload.playlist_id, org_id(user)))
+        if not own:
+            raise http_error(404, "playlist.not_found", "Playlist not found")
+    set_fields = {k: v for k, v in fields.items() if k not in ("row_index", "col_index")}
+    if set_fields:
+        sets = ", ".join(f"{k} = ?" for k in set_fields.keys())
+        params = list(set_fields.values()) + [wall_id, payload.row_index, payload.col_index]
+        execute(
+            f"UPDATE wall_cells SET {sets} "
+            f"WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+            tuple(params),
+        )
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, payload.row_index, payload.col_index),
+    )
+    return cell
+
+
+@app.delete("/walls/{wall_id}", status_code=204)
+def delete_wall(wall_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> None:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+    return None
 
 
 @app.post("/screens/{screen_id}/preview-token")
