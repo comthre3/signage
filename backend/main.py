@@ -24,6 +24,7 @@ from slowapi.util import get_remote_address
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
 from email_utils import is_valid_email, send_via_resend
+from walls import attach_walls
 
 logger = logging.getLogger("signage")
 logging.basicConfig(level=logging.INFO)
@@ -133,6 +134,8 @@ app.add_middleware(
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+attach_walls(app)
 
 
 def slugify(value: str) -> str:
