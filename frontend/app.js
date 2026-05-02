@@ -2060,6 +2060,149 @@ const Walls = (() => {
     if (close) close.addEventListener("click", closeEditor);
   });
 
+  let pairTimer = null;
+  let mosaicTimer = null;
+
+  async function renderEditor(id) {
+    const wall = await api(`/walls/${id}`);
+    const body = document.getElementById("walls-editor-body");
+    document.getElementById("walls-editor-title").textContent = wall.name;
+    const playlists = wall.mirrored_mode === "synced_rotation" ? await api("/playlists") : [];
+    body.innerHTML = `
+      <div class="walls-editor-summary">
+        <span class="walls-meta">
+          ${wall.mode === "mirrored"
+            ? Khan.t("walls.mode_mirrored", "Mirrored") + (wall.mirrored_mode === "synced_rotation"
+                ? " · " + Khan.t("walls.synced_rotation_short", "Synced rotation")
+                : " · " + Khan.t("walls.same_playlist_short", "Same playlist"))
+            : Khan.t("walls.mode_spanned", "Spanned")}
+          · ${wall.rows}×${wall.cols}
+        </span>
+      </div>
+      <div class="walls-editor-grid"
+           style="grid-template-columns: repeat(${wall.cols}, 1fr);">
+        ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+      </div>
+    `;
+    body.querySelectorAll(".walls-editor-cell").forEach(el => {
+      const r = parseInt(el.dataset.row, 10);
+      const c = parseInt(el.dataset.col, 10);
+      el.querySelector('[data-action="pair"]')?.addEventListener("click",
+        () => openPairModal(wall.id, r, c));
+      el.querySelector('[data-action="unpair"]')?.addEventListener("click",
+        () => unpairCell(wall.id, r, c));
+      el.querySelector('select[data-action="cell-playlist"]')?.addEventListener("change", (ev) =>
+        patchCell(wall.id, r, c, { playlist_id: parseInt(ev.target.value, 10) }));
+    });
+    refreshMosaic(wall.id);
+  }
+
+  function renderCellTile(c, wall, playlists) {
+    const paired = !!c.screen_id;
+    const playlistPicker = wall.mirrored_mode === "synced_rotation"
+      ? `<label class="cell-playlist">
+           ${Khan.t("walls.playlist", "Playlist")}
+           <select data-action="cell-playlist">
+             <option value="">—</option>
+             ${playlists.map(p =>
+               `<option value="${p.id}" ${p.id === c.playlist_id ? "selected" : ""}>${escHtml(p.name)}</option>`
+             ).join("")}
+           </select>
+         </label>` : "";
+    return `
+      <div class="walls-editor-cell ${paired ? "paired" : "empty"}"
+           data-row="${c.row_index}" data-col="${c.col_index}">
+        <strong>(${c.row_index},${c.col_index})</strong>
+        ${paired
+          ? `<span>${Khan.t("walls.cell_paired", "Paired")}</span>
+             <button class="btn btn-ghost" data-action="unpair">${Khan.t("walls.cell_unpair", "Unpair")}</button>`
+          : `<button class="btn" data-action="pair">${Khan.t("walls.cell_pair", "Pair this screen")}</button>`}
+        ${playlistPicker}
+      </div>
+    `;
+  }
+
+  async function openPairModal(wallId, row, col) {
+    const modal = document.getElementById("walls-pair-modal");
+    modal.classList.remove("hidden");
+    state.pairing = { wallId, row, col };
+    await refreshPairCode();
+    document.getElementById("walls-pair-refresh").onclick = refreshPairCode;
+    document.getElementById("walls-pair-close").onclick = () => {
+      modal.classList.add("hidden");
+      state.pairing = null;
+      if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+      renderEditor(wallId);
+    };
+  }
+
+  async function refreshPairCode() {
+    if (!state.pairing) return;
+    if (pairTimer) clearInterval(pairTimer);
+    const { wallId, row, col } = state.pairing;
+    try {
+      const r = await api(`/walls/${wallId}/cells/${row}/${col}/pair`, { method: "POST" });
+      document.getElementById("walls-pair-code").textContent = r.code;
+      let remaining = r.expires_in_seconds;
+      const setLabel = () => {
+        const m = Math.floor(remaining / 60);
+        const s = String(remaining % 60).padStart(2, "0");
+        document.getElementById("walls-pair-countdown").textContent =
+          Khan.t("walls.pair_expires_in", "Expires in {time}").replace("{time}", `${m}:${s}`);
+      };
+      setLabel();
+      pairTimer = setInterval(() => {
+        remaining = Math.max(0, remaining - 1);
+        setLabel();
+        if (remaining === 0) clearInterval(pairTimer);
+      }, 1000);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.pair_code_failed", "Couldn't get pair code"), "error");
+    }
+  }
+
+  async function unpairCell(wallId, row, col) {
+    if (!confirm(Khan.t("walls.confirm_unpair", "Unpair this cell?"))) return;
+    try {
+      await api(`/walls/${wallId}/cells/${row}/${col}/pairing`, { method: "DELETE" });
+      toast(Khan.t("walls.unpaired", "Unpaired"));
+      renderEditor(wallId);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.unpair_failed", "Couldn't unpair"), "error");
+    }
+  }
+
+  async function patchCell(wallId, row, col, fields) {
+    try {
+      await api(`/walls/${wallId}/cells`, {
+        method: "PATCH",
+        body: JSON.stringify({ row_index: row, col_index: col, ...fields }),
+      });
+      toast(Khan.t("walls.cell_updated", "Cell updated"));
+    } catch (err) {
+      toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update cell"), "error");
+    }
+  }
+
+  async function refreshMosaic(wallId) {
+    if (mosaicTimer) clearInterval(mosaicTimer);
+    const tick = async () => {
+      if (state.editing !== wallId) return clearInterval(mosaicTimer);
+      try {
+        const w = await api(`/walls/${wallId}`);
+        document.querySelectorAll(".walls-editor-cell").forEach(el => {
+          const r = parseInt(el.dataset.row, 10);
+          const c = parseInt(el.dataset.col, 10);
+          const cell = w.cells.find(x => x.row_index === r && x.col_index === c);
+          if (!cell) return;
+          el.classList.toggle("paired", !!cell.screen_id);
+          el.classList.toggle("empty", !cell.screen_id);
+        });
+      } catch (_) { /* ignore */ }
+    };
+    mosaicTimer = setInterval(tick, 5000);
+  }
+
   return {
     onShow: loadList,
     state,
@@ -2068,6 +2211,7 @@ const Walls = (() => {
     openEditor,
     closeEditor,
     renderList,
+    renderEditor,
   };
 })();
 
