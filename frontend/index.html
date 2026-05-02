@@ -27,6 +27,7 @@
           <button data-section="media" data-i18n="nav.media">Media</button>
           <button data-section="playlists" data-i18n="nav.playlists">Playlists</button>
           <button data-section="users" data-i18n="nav.users">Users</button>
+          <button data-section="walls" data-i18n="nav.walls">Walls</button>
           <button data-section="billing" data-i18n="nav.billing">Billing</button>
         </nav>
         <div class="auth-status">
@@ -372,6 +373,38 @@
           </form>
           <div id="users-list"  class="list"></div>
           <div id="groups-list" class="list" style="margin-top:16px"></div>
+        </section>
+
+        <section id="walls" class="panel hidden">
+          <div class="panel-header">
+            <h2 data-i18n="walls.title">Walls</h2>
+            <button id="walls-create-btn" class="btn btn-primary" data-i18n="walls.create">Create wall</button>
+          </div>
+          <div id="walls-list" class="walls-grid" aria-live="polite"></div>
+
+          <div id="walls-editor" class="walls-editor hidden">
+            <div class="walls-editor-header">
+              <h3 id="walls-editor-title">—</h3>
+              <button id="walls-editor-close" class="btn btn-ghost" data-i18n="walls.back_to_list">Back</button>
+            </div>
+            <div id="walls-editor-body"></div>
+          </div>
+
+          <div id="walls-pair-modal" class="modal hidden" role="dialog" aria-labelledby="walls-pair-title">
+            <div class="modal-card">
+              <h3 id="walls-pair-title" data-i18n="walls.pair_title">Pair this cell</h3>
+              <p data-i18n="walls.pair_instructions">
+                On the TV you want in this position, open <code>play.khanshoof.com</code>,
+                tap <strong>Have a code from admin?</strong>, and enter:
+              </p>
+              <div id="walls-pair-code" class="walls-pair-code">—</div>
+              <div id="walls-pair-countdown" class="walls-pair-countdown" data-i18n="walls.pair_expires_label">Expires in —</div>
+              <div class="modal-actions">
+                <button id="walls-pair-refresh" class="btn" data-i18n="walls.pair_new_code">New code</button>
+                <button id="walls-pair-close" class="btn btn-primary" data-i18n="walls.pair_done">Done</button>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
     </main>
