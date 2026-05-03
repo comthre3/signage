@@ -472,7 +472,7 @@ function startRefreshLoop() {
         setStatus(Khan.t("status.connection_issue", "Connection issue"));
       });
     }
-  }, 60000);
+  }, 15000);
 }
 
 async function boot() {
@@ -502,10 +502,12 @@ async function boot() {
   setStatus(Khan.t("status.loading_content", "Loading content..."));
   const layout = await fetchLayout();
   let contentResp = null;
-  try {
-    contentResp = await (await fetch(
-      `${API_BASE}/screens/${screenToken}/content`)).json();
-  } catch (_) { contentResp = null; }
+  if (screenToken && !previewToken) {
+    try {
+      contentResp = await (await fetch(
+        `${API_BASE}/screens/${screenToken}/content`)).json();
+    } catch (_) { contentResp = null; }
+  }
   if (contentResp?.wall_id) {
     renderSingleLayout();
     await enterWallMode(contentResp.wall_id);
@@ -514,7 +516,14 @@ async function boot() {
     renderZonesLayout(layout.zones);
   } else {
     renderSingleLayout();
-    await fetchContent();
+    if (contentResp) {
+      try {
+        localStorage.setItem(getCacheKey("content"), JSON.stringify(contentResp));
+      } catch (_) {}
+      renderContentData(contentResp);
+    } else {
+      await fetchContent();
+    }
   }
   startRefreshLoop();
 }
