@@ -529,3 +529,46 @@ if ("serviceWorker" in navigator) {
     setStatus(Khan.t("status.failed_to_start", "Failed to start player"));
   }
 })();
+
+// ── "Have a code from admin?" affordance (Task 11) ───────────────
+const adminCodeToggle = document.getElementById("admin-code-toggle");
+const adminCodeForm = document.getElementById("admin-code-form");
+const adminCodeInput = document.getElementById("admin-code-input");
+const adminCodeError = document.getElementById("admin-code-error");
+
+if (adminCodeToggle && adminCodeForm) {
+  adminCodeToggle.addEventListener("click", () => {
+    adminCodeForm.classList.toggle("hidden");
+    adminCodeInput?.focus();
+  });
+}
+if (adminCodeForm) {
+  adminCodeForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    adminCodeError.textContent = "";
+    const code = (adminCodeInput.value || "").trim().toUpperCase();
+    if (code.length !== 6) {
+      adminCodeError.textContent = Khan.t("pairing.code_invalid", "Code not recognized.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/walls/cells/redeem`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        const msgKey = body?.detail?.code === "wall.pair_code_expired"
+          ? "pairing.code_expired"
+          : "pairing.code_invalid";
+        adminCodeError.textContent = Khan.t(msgKey, "Code not recognized.");
+        return;
+      }
+      localStorage.setItem("screen_token", body.screen_token);
+      stopPairPoll();
+      window.location.reload();
+    } catch (err) {
+      adminCodeError.textContent = Khan.t("pairing.code_invalid", "Code not recognized.");
+    }
+  });
+}

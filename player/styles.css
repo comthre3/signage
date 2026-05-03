@@ -213,3 +213,59 @@ code, kbd, samp, pre,
 [dir="rtl"] #pairing-code {
   direction: ltr;
 }
+
+/* Pairing — "Have a code from admin?" affordance (Task 11) */
+.admin-code-affordance {
+  margin-block-start: 1.5em;
+  text-align: center;
+}
+.admin-code-affordance .link {
+  background: none;
+  border: none;
+  color: var(--accent, #6b8e6b);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+.admin-code-form {
+  margin-block-start: 0.75em;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.admin-code-form input {
+  font: inherit;
+  padding: 8px 12px;
+  width: 8ch;
+  letter-spacing: 0.15em;
+  text-align: center;
+  text-transform: uppercase;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e9ddc6);
+}
+.admin-code-form .btn {
+  font: inherit;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e9ddc6);
+  background: var(--cream, #fff8f0);
+  color: inherit;
+  cursor: pointer;
+}
+.admin-code-form .btn-primary {
+  background: var(--accent, #6b8e6b);
+  border-color: var(--accent, #6b8e6b);
+  color: #fff;
+}
+.admin-code-form .btn:hover { filter: brightness(0.95); }
+.admin-code-error {
+  color: var(--rose, #b53939);
+  margin-block-start: 0.5em;
+  width: 100%;
+  text-align: center;
+  min-height: 1em;
+}
+.admin-code-form.hidden { display: none; }
