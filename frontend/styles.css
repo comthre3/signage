@@ -1858,3 +1858,51 @@ code, kbd, samp, pre,
   gap: 8px;
   margin-block-start: 16px;
 }
+
+/* Walls editor + list (additions for Tasks B and C markup) */
+.walls-editor-summary {
+  margin-block-end: 12px;
+  padding: 8px 12px;
+  background: var(--cream-2, #fff8ee);
+  border-radius: 6px;
+}
+.walls-editor-cell .cell-playlist {
+  display: block;
+  margin-block-start: 8px;
+  font-size: 0.8em;
+}
+.walls-editor-cell .cell-playlist select {
+  display: block;
+  width: 100%;
+  margin-block-start: 4px;
+  padding: 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #e9ddc6);
+  background: #fff;
+  color: #222;
+}
+.walls-actions {
+  display: flex;
+  gap: 8px;
+  margin-block-start: 12px;
+}
+.btn-danger {
+  background: var(--rose, #f3c4c4);
+  border-color: var(--rose, #f3c4c4);
+  color: #5a1a1a;
+}
+.btn-danger:hover { background: #e9b0b0; }
+.walls-grid-picker {
+  display: flex;
+  gap: 12px;
+  margin-block: 8px;
+}
+.walls-grid-picker label {
+  flex: 1;
+}
+.walls-grid-picker input {
+  width: 100%;
+  padding: 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border, #e9ddc6);
+}

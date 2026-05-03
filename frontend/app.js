@@ -2037,6 +2037,10 @@ const Walls = (() => {
   }
 
   function closeEditor() {
+    if (mosaicTimer) { clearInterval(mosaicTimer); mosaicTimer = null; }
+    if (pairTimer)   { clearInterval(pairTimer);   pairTimer   = null; }
+    document.getElementById("walls-pair-modal")?.classList.add("hidden");
+    state.pairing = null;
     document.getElementById("walls-editor").classList.add("hidden");
     state.editing = null;
   }
@@ -2092,7 +2096,9 @@ const Walls = (() => {
       el.querySelector('[data-action="unpair"]')?.addEventListener("click",
         () => unpairCell(wall.id, r, c));
       el.querySelector('select[data-action="cell-playlist"]')?.addEventListener("change", (ev) =>
-        patchCell(wall.id, r, c, { playlist_id: parseInt(ev.target.value, 10) }));
+        patchCell(wall.id, r, c, {
+          playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
+        }));
     });
     refreshMosaic(wall.id);
   }
@@ -2138,7 +2144,7 @@ const Walls = (() => {
 
   async function refreshPairCode() {
     if (!state.pairing) return;
-    if (pairTimer) clearInterval(pairTimer);
+    if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
     const { wallId, row, col } = state.pairing;
     try {
       const r = await api(`/walls/${wallId}/cells/${row}/${col}/pair`, { method: "POST" });
@@ -2186,8 +2192,9 @@ const Walls = (() => {
 
   async function refreshMosaic(wallId) {
     if (mosaicTimer) clearInterval(mosaicTimer);
+    let timerId;
     const tick = async () => {
-      if (state.editing !== wallId) return clearInterval(mosaicTimer);
+      if (state.editing !== wallId) { clearInterval(timerId); return; }
       try {
         const w = await api(`/walls/${wallId}`);
         document.querySelectorAll(".walls-editor-cell").forEach(el => {
@@ -2200,7 +2207,8 @@ const Walls = (() => {
         });
       } catch (_) { /* ignore */ }
     };
-    mosaicTimer = setInterval(tick, 5000);
+    timerId = setInterval(tick, 5000);
+    mosaicTimer = timerId;
   }
 
   return {
