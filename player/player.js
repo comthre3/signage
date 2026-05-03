@@ -450,6 +450,7 @@ function startRefreshLoop() {
   if (refreshLoopStarted) return;
   refreshLoopStarted = true;
   setInterval(() => {
+    if (wallSocket && wallSocket.readyState === WebSocket.OPEN) return; // WS drives playback
     if (zonesEl && !zonesEl.classList.contains("hidden")) {
       fetchLayout()
         .then((nextLayout) => {
@@ -471,7 +472,7 @@ function startRefreshLoop() {
         setStatus(Khan.t("status.connection_issue", "Connection issue"));
       });
     }
-  }, 15000);
+  }, 60000);
 }
 
 async function boot() {
@@ -500,7 +501,15 @@ async function boot() {
 
   setStatus(Khan.t("status.loading_content", "Loading content..."));
   const layout = await fetchLayout();
-  if (layout?.zones && layout.zones.length > 0) {
+  let contentResp = null;
+  try {
+    contentResp = await (await fetch(
+      `${API_BASE}/screens/${screenToken}/content`)).json();
+  } catch (_) { contentResp = null; }
+  if (contentResp?.wall_id) {
+    renderSingleLayout();
+    await enterWallMode(contentResp.wall_id);
+  } else if (layout?.zones && layout.zones.length > 0) {
     layoutSignature = getLayoutSignature(layout.zones);
     renderZonesLayout(layout.zones);
   } else {
@@ -508,6 +517,131 @@ async function boot() {
     await fetchContent();
   }
   startRefreshLoop();
+}
+
+// ====== Wall mode ======
+let wallSocket = null;
+let wallId = null;
+let wallReconnectAttempts = 0;
+let wallClockOffsetMs = 0;
+let wallLastFrame = null;
+let wallDriftTimer = null;
+const WALL_RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+
+function effectiveNowMs() { return Date.now() + wallClockOffsetMs; }
+
+async function enterWallMode(id) {
+  wallId = id;
+  setStatus(Khan.t("wall.connecting", "Connecting to wall…"));
+  openWallSocket();
+}
+
+function openWallSocket() {
+  if (!wallId || !screenToken) return;
+  const wsBase = API_BASE.replace(/^http/, "ws");
+  const url = `${wsBase}/walls/${wallId}/ws?screen_token=${encodeURIComponent(screenToken)}`;
+  try { wallSocket?.close(); } catch (_) {}
+  wallSocket = new WebSocket(url);
+
+  wallSocket.addEventListener("open", () => {
+    wallReconnectAttempts = 0;
+  });
+  wallSocket.addEventListener("message", (ev) => {
+    let frame;
+    try { frame = JSON.parse(ev.data); } catch (_) { return; }
+    onWallFrame(frame);
+  });
+  wallSocket.addEventListener("close", () => {
+    setStatus(Khan.t("wall.reconnecting", "Reconnecting to wall…"));
+    const delay = WALL_RECONNECT_BACKOFF_MS[
+      Math.min(wallReconnectAttempts, WALL_RECONNECT_BACKOFF_MS.length - 1)
+    ];
+    wallReconnectAttempts += 1;
+    setTimeout(openWallSocket, delay);
+  });
+  wallSocket.addEventListener("error", () => { /* close handler will retry */ });
+}
+
+function onWallFrame(frame) {
+  const clientReceivedMs = Date.now();
+  if (typeof frame.server_now_ms === "number") {
+    wallClockOffsetMs = frame.server_now_ms - clientReceivedMs;
+  }
+  if (frame.type === "hello") {
+    if (frame.current_play) renderWallPlay(frame.current_play);
+  } else if (frame.type === "play") {
+    renderWallPlay(frame);
+  } else if (frame.type === "ping") {
+    try { wallSocket?.send(JSON.stringify({
+      type: "pong", client_received_ms: clientReceivedMs, client_now_ms: Date.now(),
+    })); } catch (_) {}
+  } else if (frame.type === "bye") {
+    try { wallSocket?.close(); } catch (_) {}
+    wallId = null;
+    localStorage.removeItem("screen_token");
+    window.location.reload();
+  } else if (frame.type === "playlist_change") {
+    fetchContent().catch(() => {});
+  }
+}
+
+function renderWallPlay(frame) {
+  const item = frame.item;
+  if (!item) return;
+  if (wallLastFrame && wallLastFrame.item.id === item.id
+      && wallLastFrame.started_at_ms === frame.started_at_ms) {
+    return;
+  }
+  wallLastFrame = frame;
+  if (wallDriftTimer) { clearInterval(wallDriftTimer); wallDriftTimer = null; }
+  contentEl.innerHTML = "";
+  const startedAtMs = frame.started_at_ms;
+  const expectedPositionMs = effectiveNowMs() - startedAtMs;
+  const node = createWallMediaNode(item);
+  contentEl.appendChild(node);
+  if (node.tagName === "VIDEO") {
+    node.addEventListener("loadeddata", () => {
+      const t = Math.max(0, expectedPositionMs / 1000);
+      try { node.currentTime = t; } catch (_) {}
+      node.play().catch(() => {});
+    }, { once: true });
+    wallDriftTimer = setInterval(() => correctVideoDrift(node, frame), 2000);
+  }
+}
+
+function createWallMediaNode(item) {
+  const mime = item.mime_type || "";
+  if (mime.startsWith("video/")) {
+    const v = document.createElement("video");
+    v.src = item.url; v.muted = true; v.autoplay = true; v.playsInline = true;
+    v.style.cssText = "position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;";
+    return v;
+  }
+  if (mime.startsWith("image/")) {
+    const i = document.createElement("img");
+    i.src = item.url; i.alt = item.name || "";
+    i.style.cssText = "position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;";
+    return i;
+  }
+  const f = document.createElement("iframe");
+  f.src = item.url; f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#000;";
+  return f;
+}
+
+function correctVideoDrift(video, frame) {
+  if (!video.isConnected) {
+    if (wallDriftTimer) { clearInterval(wallDriftTimer); wallDriftTimer = null; }
+    return;
+  }
+  const expectedSec = (effectiveNowMs() - frame.started_at_ms) / 1000;
+  const delta = (video.currentTime - expectedSec) * 1000;
+  if (Math.abs(delta) > 200) {
+    try { video.currentTime = Math.max(0, expectedSec); } catch (_) {}
+    video.playbackRate = 1.0;
+  } else if (Math.abs(delta) > 50) {
+    video.playbackRate = delta < 0 ? 1.02 : 0.98;
+    setTimeout(() => { video.playbackRate = 1.0; }, 1000);
+  }
 }
 
 if ("serviceWorker" in navigator) {
