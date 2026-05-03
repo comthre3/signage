@@ -539,18 +539,22 @@ const adminCodeError = document.getElementById("admin-code-error");
 if (adminCodeToggle && adminCodeForm) {
   adminCodeToggle.addEventListener("click", () => {
     adminCodeForm.classList.toggle("hidden");
-    adminCodeInput?.focus();
+    if (!adminCodeForm.classList.contains("hidden")) {
+      adminCodeInput?.focus();
+    }
   });
 }
 if (adminCodeForm) {
   adminCodeForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    const submitBtn = adminCodeForm.querySelector('[type="submit"]');
     adminCodeError.textContent = "";
     const code = (adminCodeInput.value || "").trim().toUpperCase();
     if (code.length !== 6) {
       adminCodeError.textContent = Khan.t("pairing.code_invalid", "Code not recognized.");
       return;
     }
+    if (submitBtn) submitBtn.disabled = true;
     try {
       const res = await fetch(`${API_BASE}/walls/cells/redeem`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -562,6 +566,7 @@ if (adminCodeForm) {
           ? "pairing.code_expired"
           : "pairing.code_invalid";
         adminCodeError.textContent = Khan.t(msgKey, "Code not recognized.");
+        if (submitBtn) submitBtn.disabled = false;
         return;
       }
       localStorage.setItem("screen_token", body.screen_token);
@@ -569,6 +574,7 @@ if (adminCodeForm) {
       window.location.reload();
     } catch (err) {
       adminCodeError.textContent = Khan.t("pairing.code_invalid", "Code not recognized.");
+      if (submitBtn) submitBtn.disabled = false;
     }
   });
 }
