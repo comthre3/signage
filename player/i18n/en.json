@@ -16,5 +16,12 @@
   "status.no_content": "No content assigned",
   "status.connection_issue": "Connection issue",
   "status.pairing": "Pairing...",
-  "status.failed_to_start": "Failed to start player"
+  "status.failed_to_start": "Failed to start player",
+  "pairing.code_from_admin": "Have a code from admin? Enter it here.",
+  "pairing.code_input_label": "Code",
+  "pairing.code_submit": "Submit",
+  "pairing.code_invalid": "Code not recognized.",
+  "pairing.code_expired": "Code expired. Ask admin for a new one.",
+  "wall.connecting": "Connecting to wall…",
+  "wall.reconnecting": "Reconnecting to wall…"
 }

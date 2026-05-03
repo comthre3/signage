@@ -16,5 +16,12 @@
   "status.no_content": "لم يُعيَّن أي محتوى",
   "status.connection_issue": "مشكلة في الاتصال",
   "status.pairing": "جارٍ الإقران...",
-  "status.failed_to_start": "فشل تشغيل المشغّل"
+  "status.failed_to_start": "فشل تشغيل المشغّل",
+  "pairing.code_from_admin": "معك رمز من الأدمن؟ أدخله هنا.",
+  "pairing.code_input_label": "الرمز",
+  "pairing.code_submit": "إرسال",
+  "pairing.code_invalid": "الرمز غير معروف.",
+  "pairing.code_expired": "انتهت صلاحية الرمز. اطلب رمزاً جديداً من الأدمن.",
+  "wall.connecting": "جاري الاتصال بالجدار…",
+  "wall.reconnecting": "جاري إعادة الاتصال بالجدار…"
 }
