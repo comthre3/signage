@@ -26,3 +26,29 @@ def test_playlist_items_has_phase2_columns():
     cols = _columns("playlist_items")
     assert "duration_override_seconds" in cols
     assert "fit_mode" in cols
+
+
+import pytest
+from pathlib import Path
+
+MINIMAL_PDF_PATH = Path(__file__).parent / "fixtures" / "two_page.pdf"
+
+
+def test_pdf_render_two_page_to_png_sequence(tmp_path):
+    from pdf_render import rasterize_pdf
+    out_dir = tmp_path / "pages"
+    pages = rasterize_pdf(str(MINIMAL_PDF_PATH), str(out_dir), width_px=1920, height_px=1080)
+    assert pages == ["page_01.png", "page_02.png"]
+    assert (out_dir / "page_01.png").exists()
+    assert (out_dir / "page_02.png").exists()
+    from PIL import Image
+    with Image.open(out_dir / "page_01.png") as im:
+        assert im.size == (1920, 1080)
+
+
+def test_pdf_render_corrupt_input_raises(tmp_path):
+    from pdf_render import rasterize_pdf, PdfRenderError
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(b"not a real pdf")
+    with pytest.raises(PdfRenderError):
+        rasterize_pdf(str(bad), str(tmp_path / "out"), width_px=1920, height_px=1080)
