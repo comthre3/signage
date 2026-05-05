@@ -525,6 +525,8 @@ class WallCreate(BaseModel):
     canvas_width_px: Optional[int] = Field(default=None, ge=320, le=32768)
     canvas_height_px: Optional[int] = Field(default=None, ge=240, le=32768)
     bezel_enabled: bool = False
+    bezel_h_pct: float = Field(default=0.0, ge=0.0, le=10.0)
+    bezel_v_pct: float = Field(default=0.0, ge=0.0, le=10.0)
     spanned_playlist_id: Optional[int] = None
     mirrored_mode: Optional[str] = Field(default=None, pattern="^(same_playlist|synced_rotation)$")
     mirrored_playlist_id: Optional[int] = None
@@ -532,9 +534,12 @@ class WallCreate(BaseModel):
 
 class WallUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    mode: Optional[str] = Field(default=None, pattern="^(spanned|mirrored)$")
     mirrored_mode: Optional[str] = Field(default=None, pattern="^(same_playlist|synced_rotation)$")
     mirrored_playlist_id: Optional[int] = None
     bezel_enabled: Optional[bool] = None
+    bezel_h_pct: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    bezel_v_pct: Optional[float] = Field(default=None, ge=0.0, le=10.0)
     canvas_width_px: Optional[int] = Field(default=None, ge=320, le=32768)
     canvas_height_px: Optional[int] = Field(default=None, ge=240, le=32768)
 
@@ -1756,29 +1761,61 @@ def screen_content(token: str) -> dict:
 
 # -------------------- Walls --------------------
 
+_VALID_CANVAS_RESOLUTIONS = {(1920, 1080), (3840, 2160), (7680, 4320)}
+
+
+def _validate_spanned_fields(payload: WallCreate) -> None:
+    if (payload.canvas_width_px, payload.canvas_height_px) not in _VALID_CANVAS_RESOLUTIONS:
+        raise http_error(400, "wall.canvas_resolution_invalid",
+                         "Canvas resolution must be 1080p, 4K, or 8K.")
+    if payload.cols * payload.bezel_h_pct >= 100 or payload.rows * payload.bezel_v_pct >= 100:
+        raise http_error(400, "wall.bezel_too_large",
+                         "Bezel percentages too large — visible area would collapse.")
+
+
 @app.post("/walls", status_code=201)
 def create_wall(payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
-    if payload.mode == "mirrored" and not payload.mirrored_mode:
-        raise http_error(422, "wall.mirrored_mode_required",
-                         "Mirrored walls need a sub-mode (same_playlist or synced_rotation).")
-    if payload.mode == "mirrored" and payload.mirrored_mode == "same_playlist" and not payload.mirrored_playlist_id:
-        raise http_error(422, "wall.mirrored_playlist_required",
-                         "Same-playlist mirrored walls need a playlist.")
-    if payload.mirrored_playlist_id is not None:
-        own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
-                        (payload.mirrored_playlist_id, org_id(user)))
-        if not own:
-            raise http_error(404, "playlist.not_found", "Playlist not found")
+    if payload.mode == "spanned":
+        _validate_spanned_fields(payload)
+    elif payload.mode == "mirrored":
+        if not payload.mirrored_mode:
+            raise http_error(422, "wall.mirrored_mode_required",
+                             "Mirrored walls need a sub-mode (same_playlist or synced_rotation).")
+        if payload.mirrored_mode == "same_playlist" and not payload.mirrored_playlist_id:
+            raise http_error(422, "wall.mirrored_playlist_required",
+                             "Same-playlist mirrored walls need a playlist.")
+        if payload.mirrored_playlist_id is not None:
+            own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
+                            (payload.mirrored_playlist_id, org_id(user)))
+            if not own:
+                raise http_error(404, "playlist.not_found", "Playlist not found")
+
     now = utc_now_iso()
+
+    # For spanned walls, auto-create the wall_canvas playlist BEFORE the wall row,
+    # so we can FK the wall to it atomically.
+    spanned_playlist_id = payload.spanned_playlist_id
+    if payload.mode == "spanned":
+        spanned_playlist_id = execute(
+            "INSERT INTO playlists (organization_id, name, kind, created_at) "
+            "VALUES (?, ?, 'wall_canvas', ?)",
+            (org_id(user), f"Canvas: {payload.name}", now),
+        )
+        bezel_enabled = (payload.bezel_h_pct > 0 or payload.bezel_v_pct > 0)
+    else:
+        bezel_enabled = payload.bezel_enabled
+
     wall_id = execute(
         """INSERT INTO walls (organization_id, name, mode, rows, cols,
                canvas_width_px, canvas_height_px, bezel_enabled,
+               bezel_h_pct, bezel_v_pct,
                spanned_playlist_id, mirrored_mode, mirrored_playlist_id,
                created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (org_id(user), payload.name, payload.mode, payload.rows, payload.cols,
-         payload.canvas_width_px, payload.canvas_height_px, payload.bezel_enabled,
-         payload.spanned_playlist_id, payload.mirrored_mode, payload.mirrored_playlist_id,
+         payload.canvas_width_px, payload.canvas_height_px, bezel_enabled,
+         payload.bezel_h_pct, payload.bezel_v_pct,
+         spanned_playlist_id, payload.mirrored_mode, payload.mirrored_playlist_id,
          now, now),
     )
     for r in range(payload.rows):
