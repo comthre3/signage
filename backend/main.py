@@ -2011,6 +2011,137 @@ def unpair_wall_cell(wall_id: int, row: int, col: int,
     return None
 
 
+# ---- Spanned-mode canvas playlists ----
+
+_ALLOWED_CANVAS_MIME_PREFIXES = ("image/", "video/")
+_ALLOWED_CANVAS_EXACT_MIMES = {"application/pdf"}
+
+
+def _is_allowed_canvas_mime(mime: str) -> bool:
+    if mime in _ALLOWED_CANVAS_EXACT_MIMES:
+        return True
+    return any(mime.startswith(p) for p in _ALLOWED_CANVAS_MIME_PREFIXES)
+
+
+def _load_spanned_wall_or_404(wall_id: int, owner_org_id: int) -> dict:
+    wall = query_one(
+        "SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+        (wall_id, owner_org_id),
+    )
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    if wall["mode"] != "spanned" or not wall.get("spanned_playlist_id"):
+        raise http_error(404, "wall.not_spanned", "Wall is not spanned.")
+    return wall
+
+
+@app.get("/walls/{wall_id}/canvas-playlist")
+def get_canvas_playlist(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    items = query_all(
+        """SELECT pi.id, pi.media_id, pi.position, pi.duration_seconds,
+                  pi.duration_override_seconds, pi.fit_mode,
+                  m.name AS media_name, m.mime_type, m.filename
+           FROM playlist_items pi JOIN media m ON m.id = pi.media_id
+           WHERE pi.playlist_id = ?
+           ORDER BY pi.position ASC, pi.id ASC""",
+        (wall["spanned_playlist_id"],),
+    )
+    return {"wall_id": wall_id, "playlist_id": wall["spanned_playlist_id"], "items": items}
+
+
+class CanvasItemCreate(BaseModel):
+    media_id: int
+    position: int = Field(..., ge=0)
+    duration_override_seconds: Optional[int] = Field(default=None, ge=1, le=86400)
+    fit_mode: str = Field(default="fit", pattern="^(fit|fill|stretch)$")
+
+
+@app.post("/walls/{wall_id}/canvas-playlist/items", status_code=201)
+def add_canvas_item(wall_id: int, payload: CanvasItemCreate,
+                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    media = query_one(
+        "SELECT * FROM media WHERE id = ? AND organization_id = ?",
+        (payload.media_id, org_id(user)),
+    )
+    if not media:
+        raise http_error(404, "media.not_found", "Media not found")
+    if not _is_allowed_canvas_mime(media["mime_type"]):
+        raise http_error(400, "wall.canvas_media_type_blocked",
+                         "URL embeds aren't supported on spanned walls. "
+                         "Use mirrored mode for URL media.")
+    duration_seconds = payload.duration_override_seconds or 5
+    item_id = execute(
+        """INSERT INTO playlist_items
+               (playlist_id, media_id, position, duration_seconds,
+                duration_override_seconds, fit_mode, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (wall["spanned_playlist_id"], payload.media_id, payload.position,
+         duration_seconds, payload.duration_override_seconds, payload.fit_mode,
+         utc_now_iso()),
+    )
+    if media["mime_type"] == "application/pdf":
+        _ensure_pdf_rasterized(media, wall)
+    return query_one("SELECT * FROM playlist_items WHERE id = ?", (item_id,))
+
+
+class CanvasItemUpdate(BaseModel):
+    position: Optional[int] = Field(default=None, ge=0)
+    duration_override_seconds: Optional[int] = Field(default=None, ge=1, le=86400)
+    fit_mode: Optional[str] = Field(default=None, pattern="^(fit|fill|stretch)$")
+
+
+@app.patch("/walls/{wall_id}/canvas-playlist/items/{item_id}")
+def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
+                      user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    item = query_one(
+        "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
+        (item_id, wall["spanned_playlist_id"]),
+    )
+    if not item:
+        raise http_error(404, "playlist_item.not_found", "Item not found")
+    fields = payload.model_dump(exclude_unset=True)
+    if fields:
+        sets = ", ".join(f"{k} = ?" for k in fields.keys())
+        params = list(fields.values()) + [item_id]
+        execute(f"UPDATE playlist_items SET {sets} WHERE id = ?", tuple(params))
+    return query_one("SELECT * FROM playlist_items WHERE id = ?", (item_id,))
+
+
+@app.delete("/walls/{wall_id}/canvas-playlist/items/{item_id}", status_code=204)
+def delete_canvas_item(wall_id: int, item_id: int,
+                       user: dict = Depends(require_roles("admin", "editor"))) -> None:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    execute(
+        "DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?",
+        (item_id, wall["spanned_playlist_id"]),
+    )
+
+
+def _ensure_pdf_rasterized(media: dict, wall: dict) -> None:
+    """Synchronously rasterize a PDF to the wall's canvas size if not already done."""
+    from pathlib import Path
+    from pdf_render import rasterize_pdf, PdfRenderError  # type: ignore
+    out_dir = (Path(UPLOAD_DIR) / "pdf_pages" / str(media["id"])
+               / f"canvas_{wall['canvas_width_px']}x{wall['canvas_height_px']}")
+    if out_dir.exists() and any(out_dir.iterdir()):
+        return  # Already rendered for this resolution.
+    pdf_path = Path(UPLOAD_DIR) / media["filename"]
+    try:
+        rasterize_pdf(str(pdf_path), str(out_dir),
+                      width_px=wall["canvas_width_px"],
+                      height_px=wall["canvas_height_px"])
+        execute("UPDATE media SET pdf_pages_status = 'ready' WHERE id = ?",
+                (media["id"],))
+    except PdfRenderError as exc:
+        execute("UPDATE media SET pdf_pages_status = 'error' WHERE id = ?",
+                (media["id"],))
+        raise http_error(500, "wall.pdf_rasterize_failed",
+                         f"Couldn't render PDF: {exc}")
+
+
 @app.post("/screens/{screen_id}/preview-token")
 def create_preview_token(
     screen_id: int, user: dict = Depends(require_roles("admin", "editor"))
