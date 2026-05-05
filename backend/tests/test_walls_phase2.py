@@ -322,3 +322,69 @@ def test_mode_change_other_fields_still_update(client, admin_token):
     updated = res.json()
     assert updated["name"] == "Renamed"
     assert abs(updated["bezel_h_pct"] - 3.5) < 0.01
+
+
+def test_hello_frame_for_spanned_includes_canvas_geometry_bezel():
+    from walls import _hello_frame
+    wall = {"id": 7, "mode": "spanned", "rows": 2, "cols": 2,
+            "canvas_width_px": 3840, "canvas_height_px": 2160,
+            "bezel_h_pct": 2.0, "bezel_v_pct": 1.0}
+    cell = {"row_index": 0, "col_index": 1}
+    frame = _hello_frame(wall, cell, current_play=None)
+    assert frame["mode"] == "spanned"
+    assert frame["canvas"] == {"w": 3840, "h": 2160}
+    assert frame["bezel"] == {"h_pct": 2.0, "v_pct": 1.0}
+    g = frame["cell_geometry"]
+    # Visible per cell: (1 - 1*0.02) / 2 = 0.49 of canvas width.
+    # Cell (0,1) starts at: 1 * (cell_w + gap) = 1 * (0.49 + 0.02) = 0.51.
+    assert abs(g["x"] - 3840 * 0.51) < 1
+    assert abs(g["w"] - 3840 * 0.49) < 1
+    assert g["y"] == 0
+    # Vertical: 1 row gap → 0.01; visible_h = (1 - 1*0.01) / 2 = 0.495.
+    assert abs(g["h"] - 2160 * 0.495) < 1
+
+
+def test_hello_frame_for_mirrored_omits_spanned_fields():
+    from walls import _hello_frame
+    wall = {"id": 8, "mode": "mirrored", "rows": 1, "cols": 2,
+            "mirrored_mode": "same_playlist"}
+    cell = {"row_index": 0, "col_index": 0}
+    frame = _hello_frame(wall, cell, current_play=None)
+    assert frame["mode"] == "mirrored"
+    assert "canvas" not in frame
+    assert "cell_geometry" not in frame
+    assert "bezel" not in frame
+
+
+def test_play_frame_includes_fit_mode():
+    from walls import _build_play_frame
+    item = {"id": 99, "url": "/uploads/x.mp4", "mime_type": "video/mp4",
+            "name": "x", "duration_seconds": 30, "fit_mode": "cover"}
+    frame = _build_play_frame(item, started_at_ms=1000, signature="sig")
+    assert frame["fit_mode"] == "cover"
+
+
+def test_play_frame_default_fit_mode_when_missing():
+    from walls import _build_play_frame
+    item = {"id": 1, "url": "/uploads/x.png", "mime_type": "image/png",
+            "name": "x", "duration_seconds": 5}  # no fit_mode key
+    frame = _build_play_frame(item, started_at_ms=0, signature="s")
+    assert frame["fit_mode"] == "fit"
+
+
+def test_canvas_items_loader_image_only(client, admin_token):
+    """Verify _load_canvas_items returns image items with url + fit_mode."""
+    from walls import _load_canvas_items
+    wall = _create_spanned_wall(client, admin_token)
+    media = _upload_image(client, admin_token)
+    client.post(f"/walls/{wall['id']}/canvas-playlist/items",
+                headers=_auth(admin_token),
+                json={"media_id": media["id"], "position": 0,
+                      "duration_override_seconds": 7, "fit_mode": "fill"})
+    full_wall = query_one("SELECT * FROM walls WHERE id = ?", (wall["id"],))
+    items = _load_canvas_items(wall["id"], full_wall)
+    assert len(items) == 1
+    assert items[0]["fit_mode"] == "fill"
+    assert items[0]["duration_seconds"] == 7  # override applied
+    assert items[0]["url"].startswith("/uploads/")
+    assert items[0]["mime_type"].startswith("image/")
