@@ -56,7 +56,7 @@ def test_pdf_render_corrupt_input_raises(tmp_path):
 
 import secrets, uuid
 from fastapi.testclient import TestClient
-from db import execute, query_one, utc_now_iso
+from db import execute, query_one, query_all, utc_now_iso
 
 
 @pytest.fixture
@@ -254,3 +254,71 @@ def test_canvas_playlist_cross_org_isolation(client, admin_token):
     res = client.get(f"/walls/{wall['id']}/canvas-playlist",
                      headers={"Authorization": f"Bearer {other_token}"})
     assert res.status_code == 404  # wall doesn't belong to other org
+
+
+def test_mode_change_mirrored_to_spanned_clears_mirrored_keeps_pairings(client, admin_token):
+    pl_id = execute(
+        "INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
+        (admin_token["org_id"], "p_mir2sp", utc_now_iso()),
+    )
+    wall = client.post("/walls", headers=_auth(admin_token), json={
+        "name": "M2S", "mode": "mirrored", "rows": 1, "cols": 2,
+        "mirrored_mode": "same_playlist", "mirrored_playlist_id": pl_id}).json()
+    # Simulate a paired cell so we can confirm preservation.
+    execute(
+        "UPDATE wall_cells SET screen_id = NULL WHERE wall_id = ?",  # baseline: NULL is fine
+        (wall["id"],),
+    )
+    res = client.patch(f"/walls/{wall['id']}", headers=_auth(admin_token), json={
+        "mode": "spanned",
+        "canvas_width_px": 3840, "canvas_height_px": 2160,
+        "bezel_h_pct": 0, "bezel_v_pct": 0,
+    })
+    assert res.status_code == 200, res.text
+    updated = res.json()
+    assert updated["mode"] == "spanned"
+    assert updated["mirrored_playlist_id"] is None
+    assert updated["mirrored_mode"] is None
+    assert updated["spanned_playlist_id"] is not None
+    # Old playlist gone.
+    assert query_one("SELECT id FROM playlists WHERE id = ?", (pl_id,)) is None
+    # Cells preserved (count matches rows × cols).
+    cells = query_all("SELECT * FROM wall_cells WHERE wall_id = ?", (wall["id"],))
+    assert len(cells) == 2  # 1×2 wall
+
+
+def test_mode_change_spanned_to_mirrored_clears_canvas_playlist(client, admin_token):
+    wall = _create_spanned_wall(client, admin_token)
+    canvas_pl = wall["spanned_playlist_id"]
+    res = client.patch(f"/walls/{wall['id']}", headers=_auth(admin_token), json={
+        "mode": "mirrored",
+        "mirrored_mode": "same_playlist",
+    })
+    assert res.status_code == 200, res.text
+    updated = res.json()
+    assert updated["mode"] == "mirrored"
+    assert updated["spanned_playlist_id"] is None
+    # Canvas playlist deleted.
+    assert query_one("SELECT id FROM playlists WHERE id = ?", (canvas_pl,)) is None
+
+
+def test_mode_change_same_mode_is_noop_on_playlist(client, admin_token):
+    wall = _create_spanned_wall(client, admin_token)
+    canvas_pl = wall["spanned_playlist_id"]
+    res = client.patch(f"/walls/{wall['id']}", headers=_auth(admin_token), json={
+        "mode": "spanned",
+    })
+    assert res.status_code == 200, res.text
+    updated = res.json()
+    assert updated["spanned_playlist_id"] == canvas_pl  # unchanged
+
+
+def test_mode_change_other_fields_still_update(client, admin_token):
+    wall = _create_spanned_wall(client, admin_token)
+    res = client.patch(f"/walls/{wall['id']}", headers=_auth(admin_token), json={
+        "name": "Renamed", "bezel_h_pct": 3.5,
+    })
+    assert res.status_code == 200, res.text
+    updated = res.json()
+    assert updated["name"] == "Renamed"
+    assert abs(updated["bezel_h_pct"] - 3.5) < 0.01

@@ -1853,9 +1853,33 @@ def patch_wall(wall_id: int, payload: WallUpdate,
                      (wall_id, org_id(user)))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall not found")
+
     fields = payload.model_dump(exclude_unset=True)
+
+    # Mode change side effects: delete outgoing playlist, create incoming.
+    # Pairings (wall_cells.screen_id) are preserved.
+    if "mode" in fields and fields["mode"] != wall["mode"]:
+        new_mode = fields["mode"]
+        if wall["mode"] == "mirrored" and wall.get("mirrored_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ?",
+                    (wall["mirrored_playlist_id"],))
+            fields["mirrored_playlist_id"] = None
+            fields["mirrored_mode"] = None
+        elif wall["mode"] == "spanned" and wall.get("spanned_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ?",
+                    (wall["spanned_playlist_id"],))
+            fields["spanned_playlist_id"] = None
+        if new_mode == "spanned":
+            new_pl = execute(
+                "INSERT INTO playlists (organization_id, name, kind, created_at) "
+                "VALUES (?, ?, 'wall_canvas', ?)",
+                (org_id(user), f"Canvas: {wall['name']}", utc_now_iso()),
+            )
+            fields["spanned_playlist_id"] = new_pl
+
     if not fields:
         return serialize_wall(wall)
+
     sets = ", ".join(f"{k} = ?" for k in fields.keys())
     params = list(fields.values()) + [utc_now_iso(), wall_id]
     execute(f"UPDATE walls SET {sets}, updated_at = ? WHERE id = ?", tuple(params))
