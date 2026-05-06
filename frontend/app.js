@@ -2130,7 +2130,21 @@ const Walls = (() => {
           playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
         }));
     });
+    mountModeSwitchButton(wall);
     refreshMosaic(wall.id);
+  }
+
+  function mountModeSwitchButton(wall) {
+    const header = document.querySelector(".walls-editor-header");
+    if (!header) return;
+    header.querySelector(".walls-mode-switch-btn")?.remove();
+    const otherMode = wall.mode === "spanned" ? "mirrored" : "spanned";
+    const modeBtn = document.createElement("button");
+    modeBtn.className = "btn btn-ghost walls-mode-switch-btn";
+    modeBtn.textContent = Khan.t(`walls.switch_to_${otherMode}`,
+      `Switch to ${otherMode}`);
+    modeBtn.addEventListener("click", () => openModeChangeModal(wall, otherMode));
+    header.appendChild(modeBtn);
   }
 
   function renderCellTile(c, wall, playlists) {
@@ -2292,6 +2306,7 @@ const Walls = (() => {
     renderCanvasItemList(wall, list.items);
     body.querySelector("#canvas-add-item").addEventListener("click",
       () => openCanvasMediaPicker(wall, mediaList));
+    mountModeSwitchButton(wall);
   }
 
   function renderCanvasItemList(wall, items) {
@@ -2385,6 +2400,55 @@ const Walls = (() => {
     } catch (err) {
       toast(err.message || "add failed", "error");
     }
+  }
+
+  function openModeChangeModal(wall, newMode) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal";
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <h3>${Khan.t("walls.mode_change_confirm_title", "Switch wall mode")}</h3>
+        <p>${Khan.t("walls.mode_change_confirm_body",
+          "Switching this wall to {mode} will permanently delete its current playlist. Cell pairings stay.")
+          .replace("{mode}", Khan.t(`walls.mode_${newMode}`, newMode))}</p>
+        <p>${Khan.t("walls.mode_change_type_name_to_confirm",
+          "Type the wall name to confirm:")}</p>
+        <input id="mode-change-typed" autocomplete="off" />
+        <div class="modal-actions">
+          <button class="btn" id="mode-change-cancel">${Khan.t("walls.cancel", "Cancel")}</button>
+          <button class="btn btn-danger" id="mode-change-switch" disabled>${
+            Khan.t("walls.mode_change_switch_btn", "Switch")}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const typed = overlay.querySelector("#mode-change-typed");
+    const switchBtn = overlay.querySelector("#mode-change-switch");
+    typed.addEventListener("input", () => {
+      switchBtn.disabled = typed.value !== wall.name;
+    });
+    overlay.querySelector("#mode-change-cancel").addEventListener("click",
+      () => overlay.remove());
+    switchBtn.addEventListener("click", async () => {
+      const payload = {mode: newMode};
+      if (newMode === "spanned") {
+        payload.canvas_width_px = 3840;
+        payload.canvas_height_px = 2160;
+        payload.bezel_h_pct = 0;
+        payload.bezel_v_pct = 0;
+      } else {
+        payload.mirrored_mode = "same_playlist";
+      }
+      try {
+        await api(`/walls/${wall.id}`, {method: "PATCH", body: JSON.stringify(payload)});
+        toast(Khan.t("walls.mode_changed", "Mode changed"));
+        overlay.remove();
+        await loadList();
+        openEditor(wall.id);
+      } catch (err) {
+        toast(err.message || "mode change failed", "error");
+      }
+    });
   }
 
   return {
