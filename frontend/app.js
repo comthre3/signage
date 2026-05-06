@@ -1965,8 +1965,8 @@ const Walls = (() => {
           <legend>${Khan.t("walls.mode", "Mode")}</legend>
           <label><input type="radio" name="mode" value="mirrored" checked />
             ${Khan.t("walls.mode_mirrored", "Mirrored")}</label>
-          <label><input type="radio" name="mode" value="spanned" disabled />
-            ${Khan.t("walls.mode_spanned_phase2", "Spanned (Phase 2 — coming soon)")}</label>
+          <label><input type="radio" name="mode" value="spanned" />
+            ${Khan.t("walls.mode_spanned", "Spanned")}</label>
         </fieldset>
         <div class="walls-grid-picker">
           <label>${Khan.t("walls.rows", "Rows")}
@@ -1974,6 +1974,18 @@ const Walls = (() => {
           <label>${Khan.t("walls.cols", "Cols")}
             <input name="cols" type="number" min="1" max="8" value="2" required /></label>
         </div>
+        <fieldset class="spanned-fields hidden">
+          <legend>${Khan.t("walls.canvas_resolution", "Canvas resolution")}</legend>
+          <select name="canvas_resolution">
+            <option value="1920x1080">1080p (1920×1080)</option>
+            <option value="3840x2160" selected>4K (3840×2160)</option>
+            <option value="7680x4320">8K (7680×4320)</option>
+          </select>
+          <label>${Khan.t("walls.bezel_horizontal_pct", "Horizontal bezel %")}
+            <input type="number" name="bezel_h_pct" min="0" max="10" step="0.1" value="0" /></label>
+          <label>${Khan.t("walls.bezel_vertical_pct", "Vertical bezel %")}
+            <input type="number" name="bezel_v_pct" min="0" max="10" step="0.1" value="0" /></label>
+        </fieldset>
         <fieldset class="mirrored-fields">
           <legend>${Khan.t("walls.mirrored_submode", "Mirrored sub-mode")}</legend>
           <label><input type="radio" name="mirrored_mode" value="same_playlist" checked />
@@ -2001,20 +2013,35 @@ const Walls = (() => {
         body.querySelector(".same-playlist-only").style.display = same ? "" : "none";
       });
     });
+    body.querySelectorAll('input[name="mode"]').forEach(el => {
+      el.addEventListener("change", () => {
+        const mode = body.querySelector('input[name="mode"]:checked').value;
+        body.querySelector(".spanned-fields").classList.toggle("hidden", mode !== "spanned");
+        body.querySelector(".mirrored-fields").classList.toggle("hidden", mode !== "mirrored");
+      });
+    });
   }
 
   async function submitWizard(ev) {
     ev.preventDefault();
     const f = ev.target;
-    const sub = f.mirrored_mode.value;
     const payload = {
       name: f.name.value.trim(),
       mode: f.mode.value,
       rows: parseInt(f.rows.value, 10),
       cols: parseInt(f.cols.value, 10),
-      mirrored_mode: sub,
     };
-    if (sub === "same_playlist") payload.mirrored_playlist_id = parseInt(f.mirrored_playlist_id.value, 10);
+    if (f.mode.value === "spanned") {
+      const [w, h] = f.canvas_resolution.value.split("x").map(Number);
+      payload.canvas_width_px = w;
+      payload.canvas_height_px = h;
+      payload.bezel_h_pct = parseFloat(f.bezel_h_pct.value) || 0;
+      payload.bezel_v_pct = parseFloat(f.bezel_v_pct.value) || 0;
+    } else {
+      const sub = f.mirrored_mode.value;
+      payload.mirrored_mode = sub;
+      if (sub === "same_playlist") payload.mirrored_playlist_id = parseInt(f.mirrored_playlist_id.value, 10);
+    }
     try {
       const w = await api("/walls", { method: "POST", body: JSON.stringify(payload) });
       toast(Khan.t("walls.created", "Wall created"));
