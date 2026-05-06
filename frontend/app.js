@@ -1965,8 +1965,11 @@ const Walls = (() => {
           <legend>${Khan.t("walls.mode", "Mode")}</legend>
           <label><input type="radio" name="mode" value="mirrored" checked />
             ${Khan.t("walls.mode_mirrored", "Mirrored")}</label>
+          ${window.WALLS_PHASE2_ENABLED ? `
           <label><input type="radio" name="mode" value="spanned" />
-            ${Khan.t("walls.mode_spanned", "Spanned")}</label>
+            ${Khan.t("walls.mode_spanned", "Spanned")}</label>` : `
+          <label><input type="radio" name="mode" value="spanned" disabled />
+            ${Khan.t("walls.mode_spanned_phase2", "Spanned (coming soon)")}</label>`}
         </fieldset>
         <div class="walls-grid-picker">
           <label>${Khan.t("walls.rows", "Rows")}
