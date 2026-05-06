@@ -2096,6 +2096,9 @@ const Walls = (() => {
 
   async function renderEditor(id) {
     const wall = await api(`/walls/${id}`);
+    if (wall.mode === "spanned") {
+      return renderCanvasEditor(wall);
+    }
     const body = document.getElementById("walls-editor-body");
     document.getElementById("walls-editor-title").textContent = wall.name;
     const playlists = wall.mirrored_mode === "synced_rotation" ? await api("/playlists") : [];
@@ -2236,6 +2239,152 @@ const Walls = (() => {
     };
     timerId = setInterval(tick, 5000);
     mosaicTimer = timerId;
+  }
+
+  async function renderCanvasEditor(wall) {
+    const body = document.getElementById("walls-editor-body");
+    document.getElementById("walls-editor-title").textContent = wall.name;
+    const [list, mediaList] = await Promise.all([
+      api(`/walls/${wall.id}/canvas-playlist`),
+      api(`/media`),
+    ]);
+    state.editing = wall.id;
+    body.innerHTML = `
+      <div class="canvas-editor-summary">
+        <span class="walls-meta">
+          ${Khan.t("walls.mode_spanned", "Spanned")} ·
+          ${wall.canvas_width_px}×${wall.canvas_height_px} ·
+          ${wall.rows}×${wall.cols}
+        </span>
+      </div>
+      <div class="canvas-editor-grid">
+        <div class="canvas-editor-rail">
+          <h4>${Khan.t("walls.canvas_items", "Items")}</h4>
+          <ul id="canvas-items-list"></ul>
+          <button id="canvas-add-item" class="btn">${Khan.t("walls.canvas_add_item", "Add item")}</button>
+        </div>
+        <div class="canvas-editor-preview" id="canvas-preview">
+          <div class="canvas-bezel-grid"
+               style="grid-template-columns: repeat(${wall.cols}, 1fr);
+                      grid-template-rows: repeat(${wall.rows}, 1fr);
+                      aspect-ratio: ${wall.canvas_width_px} / ${wall.canvas_height_px};
+                      gap: ${wall.bezel_h_pct}% ${wall.bezel_v_pct}%;">
+            ${Array.from({length: wall.rows * wall.cols}).map(() =>
+              `<div class="canvas-bezel-cell"></div>`).join("")}
+          </div>
+          <div id="canvas-preview-media" class="canvas-preview-media"></div>
+        </div>
+      </div>
+      <div id="canvas-item-detail" class="canvas-item-detail hidden">
+        <h4>${Khan.t("walls.selected_item", "Selected item")}</h4>
+        <label>${Khan.t("walls.duration_override_seconds", "Duration (seconds)")}
+          <input id="canvas-item-duration" type="number" min="1" max="86400" /></label>
+        <fieldset>
+          <legend>${Khan.t("walls.fit_mode", "Fit mode")}</legend>
+          <label><input type="radio" name="fit" value="fit" />${Khan.t("walls.fit_fit", "Fit")}</label>
+          <label><input type="radio" name="fit" value="fill" />${Khan.t("walls.fit_fill", "Fill")}</label>
+          <label><input type="radio" name="fit" value="stretch" />${Khan.t("walls.fit_stretch", "Stretch")}</label>
+        </fieldset>
+        <button id="canvas-item-save" class="btn btn-primary">${Khan.t("walls.save", "Save")}</button>
+        <button id="canvas-item-delete" class="btn btn-danger">${Khan.t("walls.delete", "Delete")}</button>
+      </div>
+    `;
+    renderCanvasItemList(wall, list.items);
+    body.querySelector("#canvas-add-item").addEventListener("click",
+      () => openCanvasMediaPicker(wall, mediaList));
+  }
+
+  function renderCanvasItemList(wall, items) {
+    const root = document.getElementById("canvas-items-list");
+    if (!items.length) {
+      root.innerHTML = `<li class="empty">${Khan.t("walls.canvas_empty", "No items yet.")}</li>`;
+      return;
+    }
+    root.innerHTML = items.map(it => `
+      <li data-item-id="${it.id}">
+        <span>${escHtml(it.media_name)}</span>
+        <small>${it.fit_mode} · ${it.duration_override_seconds || it.duration_seconds}s</small>
+      </li>
+    `).join("");
+    root.querySelectorAll("[data-item-id]").forEach(li => {
+      li.addEventListener("click", () => selectCanvasItem(wall, items.find(
+        it => String(it.id) === li.dataset.itemId)));
+    });
+  }
+
+  function selectCanvasItem(wall, item) {
+    state.canvasSelectedItem = item;
+    const detail = document.getElementById("canvas-item-detail");
+    detail.classList.remove("hidden");
+    detail.querySelector("#canvas-item-duration").value =
+      item.duration_override_seconds || item.duration_seconds || "";
+    detail.querySelectorAll('input[name="fit"]').forEach(el => {
+      el.checked = el.value === item.fit_mode;
+    });
+    detail.querySelector("#canvas-item-save").onclick = () => saveCanvasItem(wall, item);
+    detail.querySelector("#canvas-item-delete").onclick = () => deleteCanvasItem(wall, item);
+    const preview = document.getElementById("canvas-preview-media");
+    if (item.mime_type.startsWith("video/")) {
+      preview.innerHTML = `<video src="${item.filename ? '/uploads/' + item.filename : ''}"
+        muted autoplay loop playsinline></video>`;
+    } else if (item.mime_type === "application/pdf") {
+      preview.innerHTML = `<div class="pdf-thumb">PDF — ${escHtml(item.media_name)}</div>`;
+    } else {
+      preview.innerHTML = `<img src="/uploads/${item.filename || ''}" alt="" />`;
+    }
+  }
+
+  async function saveCanvasItem(wall, item) {
+    const detail = document.getElementById("canvas-item-detail");
+    const dur = parseInt(detail.querySelector("#canvas-item-duration").value, 10);
+    const fit = detail.querySelector('input[name="fit"]:checked')?.value || "fit";
+    try {
+      await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({duration_override_seconds: isNaN(dur) ? null : dur, fit_mode: fit}),
+      });
+      toast(Khan.t("walls.cell_updated", "Updated"));
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
+    }
+  }
+
+  async function deleteCanvasItem(wall, item) {
+    if (!confirm(Khan.t("walls.canvas_confirm_delete", "Delete this item?"))) return;
+    try {
+      await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {method: "DELETE"});
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || "delete failed", "error");
+    }
+  }
+
+  async function openCanvasMediaPicker(wall, mediaList) {
+    const allowed = mediaList.filter(m =>
+      m.mime_type.startsWith("image/") ||
+      m.mime_type.startsWith("video/") ||
+      m.mime_type === "application/pdf");
+    if (!allowed.length) {
+      toast(Khan.t("walls.canvas_no_media", "Upload an image, video, or PDF first."), "error");
+      return;
+    }
+    const id = parseInt(prompt(
+      Khan.t("walls.canvas_pick_media", "Pick media id:") + "\n" +
+      allowed.map(m => `${m.id}: ${m.name} (${m.mime_type})`).join("\n")), 10);
+    if (!id || !allowed.find(m => m.id === id)) return;
+    const list = await api(`/walls/${wall.id}/canvas-playlist`);
+    const position = list.items.length;
+    try {
+      await api(`/walls/${wall.id}/canvas-playlist/items`, {
+        method: "POST",
+        body: JSON.stringify({media_id: id, position, fit_mode: "fit"}),
+      });
+      toast(Khan.t("walls.canvas_added", "Item added"));
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || "add failed", "error");
+    }
   }
 
   return {
