@@ -1,4 +1,5 @@
 import hashlib
+import math
 import hmac
 import json
 import logging
@@ -2297,7 +2298,7 @@ def _default_duration_seconds(media: dict) -> int:
     if mime.startswith("video/"):
         stored = media.get("duration_seconds")
         if isinstance(stored, (int, float)) and stored > 0:
-            return max(1, int(stored))
+            return max(1, math.ceil(stored))
         return 10
     if mime == "application/pdf":
         return 30
