@@ -2071,8 +2071,13 @@ const MediaPicker = (() => {
       grid.innerHTML = `
         <div class="media-picker-empty">
           <p>${Khan.t("media_picker.empty_library", "No media yet. Upload some in the Media tab.")}</p>
+          <button class="btn media-picker-go-to-media">${Khan.t("nav.media", "Media")}</button>
         </div>
       `;
+      grid.querySelector(".media-picker-go-to-media").addEventListener("click", () => {
+        close({ cancelled: true });
+        if (typeof showSection === "function") showSection("media");
+      });
       return;
     }
     const items = visibleItems();
