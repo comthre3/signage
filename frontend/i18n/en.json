@@ -254,5 +254,20 @@
   "walls.pdf_rasterize_failed": "Couldn't render PDF.",
   "walls.pdf_too_long": "PDF is too long for spanned mode (50-page max).",
   "walls.bezel_too_large": "Bezel percentages too large — visible area would collapse.",
-  "walls.canvas_resolution_invalid": "Canvas resolution must be 1080p, 4K, or 8K."
+  "walls.canvas_resolution_invalid": "Canvas resolution must be 1080p, 4K, or 8K.",
+  "media_picker.title": "Pick media",
+  "media_picker.search_placeholder": "Search by name…",
+  "media_picker.filter_all": "All",
+  "media_picker.filter_images": "Images",
+  "media_picker.filter_videos": "Videos",
+  "media_picker.filter_pdfs": "PDFs",
+  "media_picker.filter_urls": "URLs",
+  "media_picker.advanced_durations": "Advanced: set per-item durations",
+  "media_picker.cancel": "Cancel",
+  "media_picker.add_n": "Add {n} items",
+  "media_picker.selected_n": "{n} selected",
+  "media_picker.empty_library": "No media yet. Upload some in the Media tab.",
+  "media_picker.empty_filtered": "No matches.",
+  "media_picker.fetch_failed": "Couldn't load media.",
+  "playlist.add_media": "Add media"
 }

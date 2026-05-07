@@ -254,5 +254,20 @@
   "walls.pdf_rasterize_failed": "تعذر معالجة PDF.",
   "walls.pdf_too_long": "ملف PDF طويل جداً للنمط الممتد (50 صفحة كحد أقصى).",
   "walls.bezel_too_large": "نسب الإطار كبيرة جداً — ستنهار المساحة المرئية.",
-  "walls.canvas_resolution_invalid": "يجب أن تكون دقة لوحة العرض 1080p أو 4K أو 8K."
+  "walls.canvas_resolution_invalid": "يجب أن تكون دقة لوحة العرض 1080p أو 4K أو 8K.",
+  "media_picker.title": "اختر الوسائط",
+  "media_picker.search_placeholder": "ابحث بالاسم…",
+  "media_picker.filter_all": "الكل",
+  "media_picker.filter_images": "الصور",
+  "media_picker.filter_videos": "الفيديوهات",
+  "media_picker.filter_pdfs": "PDF",
+  "media_picker.filter_urls": "روابط",
+  "media_picker.advanced_durations": "متقدم: تعيين مدة لكل عنصر",
+  "media_picker.cancel": "إلغاء",
+  "media_picker.add_n": "إضافة {n} عناصر",
+  "media_picker.selected_n": "{n} محدد",
+  "media_picker.empty_library": "لا توجد وسائط بعد. ارفع بعضها من تبويب الوسائط.",
+  "media_picker.empty_filtered": "لا توجد نتائج.",
+  "media_picker.fetch_failed": "تعذر تحميل الوسائط.",
+  "playlist.add_media": "إضافة وسائط"
 }
