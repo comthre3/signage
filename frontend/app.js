@@ -1891,6 +1891,301 @@ document.querySelector('nav button[data-section="billing"]')?.addEventListener("
   showBilling();
 });
 
+// ====== MediaPicker ======
+const MediaPicker = (() => {
+  // Single-instance state. While `state.overlay` is non-null, open() is a no-op.
+  const state = {
+    overlay:      null,
+    mediaList:    [],   // raw /media response, filtered to allowedTypes
+    selection:    [],   // ordered array of media_ids picked
+    durations:    {},   // { media_id: number } — only for items the user touched in Advanced
+    chip:         "all",
+    search:       "",
+    advancedOpen: false,
+    resolve:      null,
+    reject:       null,
+  };
+
+  function classifyMime(mime) {
+    if (!mime) return "other";
+    const m = mime.toLowerCase();
+    if (m.startsWith("image/")) return "image";
+    if (m.startsWith("video/")) return "video";
+    if (m === "application/pdf") return "pdf";
+    if (m === "text/url") return "url";
+    return "other";
+  }
+
+  function open({ allowedTypes }) {
+    if (!Array.isArray(allowedTypes) || allowedTypes.length === 0) {
+      throw new Error("MediaPicker.open: allowedTypes must be a non-empty array");
+    }
+    if (state.overlay) {
+      console.warn("MediaPicker already open; ignoring open() call");
+      return Promise.resolve([]);
+    }
+    state.allowedTypes = allowedTypes.slice();
+    state.selection = [];
+    state.durations = {};
+    state.chip = "all";
+    state.search = "";
+    state.advancedOpen = false;
+    return new Promise(async (resolve, reject) => {
+      state.resolve = resolve;
+      state.reject  = reject;
+      mountOverlay();
+      await loadMedia();
+    });
+  }
+
+  function close(picksOrCancel) {
+    const overlay = state.overlay;
+    state.overlay = null;
+    document.removeEventListener("keydown", onKeyDown);
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    if (picksOrCancel && picksOrCancel.cancelled) {
+      state.reject({ cancelled: true });
+    } else {
+      state.resolve(picksOrCancel);
+    }
+    state.resolve = null;
+    state.reject  = null;
+  }
+
+  function mountOverlay() {
+    const o = document.createElement("div");
+    o.className = "modal media-picker-modal";
+    o.innerHTML = `
+      <div class="modal-card media-picker-card">
+        <div class="media-picker-header">
+          <h3>${Khan.t("media_picker.title", "Pick media")}</h3>
+          <input class="media-picker-search" type="search"
+                 placeholder="${Khan.t("media_picker.search_placeholder", "Search by name…")}" />
+          <button class="media-picker-close btn-ghost" aria-label="Close">✕</button>
+        </div>
+        <div class="media-picker-chips"></div>
+        <div class="media-picker-grid" aria-live="polite"></div>
+        <div class="media-picker-advanced">
+          <button class="media-picker-advanced-toggle btn-ghost" type="button">
+            ▸ ${Khan.t("media_picker.advanced_durations", "Advanced: set per-item durations")}
+          </button>
+          <div class="media-picker-advanced-list hidden"></div>
+        </div>
+        <div class="media-picker-footer">
+          <span class="media-picker-count">${Khan.t("media_picker.selected_n", "{n} selected").replace("{n}", "0")}</span>
+          <div class="media-picker-actions">
+            <button class="btn btn-ghost media-picker-cancel">${Khan.t("media_picker.cancel", "Cancel")}</button>
+            <button class="btn btn-primary media-picker-confirm" disabled>${
+              Khan.t("media_picker.add_n", "Add {n} items").replace("{n}", "0")}</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(o);
+    state.overlay = o;
+
+    // Close on backdrop click (but not on card click).
+    o.addEventListener("click", (e) => {
+      if (e.target === o) close({ cancelled: true });
+    });
+    o.querySelector(".media-picker-close").addEventListener("click", () => close({ cancelled: true }));
+    o.querySelector(".media-picker-cancel").addEventListener("click", () => close({ cancelled: true }));
+    o.querySelector(".media-picker-search").addEventListener("input", (e) => {
+      state.search = e.target.value.trim().toLowerCase();
+      renderGrid();
+    });
+    o.querySelector(".media-picker-advanced-toggle").addEventListener("click", () => {
+      state.advancedOpen = !state.advancedOpen;
+      renderAdvanced();
+    });
+    o.querySelector(".media-picker-confirm").addEventListener("click", confirmPicks);
+
+    document.addEventListener("keydown", onKeyDown);
+    renderChips();
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Escape" && state.overlay) close({ cancelled: true });
+  }
+
+  async function loadMedia() {
+    const grid = state.overlay.querySelector(".media-picker-grid");
+    grid.textContent = "…";
+    try {
+      const all = await api("/media");
+      state.mediaList = all.filter(m =>
+        state.allowedTypes.includes(classifyMime(m.mime_type))
+      );
+      renderGrid();
+    } catch (err) {
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.fetch_failed", "Couldn't load media.")}</p>
+          <button class="btn media-picker-retry">Retry</button>
+        </div>
+      `;
+      grid.querySelector(".media-picker-retry").addEventListener("click", loadMedia);
+    }
+  }
+
+  function renderChips() {
+    const root = state.overlay.querySelector(".media-picker-chips");
+    const labels = {
+      all:    "filter_all",
+      image:  "filter_images",
+      video:  "filter_videos",
+      pdf:    "filter_pdfs",
+      url:    "filter_urls",
+    };
+    const fallbacks = { all: "All", image: "Images", video: "Videos", pdf: "PDFs", url: "URLs" };
+    const chips = ["all", ...state.allowedTypes];
+    root.innerHTML = chips.map(c => `
+      <button type="button"
+              data-chip="${c}"
+              class="media-picker-chip ${state.chip === c ? "active" : ""}">
+        ${Khan.t("media_picker." + labels[c], fallbacks[c])}
+      </button>
+    `).join("");
+    root.querySelectorAll(".media-picker-chip").forEach(el => {
+      el.addEventListener("click", () => {
+        const c = el.dataset.chip;
+        state.chip = state.chip === c ? "all" : c;
+        renderChips();
+        renderGrid();
+      });
+    });
+  }
+
+  function visibleItems() {
+    return state.mediaList.filter(m => {
+      const cls = classifyMime(m.mime_type);
+      if (state.chip !== "all" && cls !== state.chip) return false;
+      if (state.search && !(m.name || "").toLowerCase().includes(state.search)) return false;
+      return true;
+    });
+  }
+
+  function renderGrid() {
+    const grid = state.overlay.querySelector(".media-picker-grid");
+    if (!state.mediaList.length) {
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.empty_library", "No media yet. Upload some in the Media tab.")}</p>
+        </div>
+      `;
+      return;
+    }
+    const items = visibleItems();
+    if (!items.length) {
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.empty_filtered", "No matches.")}</p>
+        </div>
+      `;
+      return;
+    }
+    grid.innerHTML = items.map(m => renderCard(m)).join("");
+    grid.querySelectorAll(".media-picker-card").forEach(el => {
+      el.addEventListener("click", () => toggleSelect(parseInt(el.dataset.mediaId, 10)));
+    });
+  }
+
+  function renderCard(m) {
+    const cls = classifyMime(m.mime_type);
+    const idx = state.selection.indexOf(m.id);
+    const checked = idx !== -1;
+    const badge = checked ? `${idx + 1}` : "";
+    const pill = cls === "url" ? "URL" : cls.toUpperCase();
+    let thumb = "";
+    if (cls === "image") {
+      thumb = `<img src="/uploads/${m.filename || ""}" loading="lazy" alt="" />`;
+    } else if (cls === "video") {
+      thumb = `<video src="/uploads/${m.filename || ""}" preload="metadata" muted></video>`;
+    } else if (cls === "pdf") {
+      thumb = `<div class="picker-thumb-pdf">PDF</div>`;
+    } else if (cls === "url") {
+      let host = "";
+      try { host = new URL(m.url || "").hostname; } catch (_) {}
+      thumb = host
+        ? `<div class="picker-thumb-url"><img src="https://www.google.com/s2/favicons?domain=${host}&sz=64" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🌐'}))" /></div>`
+        : `<div class="picker-thumb-url">🌐</div>`;
+    } else {
+      thumb = `<div class="picker-thumb-other">?</div>`;
+    }
+    return `
+      <div class="media-picker-card ${checked ? "checked" : ""}" data-media-id="${m.id}">
+        <div class="media-picker-thumb">${thumb}</div>
+        <div class="media-picker-badge">${badge}</div>
+        <div class="media-picker-bottom">
+          <span class="media-picker-name" title="${(m.name || "").replace(/"/g, "&quot;")}">${(m.name || "").replace(/</g, "&lt;")}</span>
+          <span class="media-picker-pill">${pill}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function toggleSelect(mediaId) {
+    const i = state.selection.indexOf(mediaId);
+    if (i === -1) state.selection.push(mediaId);
+    else { state.selection.splice(i, 1); delete state.durations[mediaId]; }
+    renderGrid();
+    renderFooter();
+    if (state.advancedOpen) renderAdvanced();
+  }
+
+  function renderFooter() {
+    const n = state.selection.length;
+    state.overlay.querySelector(".media-picker-count").textContent =
+      Khan.t("media_picker.selected_n", "{n} selected").replace("{n}", String(n));
+    const btn = state.overlay.querySelector(".media-picker-confirm");
+    btn.textContent = Khan.t("media_picker.add_n", "Add {n} items").replace("{n}", String(n));
+    btn.disabled = n === 0;
+  }
+
+  function renderAdvanced() {
+    const wrap = state.overlay.querySelector(".media-picker-advanced-list");
+    wrap.classList.toggle("hidden", !state.advancedOpen);
+    if (!state.advancedOpen) return;
+    if (!state.selection.length) {
+      wrap.innerHTML = `<p class="media-picker-advanced-empty">—</p>`;
+      return;
+    }
+    wrap.innerHTML = state.selection.map((mid, i) => {
+      const m = state.mediaList.find(x => x.id === mid);
+      const dur = state.durations[mid];
+      const safeName = (m?.name || "").replace(/</g, "&lt;");
+      return `
+        <div class="media-picker-advanced-row" data-media-id="${mid}">
+          <span class="media-picker-advanced-idx">${i + 1}</span>
+          <span class="media-picker-advanced-name">${safeName}</span>
+          <input type="number" min="1" max="3600" placeholder="default"
+                 value="${dur ?? ""}" class="media-picker-advanced-duration" />
+        </div>
+      `;
+    }).join("");
+    wrap.querySelectorAll(".media-picker-advanced-duration").forEach(el => {
+      el.addEventListener("input", () => {
+        const row = el.closest(".media-picker-advanced-row");
+        const mid = parseInt(row.dataset.mediaId, 10);
+        const v = el.value.trim();
+        if (v === "") delete state.durations[mid];
+        else state.durations[mid] = Math.max(1, Math.min(3600, parseInt(v, 10)));
+      });
+    });
+  }
+
+  function confirmPicks() {
+    const picks = state.selection.map(mid => {
+      const out = { media_id: mid };
+      if (state.durations[mid] != null) out.duration_seconds = state.durations[mid];
+      return out;
+    });
+    close(picks);
+  }
+
+  return { open };
+})();
+
 // ====== Walls ======
 const Walls = (() => {
   const state = { walls: [], editing: null, pairing: null };
