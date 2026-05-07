@@ -1,8 +1,8 @@
 import hashlib
-import math
 import hmac
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -2296,6 +2296,8 @@ def _default_duration_seconds(media: dict) -> int:
     if mime.startswith("image/"):
         return 10
     if mime.startswith("video/"):
+        # forward-hook: media table has no duration_seconds column yet,
+        # so this currently always falls through to the 10s default.
         stored = media.get("duration_seconds")
         if isinstance(stored, (int, float)) and stored > 0:
             return max(1, math.ceil(stored))
