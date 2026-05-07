@@ -215,7 +215,6 @@ async function loadPlaylists() {
 async function loadMedia() {
   state.media = await api("/media");
   renderMedia();
-  renderMediaOptions();
 }
 
 async function loadUsers() {
@@ -309,16 +308,6 @@ function renderPlaylistSelect() {
   });
 }
 
-function renderMediaOptions() {
-  const select = document.getElementById("playlist-media");
-  select.innerHTML = `<option value="">Select media</option>`;
-  state.media.forEach((media) => {
-    const option = document.createElement("option");
-    option.value = media.id;
-    option.textContent = media.name;
-    select.appendChild(option);
-  });
-}
 
 function renderMedia() {
   const container = document.getElementById("media-list");
@@ -1069,11 +1058,24 @@ document.getElementById("playlist-select").addEventListener("change", async (e) 
 
 document.getElementById("playlist-add-item").addEventListener("click", async (e) => {
   const playlistId = document.getElementById("playlist-select").value;
-  const mediaId    = document.getElementById("playlist-media").value;
-  const duration   = Number(document.getElementById("playlist-duration").value || 10);
-  if (!playlistId || !mediaId) return;
+  if (!playlistId) return;
+  let picks;
+  try {
+    picks = await MediaPicker.open({ allowedTypes: ["image", "video", "pdf", "url"] });
+  } catch (err) {
+    if (err && err.cancelled) return;
+    throw err;
+  }
+  if (!picks.length) return;
   await withLoading(e.currentTarget, async () => {
-    await api(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ media_id: Number(mediaId), duration_seconds: duration }) });
+    for (const p of picks) {
+      const body = { media_id: p.media_id };
+      if (p.duration_seconds != null) body.duration_seconds = p.duration_seconds;
+      await api(`/playlists/${playlistId}/items`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    }
     toast(Khan.t("toast.item_added"), "success");
     await loadPlaylistItems(playlistId);
   });
