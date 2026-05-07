@@ -2570,10 +2570,7 @@ const Walls = (() => {
   async function renderCanvasEditor(wall) {
     const body = document.getElementById("walls-editor-body");
     document.getElementById("walls-editor-title").textContent = wall.name;
-    const [list, mediaList] = await Promise.all([
-      api(`/walls/${wall.id}/canvas-playlist`),
-      api(`/media`),
-    ]);
+    const list = await api(`/walls/${wall.id}/canvas-playlist`);
     state.editing = wall.id;
     body.innerHTML = `
       <div class="canvas-editor-summary">
@@ -2617,7 +2614,7 @@ const Walls = (() => {
     `;
     renderCanvasItemList(wall, list.items);
     body.querySelector("#canvas-add-item").addEventListener("click",
-      () => openCanvasMediaPicker(wall, mediaList));
+      () => openCanvasMediaPicker(wall));
     mountModeSwitchButton(wall);
   }
 
@@ -2687,26 +2684,27 @@ const Walls = (() => {
     }
   }
 
-  async function openCanvasMediaPicker(wall, mediaList) {
-    const allowed = mediaList.filter(m =>
-      m.mime_type.startsWith("image/") ||
-      m.mime_type.startsWith("video/") ||
-      m.mime_type === "application/pdf");
-    if (!allowed.length) {
-      toast(Khan.t("walls.canvas_no_media", "Upload an image, video, or PDF first."), "error");
-      return;
-    }
-    const id = parseInt(prompt(
-      Khan.t("walls.canvas_pick_media", "Pick media id:") + "\n" +
-      allowed.map(m => `${m.id}: ${m.name} (${m.mime_type})`).join("\n")), 10);
-    if (!id || !allowed.find(m => m.id === id)) return;
-    const list = await api(`/walls/${wall.id}/canvas-playlist`);
-    const position = list.items.length;
+  async function openCanvasMediaPicker(wall) {
+    let picks;
     try {
-      await api(`/walls/${wall.id}/canvas-playlist/items`, {
-        method: "POST",
-        body: JSON.stringify({media_id: id, position, fit_mode: "fit"}),
-      });
+      picks = await MediaPicker.open({ allowedTypes: ["image", "video", "pdf"] });
+    } catch (e) {
+      if (e && e.cancelled) return;
+      throw e;
+    }
+    if (!picks.length) return;
+    const list = await api(`/walls/${wall.id}/canvas-playlist`);
+    let position = list.items.length;
+    try {
+      for (const p of picks) {
+        const body = { media_id: p.media_id, position, fit_mode: "fit" };
+        if (p.duration_seconds != null) body.duration_override_seconds = p.duration_seconds;
+        await api(`/walls/${wall.id}/canvas-playlist/items`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        position++;
+      }
       toast(Khan.t("walls.canvas_added", "Item added"));
       await renderCanvasEditor(wall);
     } catch (err) {
