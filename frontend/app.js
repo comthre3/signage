@@ -1904,7 +1904,12 @@ const MediaPicker = (() => {
     advancedOpen: false,
     resolve:      null,
     reject:       null,
+    allowedTypes: [],
   };
+
+  function attrEscape(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  }
 
   function classifyMime(mime) {
     if (!mime) return "other";
@@ -1939,6 +1944,7 @@ const MediaPicker = (() => {
   }
 
   function close(picksOrCancel) {
+    if (!state.resolve && !state.reject) return; // guard against double-fire
     const overlay = state.overlay;
     state.overlay = null;
     document.removeEventListener("keydown", onKeyDown);
@@ -2009,15 +2015,18 @@ const MediaPicker = (() => {
   }
 
   async function loadMedia() {
+    if (!state.overlay) return; // picker was closed
     const grid = state.overlay.querySelector(".media-picker-grid");
     grid.textContent = "…";
     try {
       const all = await api("/media");
+      if (!state.overlay) return; // closed during fetch
       state.mediaList = all.filter(m =>
         state.allowedTypes.includes(classifyMime(m.mime_type))
       );
       renderGrid();
     } catch (err) {
+      if (!state.overlay) return; // closed during fetch
       grid.innerHTML = `
         <div class="media-picker-empty">
           <p>${Khan.t("media_picker.fetch_failed", "Couldn't load media.")}</p>
@@ -2103,16 +2112,16 @@ const MediaPicker = (() => {
     const pill = cls === "url" ? "URL" : cls.toUpperCase();
     let thumb = "";
     if (cls === "image") {
-      thumb = `<img src="/uploads/${m.filename || ""}" loading="lazy" alt="" />`;
+      thumb = `<img src="/uploads/${attrEscape(m.filename)}" loading="lazy" alt="" />`;
     } else if (cls === "video") {
-      thumb = `<video src="/uploads/${m.filename || ""}" preload="metadata" muted></video>`;
+      thumb = `<video src="/uploads/${attrEscape(m.filename)}" preload="metadata" muted></video>`;
     } else if (cls === "pdf") {
       thumb = `<div class="picker-thumb-pdf">PDF</div>`;
     } else if (cls === "url") {
       let host = "";
       try { host = new URL(m.url || "").hostname; } catch (_) {}
       thumb = host
-        ? `<div class="picker-thumb-url"><img src="https://www.google.com/s2/favicons?domain=${host}&sz=64" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🌐'}))" /></div>`
+        ? `<div class="picker-thumb-url"><img src="https://www.google.com/s2/favicons?domain=${attrEscape(host)}&sz=64" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🌐'}))" /></div>`
         : `<div class="picker-thumb-url">🌐</div>`;
     } else {
       thumb = `<div class="picker-thumb-other">?</div>`;
