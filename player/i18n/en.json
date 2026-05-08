@@ -23,5 +23,7 @@
   "pairing.code_invalid": "Code not recognized.",
   "pairing.code_expired": "Code expired. Ask admin for a new one.",
   "wall.connecting": "Connecting to wall…",
-  "wall.reconnecting": "Reconnecting to wall…"
+  "wall.reconnecting": "Reconnecting to wall…",
+  "lang.toggle_label": "عربي",
+  "nav.lang_toggle_aria": "Switch language"
 }

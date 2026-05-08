@@ -268,7 +268,7 @@ a:hover { color: var(--peach-deep); }
   .nav-toggle { display: flex; }
   .nav-links {
     position: absolute;
-    top: 100%; left: 0; right: 0;
+    inset-block-start: 100%; inset-inline: 0;
     flex-direction: column;
     align-items: stretch;
     gap: 6px;

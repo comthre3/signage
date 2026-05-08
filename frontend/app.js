@@ -41,6 +41,59 @@ function toast(message, type = "info", duration = 3500) {
   setTimeout(remove, duration);
 }
 
+/* ── Localized confirm dialog ────────────────────────────────── */
+// Localized replacement for window.confirm. Returns Promise<boolean>.
+window.confirmDialog = function ({ title, message, confirmLabel, danger = false }) {
+  return new Promise((resolve) => {
+    if (document.querySelector(".confirm-dialog-modal")) {
+      resolve(false);
+      return;
+    }
+    const overlay = document.createElement("div");
+    overlay.className = "modal confirm-dialog-modal";
+    overlay.innerHTML = `
+      <div class="modal-card confirm-dialog-card">
+        <div class="confirm-dialog-header">
+          <h3>${title || ""}</h3>
+          <button class="confirm-dialog-close btn-ghost" aria-label="Close">✕</button>
+        </div>
+        <div class="confirm-dialog-body">
+          <p>${(message || "").replace(/</g, "&lt;")}</p>
+        </div>
+        <div class="confirm-dialog-actions">
+          <button class="btn btn-ghost confirm-dialog-cancel">${
+            Khan.t("confirm.cancel", "Cancel")}</button>
+          <button class="btn ${danger ? "btn-danger" : "btn-primary"} confirm-dialog-confirm">${
+            confirmLabel || Khan.t("confirm.delete_label", "Delete")}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    let settled = false;
+    function settle(value) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKeyDown);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      resolve(value);
+    }
+    function onKeyDown(e) {
+      if (e.key === "Escape") settle(false);
+      else if (e.key === "Enter") settle(true);
+    }
+
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) settle(false); });
+    overlay.querySelector(".confirm-dialog-close").addEventListener("click", () => settle(false));
+    overlay.querySelector(".confirm-dialog-cancel").addEventListener("click", () => settle(false));
+    overlay.querySelector(".confirm-dialog-confirm").addEventListener("click", () => settle(true));
+
+    document.addEventListener("keydown", onKeyDown);
+
+    setTimeout(() => overlay.querySelector(".confirm-dialog-cancel").focus(), 0);
+  });
+};
+
 /* ── Loading state helper ────────────────────────────────────── */
 function withLoading(btn, fn) {
   btn.classList.add("loading");
@@ -245,7 +298,12 @@ function renderSites() {
       </div>
     `;
     card.querySelector(".delete-btn").addEventListener("click", async (e) => {
-      if (!confirm(`Delete site "${site.name}"?`)) return;
+      if (!(await confirmDialog({
+        title:   Khan.t("confirm.delete_site_title", "Delete site"),
+        message: Khan.t("confirm.delete_site_body", "Delete site \"{name}\"? Screens in this site become unassigned.").replace("{name}", site.name),
+        confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+        danger:  true,
+      }))) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/sites/${site.id}`, { method: "DELETE" });
         toast(Khan.t("toast.site_deleted"), "success");
@@ -285,7 +343,12 @@ function renderPlaylists() {
       </div>
     `;
     card.querySelector(".delete-btn").addEventListener("click", async (e) => {
-      if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
+      if (!(await confirmDialog({
+        title:   Khan.t("confirm.delete_playlist_title", "Delete playlist"),
+        message: Khan.t("confirm.delete_playlist_body", "Delete playlist \"{name}\"?").replace("{name}", playlist.name),
+        confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+        danger:  true,
+      }))) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/playlists/${playlist.id}`, { method: "DELETE" });
         toast(Khan.t("toast.playlist_deleted"), "success");
@@ -330,7 +393,12 @@ function renderMedia() {
       </div>
     `;
     card.querySelector(".delete-btn").addEventListener("click", async (e) => {
-      if (!confirm(`Delete "${item.name}"?`)) return;
+      if (!(await confirmDialog({
+        title:   Khan.t("confirm.delete_media_title", "Delete media"),
+        message: Khan.t("confirm.delete_media_body", "Delete \"{name}\"?").replace("{name}", item.name),
+        confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+        danger:  true,
+      }))) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/media/${item.id}`, { method: "DELETE" });
         toast(Khan.t("toast.media_deleted"), "success");
@@ -345,7 +413,7 @@ function renderUsers() {
   const container = document.getElementById("users-list");
   container.innerHTML = "";
   if (currentUser?.role !== "admin") {
-    container.innerHTML = "<div class='card'>Admin access required to manage users.</div>";
+    container.innerHTML = `<div class='card'>${Khan.t("users.admin_required", "Admin access required to manage users.")}</div>`;
     return;
   }
   state.users.forEach((user) => {
@@ -378,7 +446,12 @@ function renderUsers() {
       });
     });
     card.querySelector(`[data-user-delete="${user.id}"]`).addEventListener("click", async (e) => {
-      if (!confirm(`Delete user "${user.username}"?`)) return;
+      if (!(await confirmDialog({
+        title:   Khan.t("confirm.delete_user_title", "Delete user"),
+        message: Khan.t("confirm.delete_user_body", "Delete user \"{name}\"?").replace("{name}", user.username),
+        confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+        danger:  true,
+      }))) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/users/${user.id}`, { method: "DELETE" });
         toast(Khan.t("toast.user_deleted"), "success");
@@ -426,7 +499,7 @@ function renderGroups() {
   if (currentUser?.role !== "admin") return;
   if (state.groups.length) {
     const heading = document.createElement("h3");
-    heading.textContent = "Groups";
+    heading.textContent = Khan.t("users.groups_heading", "Groups");
     heading.style.cssText = "font-size:14px;font-weight:700;color:var(--cyan);font-family:var(--mono);margin-bottom:10px";
     container.appendChild(heading);
   }
@@ -440,7 +513,12 @@ function renderGroups() {
       </div>
     `;
     card.querySelector(`[data-group-delete="${group.id}"]`).addEventListener("click", async (e) => {
-      if (!confirm(`Delete group "${group.name}"?`)) return;
+      if (!(await confirmDialog({
+        title:   Khan.t("confirm.delete_group_title", "Delete group"),
+        message: Khan.t("confirm.delete_group_body", "Delete group \"{name}\"?").replace("{name}", group.name),
+        confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+        danger:  true,
+      }))) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/groups/${group.id}`, { method: "DELETE" });
         toast(Khan.t("toast.group_deleted"), "success");
@@ -470,7 +548,7 @@ function renderScreens() {
     card.innerHTML = `
       <h3>${escHtml(screen.name)}</h3>
       <div class="card-meta">
-        <span>Site: ${escHtml(screen.site_name || "Unassigned")}</span>
+        <span>Site: ${escHtml(screen.site_name || Khan.t("screens.site_unassigned_label", "Unassigned"))}</span>
         ${screen.location ? `<span>${escHtml(screen.location)}</span>` : ""}
         ${screen.resolution ? `<span>${escHtml(screen.resolution)}</span>` : ""}
         ${screen.orientation ? `<span>${escHtml(screen.orientation)}</span>` : ""}
@@ -518,7 +596,12 @@ function renderScreens() {
     });
 
     card.querySelector(`[data-delete-screen="${screen.id}"]`).addEventListener("click", async (e) => {
-      if (!confirm(`Delete screen "${screen.name}"?`)) return;
+      if (!(await confirmDialog({
+        title:   Khan.t("confirm.delete_screen_title", "Delete screen"),
+        message: Khan.t("confirm.delete_screen_body", "Delete screen \"{name}\"?").replace("{name}", screen.name),
+        confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+        danger:  true,
+      }))) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/screens/${screen.id}`, { method: "DELETE" });
         toast(Khan.t("toast.screen_deleted"), "success");
@@ -534,8 +617,8 @@ function showPreview(screen, previewUrl, expiresAt) {
   const panel = document.getElementById("preview-panel");
   const frame = document.getElementById("preview-frame");
   const meta  = document.getElementById("preview-meta");
-  meta.textContent = `Previewing: ${screen.name} (${screen.site_name || "Unassigned"})` +
-    (expiresAt ? ` · expires ${expiresAt}` : "");
+  meta.textContent = `${Khan.t("screens.preview_meta_label", "Previewing")}: ${screen.name} (${screen.site_name || Khan.t("screens.preview_meta_unassigned", "Unassigned")})` +
+    (expiresAt ? ` · ${Khan.t("screens.preview_meta_expires", "expires")} ${expiresAt}` : "");
   frame.src = previewUrl;
   panel.classList.remove("hidden");
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -598,7 +681,7 @@ function renderZonesCanvas() {
     preview.style.top    = `${zonesState.drawing.preview.y * 100}%`;
     preview.style.width  = `${zonesState.drawing.preview.width * 100}%`;
     preview.style.height = `${zonesState.drawing.preview.height * 100}%`;
-    preview.innerHTML = `<div class="zone-title">New Zone</div>`;
+    preview.innerHTML = `<div class="zone-title">${Khan.t("screens.zone_default_name", "New Zone")}</div>`;
     canvas.appendChild(preview);
   }
 }
@@ -717,7 +800,7 @@ async function openScreenAccessEditor(screenId) {
   const panel     = document.getElementById("screen-access-panel");
   panel.classList.remove("hidden");
   const ownerSelect = document.getElementById("screen-owner-select");
-  ownerSelect.innerHTML = `<option value="">Unassigned</option>`;
+  ownerSelect.innerHTML = `<option value="">${Khan.t("screens.access_unassigned_option", "Unassigned")}</option>`;
   state.users.forEach((user) => {
     const option = document.createElement("option");
     option.value = user.id;
@@ -936,7 +1019,12 @@ async function loadPlaylistItems(playlistId) {
   container.appendChild(card);
   card.querySelectorAll("[data-item-id]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
-      if (!confirm("Remove this item?")) return;
+      if (!(await confirmDialog({
+        title:   Khan.t("confirm.remove_item_title", "Remove item"),
+        message: Khan.t("confirm.remove_item_body", "Remove this item from the playlist?"),
+        confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+        danger:  true,
+      }))) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/playlists/${playlistId}/items/${btn.dataset.itemId}`, { method: "DELETE" });
         await loadPlaylistItems(playlistId);
@@ -1036,7 +1124,7 @@ mediaForm?.addEventListener("drop", async (e) => {
     });
     if (res.ok) uploaded++;
   }
-  toast(`${uploaded} file(s) uploaded.`, "success");
+  toast(Khan.t("toast.files_uploaded_n", "{n} file(s) uploaded.").replace("{n}", uploaded), "success");
   await loadMedia();
 });
 
@@ -1108,7 +1196,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
       await bootData();
     });
   } catch (err) {
-    toast(err.message || "Login failed.", "error");
+    toast(err.message || Khan.t("error.login_failed", "Login failed."), "error");
   }
 });
 
@@ -1191,7 +1279,7 @@ document.getElementById("signup-request-form").addEventListener("submit", async 
       toast(Khan.t("toast.code_sent"), "success");
     });
   } catch (err) {
-    toast(err.message || "Couldn't send code.", "error");
+    toast(err.message || Khan.t("error.code_send_failed", "Couldn't send code."), "error");
   }
 });
 
@@ -1263,7 +1351,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
       setAuth(data.token, data.user);
       showDashboard();
       await bootData();
-      toast(`Welcome to Khanshoof, ${signupState.business_name}! Your 5-day trial is active.`, "success", 6000);
+      toast(Khan.t("toast.signup_welcome", "Welcome to Khanshoof, {name}! Your 5-day trial is active.").replace("{name}", signupState.business_name), "success", 6000);
       signupState.email = "";
       signupState.business_name = "";
       signupState.verification_token = "";
@@ -2367,7 +2455,12 @@ const Walls = (() => {
   }
 
   async function deleteWall(id) {
-    if (!confirm(Khan.t("walls.confirm_delete", "Delete this wall? Paired screens will revert to standalone."))) return;
+    if (!(await confirmDialog({
+      title:   Khan.t("walls.confirm_delete_title", "Delete wall"),
+      message: Khan.t("walls.confirm_delete", "Delete this wall? Paired screens will revert to standalone."),
+      confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+      danger:  true,
+    }))) return;
     try {
       await api(`/walls/${id}`, { method: "DELETE" });
       toast(Khan.t("walls.deleted", "Wall deleted"));
@@ -2526,7 +2619,12 @@ const Walls = (() => {
   }
 
   async function unpairCell(wallId, row, col) {
-    if (!confirm(Khan.t("walls.confirm_unpair", "Unpair this cell?"))) return;
+    if (!(await confirmDialog({
+      title:   Khan.t("walls.confirm_unpair_title", "Unpair cell"),
+      message: Khan.t("walls.confirm_unpair", "Unpair this cell?"),
+      confirmLabel: Khan.t("walls.unpair_label", "Unpair"),
+      danger:  true,
+    }))) return;
     try {
       await api(`/walls/${wallId}/cells/${row}/${col}/pairing`, { method: "DELETE" });
       toast(Khan.t("walls.unpaired", "Unpaired"));
@@ -2677,7 +2775,12 @@ const Walls = (() => {
   }
 
   async function deleteCanvasItem(wall, item) {
-    if (!confirm(Khan.t("walls.canvas_confirm_delete", "Delete this item?"))) return;
+    if (!(await confirmDialog({
+      title:   Khan.t("walls.canvas_confirm_delete_title", "Delete item"),
+      message: Khan.t("walls.canvas_confirm_delete", "Delete this item?"),
+      confirmLabel: Khan.t("confirm.delete_label", "Delete"),
+      danger:  true,
+    }))) return;
     try {
       await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {method: "DELETE"});
       await renderCanvasEditor(wall);

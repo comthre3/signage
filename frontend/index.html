@@ -31,7 +31,7 @@
           <button data-section="billing" data-i18n="nav.billing">Billing</button>
         </nav>
         <div class="auth-status">
-          <button id="lang-toggle" class="secondary-btn lang-toggle" aria-label="Switch language">
+          <button id="lang-toggle" class="secondary-btn lang-toggle" data-i18n-aria-label="nav.lang_toggle_aria" aria-label="Switch language">
             <span data-i18n="lang.toggle_label">عربي</span>
           </button>
           <button id="connection-toggle" class="secondary-btn"><span data-i18n="auth.connection">⚙ Connection</span></button>
@@ -49,7 +49,7 @@
         </div>
 
         <form id="login-form" class="auth-form">
-          <input type="text"     id="login-username" placeholder="Email or username" data-i18n-placeholder="auth.email_or_username" required autocomplete="username" />
+          <input type="text"     id="login-username" placeholder="Email or username" data-i18n-placeholder="auth.email_or_username" required autocomplete="username" dir="auto" />
           <input type="password" id="login-password" placeholder="Password"           data-i18n-placeholder="auth.password" required autocomplete="current-password" />
           <button type="submit" data-i18n="auth.signin_submit">Sign In</button>
           <div class="helper-text" data-i18n="auth.helper_signup_cta">
@@ -58,8 +58,8 @@
         </form>
 
         <form id="signup-request-form" class="auth-form hidden">
-          <input type="text"  id="signup-business" placeholder="Business name" data-i18n-placeholder="auth.business_name" required maxlength="100" autocomplete="organization" />
-          <input type="email" id="signup-email"    placeholder="Work email"    data-i18n-placeholder="auth.work_email" required autocomplete="email" />
+          <input type="text"  id="signup-business" placeholder="Business name" data-i18n-placeholder="auth.business_name" required maxlength="100" autocomplete="organization" dir="auto" />
+          <input type="email" id="signup-email"    placeholder="Work email"    data-i18n-placeholder="auth.work_email" required autocomplete="email" dir="auto" />
           <button type="submit" data-i18n="auth.send_code">Send Code</button>
           <div class="helper-text" data-i18n="auth.helper_verify_cta">
             We'll email you a 6-digit code to verify your address before you set a password.
@@ -70,7 +70,7 @@
           <div class="helper-text" id="signup-verify-intro" data-i18n="auth.verify_intro">
             Enter the 6-digit code sent to <strong id="signup-verify-email">—</strong>.
           </div>
-          <input type="text" id="signup-otp" placeholder="123456" data-i18n-placeholder="auth.otp_placeholder" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" />
+          <input type="text" id="signup-otp" placeholder="123456" data-i18n-placeholder="auth.otp_placeholder" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" dir="ltr" />
           <button type="submit" data-i18n="auth.verify_code">Verify</button>
           <div class="helper-text">
             <a href="#" id="signup-resend" data-i18n="auth.resend_code">Resend code</a> ·
@@ -216,8 +216,8 @@
               <option value="local" data-i18n="auth.connection_local">Local / Tailscale</option>
               <option value="external" data-i18n="auth.connection_external">Cloudflare</option>
             </select>
-            <input type="text" id="connection-api"    placeholder="API Base URL" data-i18n-placeholder="auth.connection_api" />
-            <input type="text" id="connection-player" placeholder="Player Base URL" data-i18n-placeholder="auth.connection_player" />
+            <input type="text" id="connection-api"    placeholder="API Base URL" data-i18n-placeholder="auth.connection_api" dir="auto" />
+            <input type="text" id="connection-player" placeholder="Player Base URL" data-i18n-placeholder="auth.connection_player" dir="auto" />
             <button type="submit" data-i18n="auth.connection_save">Save</button>
             <button type="button" id="connection-reset" class="secondary-btn" data-i18n="auth.connection_reset">Reset</button>
           </form>
@@ -227,8 +227,8 @@
         <section id="sites" class="panel">
           <h2 data-i18n="sites.heading">Sites</h2>
           <form id="site-form">
-            <input type="text" id="site-name" placeholder="Site name" data-i18n-placeholder="sites.name_placeholder" required />
-            <input type="text" id="site-slug" placeholder="Slug (optional)" data-i18n-placeholder="sites.slug_placeholder" />
+            <input type="text" id="site-name" placeholder="Site name" data-i18n-placeholder="sites.name_placeholder" required dir="auto" />
+            <input type="text" id="site-slug" placeholder="Slug (optional)" data-i18n-placeholder="sites.slug_placeholder" dir="auto" />
             <button type="submit" data-i18n="sites.add_btn">Add Site</button>
           </form>
           <div id="sites-list" class="list"></div>
@@ -237,17 +237,17 @@
         <section id="screens" class="panel hidden">
           <h2 data-i18n="screens.heading">Screens</h2>
           <form id="screen-form">
-            <input type="text" id="screen-name"     placeholder="Screen name" data-i18n-placeholder="screens.name_placeholder" required />
-            <input type="text" id="screen-location" placeholder="Location" data-i18n-placeholder="screens.location_placeholder" />
+            <input type="text" id="screen-name"     placeholder="Screen name" data-i18n-placeholder="screens.name_placeholder" required dir="auto" />
+            <input type="text" id="screen-location" placeholder="Location" data-i18n-placeholder="screens.location_placeholder" dir="auto" />
             <select id="screen-resolution">
               <option value="" data-i18n="screens.resolution_label">Resolution</option>
-              <option value="1920x1080">FHD (1920×1080)</option>
-              <option value="2560x1440">2K (2560×1440)</option>
-              <option value="3840x2160">4K UHD (3840×2160)</option>
-              <option value="4096x2160">4K DCI (4096×2160)</option>
+              <option value="1920x1080" data-i18n="screens.resolution_fhd">FHD (1920×1080)</option>
+              <option value="2560x1440" data-i18n="screens.resolution_2k">2K (2560×1440)</option>
+              <option value="3840x2160" data-i18n="screens.resolution_4k_uhd">4K UHD (3840×2160)</option>
+              <option value="4096x2160" data-i18n="screens.resolution_4k_dci">4K DCI (4096×2160)</option>
               <option value="custom" data-i18n="screens.resolution_custom">Custom…</option>
             </select>
-            <input type="text" id="screen-resolution-custom" placeholder="e.g. 1280x720" data-i18n-placeholder="screens.custom_resolution_placeholder" class="hidden" />
+            <input type="text" id="screen-resolution-custom" placeholder="e.g. 1280x720" data-i18n-placeholder="screens.custom_resolution_placeholder" class="hidden" dir="auto" />
             <select id="screen-orientation">
               <option value="" data-i18n="screens.orientation_label">Orientation</option>
               <option value="landscape" data-i18n="screens.orientation_landscape">Landscape</option>
@@ -302,7 +302,7 @@
               </div>
             </div>
             <div class="zones-templates">
-              <input type="text" id="zone-template-name" placeholder="Template name" data-i18n-placeholder="screens.template_name" />
+              <input type="text" id="zone-template-name" placeholder="Template name" data-i18n-placeholder="screens.template_name" dir="auto" />
               <button type="button" class="secondary-btn" id="zone-template-save" data-i18n="screens.template_save">Save Template</button>
               <select id="zone-template-select"><option value="" data-i18n="screens.template_apply_label">Apply template…</option></select>
               <button type="button" class="secondary-btn" id="zone-template-apply" data-i18n="screens.template_apply_btn">Apply</button>
@@ -325,8 +325,8 @@
         <section id="media" class="panel hidden">
           <h2 data-i18n="media.heading">Media Library</h2>
           <form id="media-url-form" class="media-url-form">
-            <input type="text" id="media-url-name" placeholder="Website name" data-i18n-placeholder="media.url_name_placeholder" required />
-            <input type="url"  id="media-url"      placeholder="https://example.com" required />
+            <input type="text" id="media-url-name" placeholder="Website name" data-i18n-placeholder="media.url_name_placeholder" required dir="auto" />
+            <input type="url"  id="media-url"      placeholder="https://example.com" required dir="auto" />
             <button type="submit" data-i18n="media.add_website">Add Website</button>
           </form>
           <form id="media-form" class="dropzone">
@@ -343,7 +343,7 @@
         <section id="playlists" class="panel hidden">
           <h2 data-i18n="playlists.heading">Playlists</h2>
           <form id="playlist-form">
-            <input type="text" id="playlist-name" placeholder="Playlist name" data-i18n-placeholder="playlists.name_placeholder" required />
+            <input type="text" id="playlist-name" placeholder="Playlist name" data-i18n-placeholder="playlists.name_placeholder" required dir="auto" />
             <button type="submit" data-i18n="playlists.create_btn">Create</button>
           </form>
           <div class="playlist-controls">
@@ -356,7 +356,7 @@
         <section id="users" class="panel hidden">
           <h2 data-i18n="users.heading">Users &amp; Groups</h2>
           <form id="user-form">
-            <input type="text"     id="user-username" placeholder="Username" data-i18n-placeholder="users.username_placeholder" required />
+            <input type="text"     id="user-username" placeholder="Username" data-i18n-placeholder="users.username_placeholder" required dir="auto" />
             <input type="password" id="user-password" placeholder="Password" data-i18n-placeholder="users.password_placeholder" required />
             <select id="user-role">
               <option value="viewer" data-i18n="users.role_viewer">Viewer</option>
@@ -366,7 +366,7 @@
             <button type="submit" data-i18n="users.create_user">Create User</button>
           </form>
           <form id="group-form">
-            <input type="text" id="group-name" placeholder="Group name" data-i18n-placeholder="users.group_name_placeholder" required />
+            <input type="text" id="group-name" placeholder="Group name" data-i18n-placeholder="users.group_name_placeholder" required dir="auto" />
             <button type="submit" data-i18n="users.create_group">Create Group</button>
           </form>
           <div id="users-list"  class="list"></div>

@@ -762,3 +762,14 @@ if (adminCodeForm) {
     }
   });
 }
+
+// ── Language toggle (Task 4 — Arabic/RTL hardening) ──────────────
+const langToggle = document.getElementById("player-lang-toggle");
+if (langToggle) {
+  langToggle.addEventListener("click", async () => {
+    const next = Khan.currentLocale() === "ar" ? "en" : "ar";
+    Khan.setLocale(next);
+    await Khan.loadLocale(next);
+    Khan.applyTranslations();
+  });
+}

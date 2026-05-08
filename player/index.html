@@ -13,6 +13,11 @@
     <script src="vendor/qrcode.js"></script>
   </head>
   <body>
+    <button id="player-lang-toggle" class="player-lang-toggle"
+            type="button"
+            data-i18n="lang.toggle_label"
+            data-i18n-aria-label="nav.lang_toggle_aria"
+            aria-label="Switch language">عربي</button>
     <div id="player">
       <div id="status" data-i18n="status.connecting">Connecting...</div>
       <div id="content" class="single-content"></div>
@@ -35,7 +40,7 @@
                   data-i18n="pairing.code_from_admin">Have a code from admin? Enter it here.</button>
           <form id="admin-code-form" class="admin-code-form hidden">
             <label for="admin-code-input" data-i18n="pairing.code_input_label">Code</label>
-            <input id="admin-code-input" type="text" maxlength="6" minlength="6"
+            <input id="admin-code-input" type="text" maxlength="6" minlength="6" dir="ltr"
                    autocomplete="off" autocapitalize="characters" spellcheck="false"
                    pattern="[A-Z0-9]{6}" />
             <button type="submit" class="btn btn-primary" data-i18n="pairing.code_submit">Submit</button>
