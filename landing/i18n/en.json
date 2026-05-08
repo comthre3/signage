@@ -116,5 +116,6 @@
   "footer.pricing": "Pricing",
   "footer.faq": "FAQ",
   "footer.contact": "Contact",
-  "footer.copy": "© 2026 Khanshoof. Built in the Gulf."
+  "footer.copy": "© 2026 Khanshoof. Built in the Gulf.",
+  "nav.lang_toggle_aria": "Switch language"
 }

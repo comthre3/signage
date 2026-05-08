@@ -301,5 +301,10 @@
   "toast.signup_welcome": "Welcome to Khanshoof, {name}! Your 5-day trial is active.",
   "toast.files_uploaded_n": "{n} file(s) uploaded.",
   "error.login_failed": "Login failed.",
-  "error.code_send_failed": "Couldn't send code."
+  "error.code_send_failed": "Couldn't send code.",
+  "screens.resolution_fhd": "FHD (1920×1080)",
+  "screens.resolution_2k": "2K (2560×1440)",
+  "screens.resolution_4k_uhd": "4K UHD (3840×2160)",
+  "screens.resolution_4k_dci": "4K DCI (4096×2160)",
+  "nav.lang_toggle_aria": "Switch language"
 }

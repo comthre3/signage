@@ -116,5 +116,6 @@
   "footer.pricing": "الأسعار",
   "footer.faq": "الأسئلة الشائعة",
   "footer.contact": "تواصل",
-  "footer.copy": "© 2026 خنشوف. صُنع في الخليج."
+  "footer.copy": "© 2026 خنشوف. صُنع في الخليج.",
+  "nav.lang_toggle_aria": "تبديل اللغة"
 }
