@@ -355,6 +355,11 @@ def init_db() -> None:
         cursor.execute("ALTER TABLE screens       ADD COLUMN IF NOT EXISTS wall_cell_id INTEGER REFERENCES wall_cells(id) ON DELETE SET NULL")
         cursor.execute("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS walls_enabled BOOLEAN NOT NULL DEFAULT true")
         cursor.execute("ALTER TABLE playlists     ADD COLUMN IF NOT EXISTS kind          TEXT NOT NULL DEFAULT 'standard' CHECK (kind IN ('standard','wall_canvas'))")
+        cursor.execute("ALTER TABLE walls          ADD COLUMN IF NOT EXISTS bezel_h_pct REAL NOT NULL DEFAULT 0")
+        cursor.execute("ALTER TABLE walls          ADD COLUMN IF NOT EXISTS bezel_v_pct REAL NOT NULL DEFAULT 0")
+        cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS pdf_pages_status TEXT")
+        cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS duration_override_seconds INTEGER")
+        cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS fit_mode TEXT NOT NULL DEFAULT 'fit' CHECK (fit_mode IN ('fit','fill','stretch'))")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_screens_wall_cell ON screens(wall_cell_id)")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sites_org       ON sites       (organization_id)")

@@ -269,3 +269,20 @@ code, kbd, samp, pre,
   min-height: 1em;
 }
 .admin-code-form.hidden { display: none; }
+
+.cell-viewport {
+  position: fixed; inset: 0; overflow: hidden; background: #000;
+}
+.wall-canvas {
+  position: absolute;
+  width:  calc(var(--wall-w-px) * 1px);
+  height: calc(var(--wall-h-px) * 1px);
+  transform: translate(
+    calc(-1 * var(--cell-x-px) * 1px),
+    calc(-1 * var(--cell-y-px) * 1px)
+  );
+  will-change: transform;
+}
+.wall-media[data-fit="fit"]     { object-fit: contain; }
+.wall-media[data-fit="fill"]    { object-fit: cover;   }
+.wall-media[data-fit="stretch"] { object-fit: fill;    }

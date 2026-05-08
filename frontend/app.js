@@ -215,7 +215,6 @@ async function loadPlaylists() {
 async function loadMedia() {
   state.media = await api("/media");
   renderMedia();
-  renderMediaOptions();
 }
 
 async function loadUsers() {
@@ -309,16 +308,6 @@ function renderPlaylistSelect() {
   });
 }
 
-function renderMediaOptions() {
-  const select = document.getElementById("playlist-media");
-  select.innerHTML = `<option value="">Select media</option>`;
-  state.media.forEach((media) => {
-    const option = document.createElement("option");
-    option.value = media.id;
-    option.textContent = media.name;
-    select.appendChild(option);
-  });
-}
 
 function renderMedia() {
   const container = document.getElementById("media-list");
@@ -1069,11 +1058,24 @@ document.getElementById("playlist-select").addEventListener("change", async (e) 
 
 document.getElementById("playlist-add-item").addEventListener("click", async (e) => {
   const playlistId = document.getElementById("playlist-select").value;
-  const mediaId    = document.getElementById("playlist-media").value;
-  const duration   = Number(document.getElementById("playlist-duration").value || 10);
-  if (!playlistId || !mediaId) return;
+  if (!playlistId) return;
+  let picks;
+  try {
+    picks = await MediaPicker.open({ allowedTypes: ["image", "video", "pdf", "url"] });
+  } catch (err) {
+    if (err && err.cancelled) return;
+    throw err;
+  }
+  if (!picks.length) return;
   await withLoading(e.currentTarget, async () => {
-    await api(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ media_id: Number(mediaId), duration_seconds: duration }) });
+    for (const p of picks) {
+      const body = { media_id: p.media_id };
+      if (p.duration_seconds != null) body.duration_seconds = p.duration_seconds;
+      await api(`/playlists/${playlistId}/items`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    }
     toast(Khan.t("toast.item_added"), "success");
     await loadPlaylistItems(playlistId);
   });
@@ -1891,6 +1893,315 @@ document.querySelector('nav button[data-section="billing"]')?.addEventListener("
   showBilling();
 });
 
+// ====== MediaPicker ======
+const MediaPicker = (() => {
+  // Single-instance state. While `state.overlay` is non-null, open() is a no-op.
+  const state = {
+    overlay:      null,
+    mediaList:    [],   // raw /media response, filtered to allowedTypes
+    selection:    [],   // ordered array of media_ids picked
+    durations:    {},   // { media_id: number } — only for items the user touched in Advanced
+    chip:         "all",
+    search:       "",
+    advancedOpen: false,
+    resolve:      null,
+    reject:       null,
+    allowedTypes: [],
+  };
+
+  function attrEscape(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  }
+
+  function classifyMime(mime) {
+    if (!mime) return "other";
+    const m = mime.toLowerCase();
+    if (m.startsWith("image/")) return "image";
+    if (m.startsWith("video/")) return "video";
+    if (m === "application/pdf") return "pdf";
+    if (m === "text/url") return "url";
+    return "other";
+  }
+
+  function open({ allowedTypes }) {
+    if (!Array.isArray(allowedTypes) || allowedTypes.length === 0) {
+      throw new Error("MediaPicker.open: allowedTypes must be a non-empty array");
+    }
+    if (state.overlay) {
+      console.warn("MediaPicker already open; ignoring open() call");
+      return Promise.resolve([]);
+    }
+    state.allowedTypes = allowedTypes.slice();
+    state.selection = [];
+    state.durations = {};
+    state.chip = "all";
+    state.search = "";
+    state.advancedOpen = false;
+    return new Promise(async (resolve, reject) => {
+      state.resolve = resolve;
+      state.reject  = reject;
+      mountOverlay();
+      await loadMedia();
+    });
+  }
+
+  function close(picksOrCancel) {
+    if (!state.resolve && !state.reject) return; // guard against double-fire
+    const overlay = state.overlay;
+    state.overlay = null;
+    document.removeEventListener("keydown", onKeyDown);
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    if (picksOrCancel && picksOrCancel.cancelled) {
+      state.reject({ cancelled: true });
+    } else {
+      state.resolve(picksOrCancel);
+    }
+    state.resolve = null;
+    state.reject  = null;
+  }
+
+  function mountOverlay() {
+    const o = document.createElement("div");
+    o.className = "modal media-picker-modal";
+    o.innerHTML = `
+      <div class="modal-card media-picker-card">
+        <div class="media-picker-header">
+          <h3>${Khan.t("media_picker.title", "Pick media")}</h3>
+          <input class="media-picker-search" type="search"
+                 placeholder="${Khan.t("media_picker.search_placeholder", "Search by name…")}" />
+          <button class="media-picker-close btn-ghost" aria-label="Close">✕</button>
+        </div>
+        <div class="media-picker-chips"></div>
+        <div class="media-picker-grid" aria-live="polite"></div>
+        <div class="media-picker-advanced">
+          <button class="media-picker-advanced-toggle btn-ghost" type="button">
+            ▸ ${Khan.t("media_picker.advanced_durations", "Advanced: set per-item durations")}
+          </button>
+          <div class="media-picker-advanced-list hidden"></div>
+        </div>
+        <div class="media-picker-footer">
+          <span class="media-picker-count">${Khan.t("media_picker.selected_n", "{n} selected").replace("{n}", "0")}</span>
+          <div class="media-picker-actions">
+            <button class="btn btn-ghost media-picker-cancel">${Khan.t("media_picker.cancel", "Cancel")}</button>
+            <button class="btn btn-primary media-picker-confirm" disabled>${
+              Khan.t("media_picker.add_n", "Add {n} items").replace("{n}", "0")}</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(o);
+    state.overlay = o;
+
+    // Close on backdrop click (but not on card click).
+    o.addEventListener("click", (e) => {
+      if (e.target === o) close({ cancelled: true });
+    });
+    o.querySelector(".media-picker-close").addEventListener("click", () => close({ cancelled: true }));
+    o.querySelector(".media-picker-cancel").addEventListener("click", () => close({ cancelled: true }));
+    o.querySelector(".media-picker-search").addEventListener("input", (e) => {
+      state.search = e.target.value.trim().toLowerCase();
+      renderGrid();
+    });
+    o.querySelector(".media-picker-advanced-toggle").addEventListener("click", () => {
+      state.advancedOpen = !state.advancedOpen;
+      renderAdvanced();
+    });
+    o.querySelector(".media-picker-confirm").addEventListener("click", confirmPicks);
+
+    document.addEventListener("keydown", onKeyDown);
+    renderChips();
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Escape" && state.overlay) close({ cancelled: true });
+  }
+
+  async function loadMedia() {
+    if (!state.overlay) return; // picker was closed
+    const grid = state.overlay.querySelector(".media-picker-grid");
+    grid.textContent = "…";
+    try {
+      const all = await api("/media");
+      if (!state.overlay) return; // closed during fetch
+      state.mediaList = all.filter(m =>
+        state.allowedTypes.includes(classifyMime(m.mime_type))
+      );
+      renderGrid();
+    } catch (err) {
+      if (!state.overlay) return; // closed during fetch
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.fetch_failed", "Couldn't load media.")}</p>
+          <button class="btn media-picker-retry">Retry</button>
+        </div>
+      `;
+      grid.querySelector(".media-picker-retry").addEventListener("click", loadMedia);
+    }
+  }
+
+  function renderChips() {
+    const root = state.overlay.querySelector(".media-picker-chips");
+    const labels = {
+      all:    "filter_all",
+      image:  "filter_images",
+      video:  "filter_videos",
+      pdf:    "filter_pdfs",
+      url:    "filter_urls",
+    };
+    const fallbacks = { all: "All", image: "Images", video: "Videos", pdf: "PDFs", url: "URLs" };
+    const chips = ["all", ...state.allowedTypes];
+    root.innerHTML = chips.map(c => `
+      <button type="button"
+              data-chip="${c}"
+              class="media-picker-chip ${state.chip === c ? "active" : ""}">
+        ${Khan.t("media_picker." + labels[c], fallbacks[c])}
+      </button>
+    `).join("");
+    root.querySelectorAll(".media-picker-chip").forEach(el => {
+      el.addEventListener("click", () => {
+        const c = el.dataset.chip;
+        state.chip = state.chip === c ? "all" : c;
+        renderChips();
+        renderGrid();
+      });
+    });
+  }
+
+  function visibleItems() {
+    return state.mediaList.filter(m => {
+      const cls = classifyMime(m.mime_type);
+      if (state.chip !== "all" && cls !== state.chip) return false;
+      if (state.search && !(m.name || "").toLowerCase().includes(state.search)) return false;
+      return true;
+    });
+  }
+
+  function renderGrid() {
+    const grid = state.overlay.querySelector(".media-picker-grid");
+    if (!state.mediaList.length) {
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.empty_library", "No media yet. Upload some in the Media tab.")}</p>
+          <button class="btn media-picker-go-to-media">${Khan.t("nav.media", "Media")}</button>
+        </div>
+      `;
+      grid.querySelector(".media-picker-go-to-media").addEventListener("click", () => {
+        close({ cancelled: true });
+        if (typeof showSection === "function") showSection("media");
+      });
+      return;
+    }
+    const items = visibleItems();
+    if (!items.length) {
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.empty_filtered", "No matches.")}</p>
+        </div>
+      `;
+      return;
+    }
+    grid.innerHTML = items.map(m => renderCard(m)).join("");
+    grid.querySelectorAll(".media-picker-card").forEach(el => {
+      el.addEventListener("click", () => toggleSelect(parseInt(el.dataset.mediaId, 10)));
+    });
+  }
+
+  function renderCard(m) {
+    const cls = classifyMime(m.mime_type);
+    const idx = state.selection.indexOf(m.id);
+    const checked = idx !== -1;
+    const badge = checked ? `${idx + 1}` : "";
+    const pill = cls === "url" ? "URL" : cls.toUpperCase();
+    let thumb = "";
+    if (cls === "image") {
+      thumb = `<img src="/uploads/${attrEscape(m.filename)}" loading="lazy" alt="" />`;
+    } else if (cls === "video") {
+      thumb = `<video src="/uploads/${attrEscape(m.filename)}" preload="metadata" muted></video>`;
+    } else if (cls === "pdf") {
+      thumb = `<div class="picker-thumb-pdf">PDF</div>`;
+    } else if (cls === "url") {
+      let host = "";
+      try { host = new URL(m.url || "").hostname; } catch (_) {}
+      thumb = host
+        ? `<div class="picker-thumb-url"><img src="https://www.google.com/s2/favicons?domain=${attrEscape(host)}&sz=64" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🌐'}))" /></div>`
+        : `<div class="picker-thumb-url">🌐</div>`;
+    } else {
+      thumb = `<div class="picker-thumb-other">?</div>`;
+    }
+    return `
+      <div class="media-picker-card ${checked ? "checked" : ""}" data-media-id="${m.id}">
+        <div class="media-picker-thumb">${thumb}</div>
+        <div class="media-picker-badge">${badge}</div>
+        <div class="media-picker-bottom">
+          <span class="media-picker-name" title="${(m.name || "").replace(/"/g, "&quot;")}">${(m.name || "").replace(/</g, "&lt;")}</span>
+          <span class="media-picker-pill">${pill}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function toggleSelect(mediaId) {
+    const i = state.selection.indexOf(mediaId);
+    if (i === -1) state.selection.push(mediaId);
+    else { state.selection.splice(i, 1); delete state.durations[mediaId]; }
+    renderGrid();
+    renderFooter();
+    if (state.advancedOpen) renderAdvanced();
+  }
+
+  function renderFooter() {
+    const n = state.selection.length;
+    state.overlay.querySelector(".media-picker-count").textContent =
+      Khan.t("media_picker.selected_n", "{n} selected").replace("{n}", String(n));
+    const btn = state.overlay.querySelector(".media-picker-confirm");
+    btn.textContent = Khan.t("media_picker.add_n", "Add {n} items").replace("{n}", String(n));
+    btn.disabled = n === 0;
+  }
+
+  function renderAdvanced() {
+    const wrap = state.overlay.querySelector(".media-picker-advanced-list");
+    wrap.classList.toggle("hidden", !state.advancedOpen);
+    if (!state.advancedOpen) return;
+    if (!state.selection.length) {
+      wrap.innerHTML = `<p class="media-picker-advanced-empty">—</p>`;
+      return;
+    }
+    wrap.innerHTML = state.selection.map((mid, i) => {
+      const m = state.mediaList.find(x => x.id === mid);
+      const dur = state.durations[mid];
+      const safeName = (m?.name || "").replace(/</g, "&lt;");
+      return `
+        <div class="media-picker-advanced-row" data-media-id="${mid}">
+          <span class="media-picker-advanced-idx">${i + 1}</span>
+          <span class="media-picker-advanced-name">${safeName}</span>
+          <input type="number" min="1" max="3600" placeholder="default"
+                 value="${dur ?? ""}" class="media-picker-advanced-duration" />
+        </div>
+      `;
+    }).join("");
+    wrap.querySelectorAll(".media-picker-advanced-duration").forEach(el => {
+      el.addEventListener("input", () => {
+        const row = el.closest(".media-picker-advanced-row");
+        const mid = parseInt(row.dataset.mediaId, 10);
+        const v = el.value.trim();
+        if (v === "") delete state.durations[mid];
+        else state.durations[mid] = Math.max(1, Math.min(3600, parseInt(v, 10)));
+      });
+    });
+  }
+
+  function confirmPicks() {
+    const picks = state.selection.map(mid => {
+      const out = { media_id: mid };
+      if (state.durations[mid] != null) out.duration_seconds = state.durations[mid];
+      return out;
+    });
+    close(picks);
+  }
+
+  return { open };
+})();
+
 // ====== Walls ======
 const Walls = (() => {
   const state = { walls: [], editing: null, pairing: null };
@@ -1965,8 +2276,11 @@ const Walls = (() => {
           <legend>${Khan.t("walls.mode", "Mode")}</legend>
           <label><input type="radio" name="mode" value="mirrored" checked />
             ${Khan.t("walls.mode_mirrored", "Mirrored")}</label>
+          ${window.WALLS_PHASE2_ENABLED ? `
+          <label><input type="radio" name="mode" value="spanned" />
+            ${Khan.t("walls.mode_spanned", "Spanned")}</label>` : `
           <label><input type="radio" name="mode" value="spanned" disabled />
-            ${Khan.t("walls.mode_spanned_phase2", "Spanned (Phase 2 — coming soon)")}</label>
+            ${Khan.t("walls.mode_spanned_phase2", "Spanned (coming soon)")}</label>`}
         </fieldset>
         <div class="walls-grid-picker">
           <label>${Khan.t("walls.rows", "Rows")}
@@ -1974,6 +2288,18 @@ const Walls = (() => {
           <label>${Khan.t("walls.cols", "Cols")}
             <input name="cols" type="number" min="1" max="8" value="2" required /></label>
         </div>
+        <fieldset class="spanned-fields hidden">
+          <legend>${Khan.t("walls.canvas_resolution", "Canvas resolution")}</legend>
+          <select name="canvas_resolution">
+            <option value="1920x1080">1080p (1920×1080)</option>
+            <option value="3840x2160" selected>4K (3840×2160)</option>
+            <option value="7680x4320">8K (7680×4320)</option>
+          </select>
+          <label>${Khan.t("walls.bezel_horizontal_pct", "Horizontal bezel %")}
+            <input type="number" name="bezel_h_pct" min="0" max="10" step="0.1" value="0" /></label>
+          <label>${Khan.t("walls.bezel_vertical_pct", "Vertical bezel %")}
+            <input type="number" name="bezel_v_pct" min="0" max="10" step="0.1" value="0" /></label>
+        </fieldset>
         <fieldset class="mirrored-fields">
           <legend>${Khan.t("walls.mirrored_submode", "Mirrored sub-mode")}</legend>
           <label><input type="radio" name="mirrored_mode" value="same_playlist" checked />
@@ -2001,20 +2327,35 @@ const Walls = (() => {
         body.querySelector(".same-playlist-only").style.display = same ? "" : "none";
       });
     });
+    body.querySelectorAll('input[name="mode"]').forEach(el => {
+      el.addEventListener("change", () => {
+        const mode = body.querySelector('input[name="mode"]:checked').value;
+        body.querySelector(".spanned-fields").classList.toggle("hidden", mode !== "spanned");
+        body.querySelector(".mirrored-fields").classList.toggle("hidden", mode !== "mirrored");
+      });
+    });
   }
 
   async function submitWizard(ev) {
     ev.preventDefault();
     const f = ev.target;
-    const sub = f.mirrored_mode.value;
     const payload = {
       name: f.name.value.trim(),
       mode: f.mode.value,
       rows: parseInt(f.rows.value, 10),
       cols: parseInt(f.cols.value, 10),
-      mirrored_mode: sub,
     };
-    if (sub === "same_playlist") payload.mirrored_playlist_id = parseInt(f.mirrored_playlist_id.value, 10);
+    if (f.mode.value === "spanned") {
+      const [w, h] = f.canvas_resolution.value.split("x").map(Number);
+      payload.canvas_width_px = w;
+      payload.canvas_height_px = h;
+      payload.bezel_h_pct = parseFloat(f.bezel_h_pct.value) || 0;
+      payload.bezel_v_pct = parseFloat(f.bezel_v_pct.value) || 0;
+    } else {
+      const sub = f.mirrored_mode.value;
+      payload.mirrored_mode = sub;
+      if (sub === "same_playlist") payload.mirrored_playlist_id = parseInt(f.mirrored_playlist_id.value, 10);
+    }
     try {
       const w = await api("/walls", { method: "POST", body: JSON.stringify(payload) });
       toast(Khan.t("walls.created", "Wall created"));
@@ -2069,6 +2410,9 @@ const Walls = (() => {
 
   async function renderEditor(id) {
     const wall = await api(`/walls/${id}`);
+    if (wall.mode === "spanned") {
+      return renderCanvasEditor(wall);
+    }
     const body = document.getElementById("walls-editor-body");
     document.getElementById("walls-editor-title").textContent = wall.name;
     const playlists = wall.mirrored_mode === "synced_rotation" ? await api("/playlists") : [];
@@ -2100,7 +2444,21 @@ const Walls = (() => {
           playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
         }));
     });
+    mountModeSwitchButton(wall);
     refreshMosaic(wall.id);
+  }
+
+  function mountModeSwitchButton(wall) {
+    const header = document.querySelector(".walls-editor-header");
+    if (!header) return;
+    header.querySelector(".walls-mode-switch-btn")?.remove();
+    const otherMode = wall.mode === "spanned" ? "mirrored" : "spanned";
+    const modeBtn = document.createElement("button");
+    modeBtn.className = "btn btn-ghost walls-mode-switch-btn";
+    modeBtn.textContent = Khan.t(`walls.switch_to_${otherMode}`,
+      `Switch to ${otherMode}`);
+    modeBtn.addEventListener("click", () => openModeChangeModal(wall, otherMode));
+    header.appendChild(modeBtn);
   }
 
   function renderCellTile(c, wall, playlists) {
@@ -2209,6 +2567,200 @@ const Walls = (() => {
     };
     timerId = setInterval(tick, 5000);
     mosaicTimer = timerId;
+  }
+
+  async function renderCanvasEditor(wall) {
+    const body = document.getElementById("walls-editor-body");
+    document.getElementById("walls-editor-title").textContent = wall.name;
+    const list = await api(`/walls/${wall.id}/canvas-playlist`);
+    state.editing = wall.id;
+    body.innerHTML = `
+      <div class="canvas-editor-summary">
+        <span class="walls-meta">
+          ${Khan.t("walls.mode_spanned", "Spanned")} ·
+          ${wall.canvas_width_px}×${wall.canvas_height_px} ·
+          ${wall.rows}×${wall.cols}
+        </span>
+      </div>
+      <div class="canvas-editor-grid">
+        <div class="canvas-editor-rail">
+          <h4>${Khan.t("walls.canvas_items", "Items")}</h4>
+          <ul id="canvas-items-list"></ul>
+          <button id="canvas-add-item" class="btn">${Khan.t("walls.canvas_add_item", "Add item")}</button>
+        </div>
+        <div class="canvas-editor-preview" id="canvas-preview">
+          <div class="canvas-bezel-grid"
+               style="grid-template-columns: repeat(${wall.cols}, 1fr);
+                      grid-template-rows: repeat(${wall.rows}, 1fr);
+                      aspect-ratio: ${wall.canvas_width_px} / ${wall.canvas_height_px};
+                      gap: ${wall.bezel_h_pct}% ${wall.bezel_v_pct}%;">
+            ${Array.from({length: wall.rows * wall.cols}).map(() =>
+              `<div class="canvas-bezel-cell"></div>`).join("")}
+          </div>
+          <div id="canvas-preview-media" class="canvas-preview-media"></div>
+        </div>
+      </div>
+      <div id="canvas-item-detail" class="canvas-item-detail hidden">
+        <h4>${Khan.t("walls.selected_item", "Selected item")}</h4>
+        <label>${Khan.t("walls.duration_override_seconds", "Duration (seconds)")}
+          <input id="canvas-item-duration" type="number" min="1" max="86400" /></label>
+        <fieldset>
+          <legend>${Khan.t("walls.fit_mode", "Fit mode")}</legend>
+          <label><input type="radio" name="fit" value="fit" />${Khan.t("walls.fit_fit", "Fit")}</label>
+          <label><input type="radio" name="fit" value="fill" />${Khan.t("walls.fit_fill", "Fill")}</label>
+          <label><input type="radio" name="fit" value="stretch" />${Khan.t("walls.fit_stretch", "Stretch")}</label>
+        </fieldset>
+        <button id="canvas-item-save" class="btn btn-primary">${Khan.t("walls.save", "Save")}</button>
+        <button id="canvas-item-delete" class="btn btn-danger">${Khan.t("walls.delete", "Delete")}</button>
+      </div>
+    `;
+    renderCanvasItemList(wall, list.items);
+    body.querySelector("#canvas-add-item").addEventListener("click",
+      () => openCanvasMediaPicker(wall));
+    mountModeSwitchButton(wall);
+  }
+
+  function renderCanvasItemList(wall, items) {
+    const root = document.getElementById("canvas-items-list");
+    if (!items.length) {
+      root.innerHTML = `<li class="empty">${Khan.t("walls.canvas_empty", "No items yet.")}</li>`;
+      return;
+    }
+    root.innerHTML = items.map(it => `
+      <li data-item-id="${it.id}">
+        <span>${escHtml(it.media_name)}</span>
+        <small>${it.fit_mode} · ${it.duration_override_seconds || it.duration_seconds}s</small>
+      </li>
+    `).join("");
+    root.querySelectorAll("[data-item-id]").forEach(li => {
+      li.addEventListener("click", () => selectCanvasItem(wall, items.find(
+        it => String(it.id) === li.dataset.itemId)));
+    });
+  }
+
+  function selectCanvasItem(wall, item) {
+    state.canvasSelectedItem = item;
+    const detail = document.getElementById("canvas-item-detail");
+    detail.classList.remove("hidden");
+    detail.querySelector("#canvas-item-duration").value =
+      item.duration_override_seconds || item.duration_seconds || "";
+    detail.querySelectorAll('input[name="fit"]').forEach(el => {
+      el.checked = el.value === item.fit_mode;
+    });
+    detail.querySelector("#canvas-item-save").onclick = () => saveCanvasItem(wall, item);
+    detail.querySelector("#canvas-item-delete").onclick = () => deleteCanvasItem(wall, item);
+    const preview = document.getElementById("canvas-preview-media");
+    if (item.mime_type.startsWith("video/")) {
+      preview.innerHTML = `<video src="${item.filename ? '/uploads/' + item.filename : ''}"
+        muted autoplay loop playsinline></video>`;
+    } else if (item.mime_type === "application/pdf") {
+      preview.innerHTML = `<div class="pdf-thumb">PDF — ${escHtml(item.media_name)}</div>`;
+    } else {
+      preview.innerHTML = `<img src="/uploads/${item.filename || ''}" alt="" />`;
+    }
+  }
+
+  async function saveCanvasItem(wall, item) {
+    const detail = document.getElementById("canvas-item-detail");
+    const dur = parseInt(detail.querySelector("#canvas-item-duration").value, 10);
+    const fit = detail.querySelector('input[name="fit"]:checked')?.value || "fit";
+    try {
+      await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({duration_override_seconds: isNaN(dur) ? null : dur, fit_mode: fit}),
+      });
+      toast(Khan.t("walls.cell_updated", "Updated"));
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
+    }
+  }
+
+  async function deleteCanvasItem(wall, item) {
+    if (!confirm(Khan.t("walls.canvas_confirm_delete", "Delete this item?"))) return;
+    try {
+      await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {method: "DELETE"});
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || "delete failed", "error");
+    }
+  }
+
+  async function openCanvasMediaPicker(wall) {
+    let picks;
+    try {
+      picks = await MediaPicker.open({ allowedTypes: ["image", "video", "pdf"] });
+    } catch (e) {
+      if (e && e.cancelled) return;
+      throw e;
+    }
+    if (!picks.length) return;
+    const list = await api(`/walls/${wall.id}/canvas-playlist`);
+    let position = list.items.length;
+    try {
+      for (const p of picks) {
+        const body = { media_id: p.media_id, position, fit_mode: "fit" };
+        if (p.duration_seconds != null) body.duration_override_seconds = p.duration_seconds;
+        await api(`/walls/${wall.id}/canvas-playlist/items`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        position++;
+      }
+      toast(Khan.t("walls.canvas_added", "Item added"));
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || "add failed", "error");
+    }
+  }
+
+  function openModeChangeModal(wall, newMode) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal";
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <h3>${Khan.t("walls.mode_change_confirm_title", "Switch wall mode")}</h3>
+        <p>${Khan.t("walls.mode_change_confirm_body",
+          "Switching this wall to {mode} will permanently delete its current playlist. Cell pairings stay.")
+          .replace("{mode}", Khan.t(`walls.mode_${newMode}`, newMode))}</p>
+        <p>${Khan.t("walls.mode_change_type_name_to_confirm",
+          "Type the wall name to confirm:")}</p>
+        <input id="mode-change-typed" autocomplete="off" />
+        <div class="modal-actions">
+          <button class="btn" id="mode-change-cancel">${Khan.t("walls.cancel", "Cancel")}</button>
+          <button class="btn btn-danger" id="mode-change-switch" disabled>${
+            Khan.t("walls.mode_change_switch_btn", "Switch")}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const typed = overlay.querySelector("#mode-change-typed");
+    const switchBtn = overlay.querySelector("#mode-change-switch");
+    typed.addEventListener("input", () => {
+      switchBtn.disabled = typed.value !== wall.name;
+    });
+    overlay.querySelector("#mode-change-cancel").addEventListener("click",
+      () => overlay.remove());
+    switchBtn.addEventListener("click", async () => {
+      const payload = {mode: newMode};
+      if (newMode === "spanned") {
+        payload.canvas_width_px = 3840;
+        payload.canvas_height_px = 2160;
+        payload.bezel_h_pct = 0;
+        payload.bezel_v_pct = 0;
+      } else {
+        payload.mirrored_mode = "same_playlist";
+      }
+      try {
+        await api(`/walls/${wall.id}`, {method: "PATCH", body: JSON.stringify(payload)});
+        toast(Khan.t("walls.mode_changed", "Mode changed"));
+        overlay.remove();
+        await loadList();
+        openEditor(wall.id);
+      } catch (err) {
+        toast(err.message || "mode change failed", "error");
+      }
+    });
   }
 
   return {

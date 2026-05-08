@@ -535,6 +535,7 @@ let wallReconnectAttempts = 0;
 let wallClockOffsetMs = 0;
 let wallLastFrame = null;
 let wallDriftTimer = null;
+let wallSpannedGeometry = null;
 const WALL_RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 
 function effectiveNowMs() { return Date.now() + wallClockOffsetMs; }
@@ -577,6 +578,13 @@ function onWallFrame(frame) {
     wallClockOffsetMs = frame.server_now_ms - clientReceivedMs;
   }
   if (frame.type === "hello") {
+    if (frame.mode === "spanned") {
+      wallSpannedGeometry = {
+        canvas:        frame.canvas,
+        cell_geometry: frame.cell_geometry,
+        bezel:         frame.bezel,
+      };
+    }
     if (frame.current_play) renderWallPlay(frame.current_play);
   } else if (frame.type === "play") {
     renderWallPlay(frame);
@@ -604,6 +612,10 @@ function renderWallPlay(frame) {
   wallLastFrame = frame;
   if (wallDriftTimer) { clearInterval(wallDriftTimer); wallDriftTimer = null; }
   contentEl.innerHTML = "";
+  if (wallSpannedGeometry) {
+    renderSpannedFrame(frame);
+    return;
+  }
   const startedAtMs = frame.started_at_ms;
   const expectedPositionMs = effectiveNowMs() - startedAtMs;
   const node = createWallMediaNode(item);
@@ -611,6 +623,35 @@ function renderWallPlay(frame) {
   if (node.tagName === "VIDEO") {
     node.addEventListener("loadeddata", () => {
       const t = Math.max(0, expectedPositionMs / 1000);
+      try { node.currentTime = t; } catch (_) {}
+      node.play().catch(() => {});
+    }, { once: true });
+    wallDriftTimer = setInterval(() => correctVideoDrift(node, frame), 2000);
+  }
+}
+
+function renderSpannedFrame(frame) {
+  const { canvas, cell_geometry } = wallSpannedGeometry;
+  const item = frame.item;
+  if (!item) return;
+  const wrap = document.createElement("div");
+  wrap.className = "cell-viewport";
+  wrap.innerHTML = `
+    <div class="wall-canvas"
+         style="--wall-w-px:${canvas.w}; --wall-h-px:${canvas.h};
+                --cell-x-px:${cell_geometry.x}; --cell-y-px:${cell_geometry.y};">
+    </div>
+  `;
+  contentEl.appendChild(wrap);
+  const wallCanvas = wrap.querySelector(".wall-canvas");
+  const node = createWallMediaNode(item);
+  node.classList.add("wall-media");
+  node.dataset.fit = frame.fit_mode || "fit";
+  node.style.cssText = "position:absolute; inset:0; width:100%; height:100%;";
+  wallCanvas.appendChild(node);
+  if (node.tagName === "VIDEO") {
+    node.addEventListener("loadeddata", () => {
+      const t = Math.max(0, (effectiveNowMs() - frame.started_at_ms) / 1000);
       try { node.currentTime = t; } catch (_) {}
       node.play().catch(() => {});
     }, { once: true });

@@ -43,6 +43,9 @@ services:
       - backend
     env_file:
       - .env
+    environment:
+      # WALLS_PHASE2_ENABLED=true to expose the spanned-wall wizard option.
+      - WALLS_PHASE2_ENABLED=${WALLS_PHASE2_ENABLED:-false}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost"]
