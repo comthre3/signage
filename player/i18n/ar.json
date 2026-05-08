@@ -23,5 +23,7 @@
   "pairing.code_invalid": "الرمز غير معروف.",
   "pairing.code_expired": "انتهت صلاحية الرمز. اطلب رمزاً جديداً من الأدمن.",
   "wall.connecting": "جاري الاتصال بالجدار…",
-  "wall.reconnecting": "جاري إعادة الاتصال بالجدار…"
+  "wall.reconnecting": "جاري إعادة الاتصال بالجدار…",
+  "lang.toggle_label": "EN",
+  "nav.lang_toggle_aria": "تبديل اللغة"
 }

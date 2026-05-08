@@ -286,3 +286,22 @@ code, kbd, samp, pre,
 .wall-media[data-fit="fit"]     { object-fit: contain; }
 .wall-media[data-fit="fill"]    { object-fit: cover;   }
 .wall-media[data-fit="stretch"] { object-fit: fill;    }
+
+/* ── Language toggle button (Task 4 — Arabic/RTL hardening) ─────── */
+.player-lang-toggle {
+  position: fixed;
+  inset-block-start: 16px;
+  inset-inline-end: 16px;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.player-lang-toggle:hover {
+  background: rgba(0, 0, 0, 0.7);
+}

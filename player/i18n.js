@@ -33,6 +33,19 @@
     r.querySelectorAll("[data-i18n-aria-label]").forEach(el => { el.setAttribute("aria-label", t(el.dataset.i18nAriaLabel)); });
   }
 
+  function setCookie(locale) {
+    const host = location.hostname;
+    const isProd = host.endsWith("khanshoof.com");
+    const domainAttr = isProd ? "; domain=.khanshoof.com" : "";
+    document.cookie = `khanshoof_lang=${locale}${domainAttr}; path=/; max-age=31536000; samesite=lax`;
+  }
+
+  function setLocale(locale) {
+    if (!ALLOWED.includes(locale)) locale = "en";
+    setCookie(locale);
+    return locale;
+  }
+
   function detectInitialLocale() {
     const m = document.cookie.match(/(?:^|; )khanshoof_lang=(en|ar)\b/);
     if (m) return m[1];
@@ -42,5 +55,5 @@
 
   function currentLocale() { return _locale; }
 
-  window.Khan = { loadLocale, t, applyTranslations, detectInitialLocale, currentLocale };
+  window.Khan = { loadLocale, t, applyTranslations, setLocale, detectInitialLocale, currentLocale };
 })();
