@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -488,7 +489,7 @@ class PlaylistUpdate(BaseModel):
 
 class PlaylistItemCreate(BaseModel):
     media_id: int
-    duration_seconds: int = Field(10, ge=1, le=3600)
+    duration_seconds: Optional[int] = Field(None, ge=1, le=3600)
 
 
 class MediaUrlCreate(BaseModel):
@@ -2289,6 +2290,25 @@ def delete_playlist(playlist_id: int, user: dict = Depends(require_roles("admin"
     return {"status": "deleted"}
 
 
+def _default_duration_seconds(media: dict) -> int:
+    """Default playlist-item duration when caller omits duration_seconds."""
+    mime = (media.get("mime_type") or "").lower()
+    if mime.startswith("image/"):
+        return 10
+    if mime.startswith("video/"):
+        # forward-hook: media table has no duration_seconds column yet,
+        # so this currently always falls through to the 10s default.
+        stored = media.get("duration_seconds")
+        if isinstance(stored, (int, float)) and stored > 0:
+            return max(1, math.ceil(stored))
+        return 10
+    if mime == "application/pdf":
+        return 30
+    if mime == "text/url":
+        return 10
+    return 10
+
+
 @app.post("/playlists/{playlist_id}/items")
 def add_playlist_item(
     playlist_id: int, payload: PlaylistItemCreate, user: dict = Depends(require_roles("admin", "editor"))
@@ -2311,13 +2331,18 @@ def add_playlist_item(
         (playlist_id,),
     )
     position = (max_position["max_position"] or 0) + 1
+    duration_seconds = (
+        payload.duration_seconds
+        if payload.duration_seconds is not None
+        else _default_duration_seconds(media)
+    )
     item_id = execute(
         """
         INSERT INTO playlist_items
         (playlist_id, media_id, duration_seconds, position, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (playlist_id, payload.media_id, payload.duration_seconds, position, utc_now_iso()),
+        (playlist_id, payload.media_id, duration_seconds, position, utc_now_iso()),
     )
     item = query_one("SELECT * FROM playlist_items WHERE id = ?", (item_id,))
     item["media"] = media
