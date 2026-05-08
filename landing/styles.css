@@ -41,6 +41,11 @@
   --gutter: 24px;
 }
 
+:lang(ar) {
+  --font-body:    'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-display: 'IBM Plex Sans Arabic', 'IBM Plex Serif', Georgia, serif;
+}
+
 /* ── Reset ──────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -314,7 +319,7 @@ a:hover { color: var(--peach-deep); }
 .hero-title em::after {
   content: '';
   position: absolute;
-  left: 0; right: 0; bottom: -6px;
+  inset-inline: 0; bottom: -6px;
   height: 8px;
   background: var(--rose);
   border-radius: 999px;
@@ -360,7 +365,7 @@ a:hover { color: var(--peach-deep); }
   max-width: 520px;
   height: auto;
   display: block;
-  margin-left: auto;
+  margin-inline-start: auto;
   filter: drop-shadow(0 20px 30px var(--plum-shadow));
 }
 
@@ -650,6 +655,26 @@ a:hover { color: var(--peach-deep); }
   .ai-card { grid-template-columns: 1fr; padding: 36px; }
 }
 
+@media (max-width: 560px) {
+  .ai-card { padding: 28px 22px; gap: 28px; }
+  .ai-copy h2 { font-size: 24px; line-height: 1.25; }
+  .ai-copy p  { font-size: 15px; }
+  .ai-visual {
+    flex-direction: column;
+    gap: 14px;
+  }
+  .ai-chip {
+    max-width: 100%;
+    word-break: break-all;
+    text-align: center;
+  }
+  .ai-arrow,
+  [dir="rtl"] .ai-arrow {
+    transform: rotate(90deg);
+    font-size: 28px;
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────
    FAQ
    ───────────────────────────────────────────────────────────── */
@@ -770,7 +795,7 @@ a:hover { color: var(--peach-deep); }
   image-rendering: pixelated;
   border-radius: 6px;
   vertical-align: middle;
-  margin-right: 8px;
+  margin-inline-end: 8px;
 }
 
 .footer-face {
@@ -778,7 +803,7 @@ a:hover { color: var(--peach-deep); }
   height: 28px;
   image-rendering: pixelated;
   vertical-align: middle;
-  margin-right: 6px;
+  margin-inline-end: 6px;
 }
 
 .hero-face {
@@ -801,4 +826,41 @@ a:hover { color: var(--peach-deep); }
 /* Reduced motion: hold on smile */
 @media (prefers-reduced-motion: reduce) {
   .hero-face { animation: none; }
+}
+
+.pricing-usd-approx {
+  font-size: 13px;
+  color: var(--text-muted, #6b6480);
+  margin-top: 4px;
+}
+
+.lang-toggle {
+  background: var(--butter);
+  color: var(--plum);
+  border: 1px solid var(--peach);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  cursor: pointer;
+}
+.lang-toggle:hover { filter: brightness(0.97); }
+
+/* RTL direction-aware overrides */
+[dir="rtl"] .nav-toggle,
+[dir="rtl"] .ai-arrow {
+  transform: scaleX(-1);
+}
+
+/* Force LTR on URLs, IDs, code, mono inputs (they read in Latin even in Arabic UI) */
+input[type="url"],
+input[type="email"],
+input[name*="token"],
+input[name*="id"],
+code, kbd, samp, pre,
+.mono, .monospace,
+.code,
+[dir="ltr"] {
+  direction: ltr;
+  text-align: start;
 }

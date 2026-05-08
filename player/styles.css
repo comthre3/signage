@@ -12,6 +12,14 @@ body {
   font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
 }
 
+:lang(ar) #pairing,
+:lang(ar) .pairing-intro,
+:lang(ar) .pairing-steps,
+:lang(ar) .pairing-meta,
+:lang(ar) #status {
+  font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+}
+
 #player {
   position: relative;
   width: 100%;
@@ -75,7 +83,7 @@ body {
 #status {
   position: absolute;
   top: 16px;
-  left: 16px;
+  inset-inline-start: 16px;
   background: rgba(0, 0, 0, 0.6);
   padding: 6px 10px;
   border-radius: 4px;
@@ -152,7 +160,7 @@ body {
   font-size: clamp(14px, 1.8vh, 22px);
   color: #5D4A66;
   max-width: 560px;
-  padding-left: 24px;
+  padding-inline-start: 24px;
   line-height: 1.6;
   margin: 0;
 }
@@ -189,3 +197,92 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .pairing-face { animation: none; }
 }
+
+/* RTL direction-aware overrides */
+code, kbd, samp, pre,
+.mono, .monospace,
+.code,
+[dir="ltr"] {
+  direction: ltr;
+  text-align: start;
+}
+
+/* Pairing codes are alphanumeric — stay LTR even in Arabic mode */
+[dir="rtl"] .pairing-code,
+[dir="rtl"] #pairing-url,
+[dir="rtl"] #pairing-code {
+  direction: ltr;
+}
+
+/* Pairing — "Have a code from admin?" affordance (Task 11) */
+.admin-code-affordance {
+  margin-block-start: 1.5em;
+  text-align: center;
+}
+.admin-code-affordance .link {
+  background: none;
+  border: none;
+  color: var(--accent, #6b8e6b);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+.admin-code-form {
+  margin-block-start: 0.75em;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.admin-code-form input {
+  font: inherit;
+  padding: 8px 12px;
+  width: 8ch;
+  letter-spacing: 0.15em;
+  text-align: center;
+  text-transform: uppercase;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e9ddc6);
+}
+.admin-code-form .btn {
+  font: inherit;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e9ddc6);
+  background: var(--cream, #fff8f0);
+  color: inherit;
+  cursor: pointer;
+}
+.admin-code-form .btn-primary {
+  background: var(--accent, #6b8e6b);
+  border-color: var(--accent, #6b8e6b);
+  color: #fff;
+}
+.admin-code-form .btn:hover { filter: brightness(0.95); }
+.admin-code-error {
+  color: var(--rose, #b53939);
+  margin-block-start: 0.5em;
+  width: 100%;
+  text-align: center;
+  min-height: 1em;
+}
+.admin-code-form.hidden { display: none; }
+
+.cell-viewport {
+  position: fixed; inset: 0; overflow: hidden; background: #000;
+}
+.wall-canvas {
+  position: absolute;
+  width:  calc(var(--wall-w-px) * 1px);
+  height: calc(var(--wall-h-px) * 1px);
+  transform: translate(
+    calc(-1 * var(--cell-x-px) * 1px),
+    calc(-1 * var(--cell-y-px) * 1px)
+  );
+  will-change: transform;
+}
+.wall-media[data-fit="fit"]     { object-fit: contain; }
+.wall-media[data-fit="fill"]    { object-fit: cover;   }
+.wall-media[data-fit="stretch"] { object-fit: fill;    }

@@ -88,6 +88,7 @@ function showSection(id) {
   navButtons.forEach((btn) => {
     btn.classList.toggle("nav-active", btn.dataset.section === id);
   });
+  if (id === "walls") Walls.onShow();
 }
 
 function buildPlayerUrl(base, params) {
@@ -122,6 +123,14 @@ function updateResolutionCustomVisibility() {
 }
 
 /* ── API ─────────────────────────────────────────────────────── */
+function localizeError(detail, fallback) {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && detail.code) {
+    return Khan.t(`error.${detail.code}`, detail.message);
+  }
+  return fallback || "Something went wrong";
+}
+
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
@@ -131,8 +140,8 @@ async function api(path, options = {}) {
     const text = await res.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    const msg = (data && typeof data === "object" && typeof data.detail === "string")
-      ? data.detail
+    const msg = data && data.detail
+      ? localizeError(data.detail, text)
       : (text || "Request failed");
     const err = new Error(msg);
     err.status = res.status;
@@ -206,7 +215,6 @@ async function loadPlaylists() {
 async function loadMedia() {
   state.media = await api("/media");
   renderMedia();
-  renderMediaOptions();
 }
 
 async function loadUsers() {
@@ -240,7 +248,7 @@ function renderSites() {
       if (!confirm(`Delete site "${site.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/sites/${site.id}`, { method: "DELETE" });
-        toast("Site deleted.", "success");
+        toast(Khan.t("toast.site_deleted"), "success");
         await loadSites();
         await loadScreens();
       });
@@ -280,7 +288,7 @@ function renderPlaylists() {
       if (!confirm(`Delete playlist "${playlist.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/playlists/${playlist.id}`, { method: "DELETE" });
-        toast("Playlist deleted.", "success");
+        toast(Khan.t("toast.playlist_deleted"), "success");
         await loadPlaylists();
         await loadScreens();
       });
@@ -300,16 +308,6 @@ function renderPlaylistSelect() {
   });
 }
 
-function renderMediaOptions() {
-  const select = document.getElementById("playlist-media");
-  select.innerHTML = `<option value="">Select media</option>`;
-  state.media.forEach((media) => {
-    const option = document.createElement("option");
-    option.value = media.id;
-    option.textContent = media.name;
-    select.appendChild(option);
-  });
-}
 
 function renderMedia() {
   const container = document.getElementById("media-list");
@@ -335,7 +333,7 @@ function renderMedia() {
       if (!confirm(`Delete "${item.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/media/${item.id}`, { method: "DELETE" });
-        toast("Media deleted.", "success");
+        toast(Khan.t("toast.media_deleted"), "success");
         await loadMedia();
       });
     });
@@ -376,14 +374,14 @@ function renderUsers() {
       await withLoading(e.currentTarget, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ password }) });
         input.value = "";
-        toast("Password updated.", "success");
+        toast(Khan.t("toast.password_updated"), "success");
       });
     });
     card.querySelector(`[data-user-delete="${user.id}"]`).addEventListener("click", async (e) => {
       if (!confirm(`Delete user "${user.username}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/users/${user.id}`, { method: "DELETE" });
-        toast("User deleted.", "success");
+        toast(Khan.t("toast.user_deleted"), "success");
         await loadUsers();
       });
     });
@@ -392,7 +390,7 @@ function renderUsers() {
     card.querySelector(`[data-user-role-save="${user.id}"]`).addEventListener("click", async (e) => {
       await withLoading(e.currentTarget, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ role: roleSelect.value }) });
-        toast("Role updated.", "success");
+        toast(Khan.t("toast.role_updated"), "success");
         await loadUsers();
       });
     });
@@ -445,7 +443,7 @@ function renderGroups() {
       if (!confirm(`Delete group "${group.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/groups/${group.id}`, { method: "DELETE" });
-        toast("Group deleted.", "success");
+        toast(Khan.t("toast.group_deleted"), "success");
         await loadUsers();
       });
     });
@@ -497,7 +495,7 @@ function renderScreens() {
       await withLoading(e.currentTarget, async () => {
         const playlistId = select.value ? Number(select.value) : null;
         await api(`/screens/${screen.id}`, { method: "PUT", body: JSON.stringify({ playlist_id: playlistId }) });
-        toast("Screen saved.", "success");
+        toast(Khan.t("toast.screen_saved"), "success");
         await loadScreens();
       });
     });
@@ -523,7 +521,7 @@ function renderScreens() {
       if (!confirm(`Delete screen "${screen.name}"?`)) return;
       await withLoading(e.currentTarget, async () => {
         await api(`/screens/${screen.id}`, { method: "DELETE" });
-        toast("Screen deleted.", "success");
+        toast(Khan.t("toast.screen_deleted"), "success");
         await loadScreens();
       });
     });
@@ -751,7 +749,7 @@ async function openScreenAccessEditor(screenId) {
       const selected = Array.from(groupsList.querySelectorAll("[data-screen-group]:checked"))
         .map((input) => Number(input.dataset.screenGroup.split(":")[1]));
       await api(`/screens/${screenId}/groups`, { method: "PUT", body: JSON.stringify({ group_ids: selected }) });
-      toast("Access settings saved.", "success");
+      toast(Khan.t("toast.access_saved"), "success");
       panel.classList.add("hidden");
       await loadScreens();
     });
@@ -805,7 +803,7 @@ function bindZoneEditorEvents() {
         }),
       });
       document.getElementById("zone-template-name").value = "";
-      toast("Template saved.", "success");
+      toast(Khan.t("toast.template_saved"), "success");
       await loadZoneTemplates();
     });
   });
@@ -816,7 +814,7 @@ function bindZoneEditorEvents() {
       await api(`/screens/${zonesState.screenId}/zone-templates/apply`, { method: "POST", body: JSON.stringify({ template_id: templateId }) });
       const data = await api(`/screens/${zonesState.screenId}/zones`);
       setZones(data.zones || []);
-      toast("Template applied.", "success");
+      toast(Khan.t("toast.template_applied"), "success");
     });
   });
   document.querySelectorAll("[data-zone-preset]").forEach((btn) => {
@@ -836,7 +834,7 @@ function bindZoneEditorEvents() {
           })),
         }),
       });
-      toast("Zones saved.", "success");
+      toast(Khan.t("toast.zones_saved"), "success");
     });
   });
   document.getElementById("zones-cancel")?.addEventListener("click", closeZonesEditor);
@@ -956,7 +954,7 @@ document.getElementById("site-form").addEventListener("submit", async (e) => {
   await withLoading(btn, async () => {
     await api("/sites", { method: "POST", body: JSON.stringify({ name, slug: slug || null }) });
     e.target.reset();
-    toast("Site created.", "success");
+    toast(Khan.t("toast.site_created"), "success");
     await loadSites();
   });
 });
@@ -976,7 +974,7 @@ document.getElementById("screen-form").addEventListener("submit", async (e) => {
       await api("/screens", { method: "POST", body: JSON.stringify(payload) });
       e.target.reset();
       updateResolutionCustomVisibility();
-      toast("Screen created.", "success");
+      toast(Khan.t("toast.screen_created"), "success");
       await loadScreens();
     } catch (err) {
       toast(err.message || "Failed to add screen.", "error");
@@ -1000,7 +998,7 @@ document.getElementById("media-form").addEventListener("submit", async (e) => {
     });
     if (!res.ok) { const text = await res.text(); throw new Error(text || "Upload failed"); }
     input.value = "";
-    toast("Media uploaded.", "success");
+    toast(Khan.t("toast.media_uploaded"), "success");
     await loadMedia();
   });
 });
@@ -1014,7 +1012,7 @@ document.getElementById("media-url-form").addEventListener("submit", async (e) =
   await withLoading(btn, async () => {
     await api("/media/url", { method: "POST", body: JSON.stringify({ name, url }) });
     e.target.reset();
-    toast("Website added.", "success");
+    toast(Khan.t("toast.website_added"), "success");
     await loadMedia();
   });
 });
@@ -1049,7 +1047,7 @@ document.getElementById("playlist-form").addEventListener("submit", async (e) =>
   await withLoading(btn, async () => {
     await api("/playlists", { method: "POST", body: JSON.stringify({ name }) });
     e.target.reset();
-    toast("Playlist created.", "success");
+    toast(Khan.t("toast.playlist_created"), "success");
     await loadPlaylists();
   });
 });
@@ -1060,12 +1058,25 @@ document.getElementById("playlist-select").addEventListener("change", async (e) 
 
 document.getElementById("playlist-add-item").addEventListener("click", async (e) => {
   const playlistId = document.getElementById("playlist-select").value;
-  const mediaId    = document.getElementById("playlist-media").value;
-  const duration   = Number(document.getElementById("playlist-duration").value || 10);
-  if (!playlistId || !mediaId) return;
+  if (!playlistId) return;
+  let picks;
+  try {
+    picks = await MediaPicker.open({ allowedTypes: ["image", "video", "pdf", "url"] });
+  } catch (err) {
+    if (err && err.cancelled) return;
+    throw err;
+  }
+  if (!picks.length) return;
   await withLoading(e.currentTarget, async () => {
-    await api(`/playlists/${playlistId}/items`, { method: "POST", body: JSON.stringify({ media_id: Number(mediaId), duration_seconds: duration }) });
-    toast("Item added.", "success");
+    for (const p of picks) {
+      const body = { media_id: p.media_id };
+      if (p.duration_seconds != null) body.duration_seconds = p.duration_seconds;
+      await api(`/playlists/${playlistId}/items`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    }
+    toast(Khan.t("toast.item_added"), "success");
     await loadPlaylistItems(playlistId);
   });
 });
@@ -1177,7 +1188,7 @@ document.getElementById("signup-request-form").addEventListener("submit", async 
         document.getElementById("signup-otp").value = data.dev_otp;
       }
       signupShowStep("verify");
-      toast("Code sent. Check the email (or dev log).", "success");
+      toast(Khan.t("toast.code_sent"), "success");
     });
   } catch (err) {
     toast(err.message || "Couldn't send code.", "error");
@@ -1216,7 +1227,7 @@ document.getElementById("signup-resend").addEventListener("click", async (e) => 
     if (data.dev_otp) {
       document.getElementById("signup-otp").value = data.dev_otp;
     }
-    toast("New code sent.", "success");
+    toast(Khan.t("toast.new_code_sent"), "success");
   } catch (err) {
     toast(err.message || "Couldn't resend code.", "error");
   }
@@ -1237,7 +1248,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
   const password        = document.getElementById("signup-new-password").value;
   const confirmPassword = document.getElementById("signup-confirm-password").value;
   if (password !== confirmPassword) {
-    toast("Passwords do not match.", "error");
+    toast(Khan.t("toast.passwords_no_match"), "error");
     return;
   }
   try {
@@ -1280,7 +1291,7 @@ document.getElementById("user-form").addEventListener("submit", async (e) => {
   await withLoading(btn, async () => {
     await api("/users", { method: "POST", body: JSON.stringify(payload) });
     e.target.reset();
-    toast("User created.", "success");
+    toast(Khan.t("toast.user_created"), "success");
     await loadUsers();
   });
 });
@@ -1294,7 +1305,7 @@ document.getElementById("group-form").addEventListener("submit", async (e) => {
   await withLoading(btn, async () => {
     await api("/groups", { method: "POST", body: JSON.stringify({ name }) });
     e.target.reset();
-    toast("Group created.", "success");
+    toast(Khan.t("toast.group_created"), "success");
     await loadUsers();
   });
 });
@@ -1321,7 +1332,7 @@ connectionForm?.addEventListener("submit", (e) => {
   localStorage.setItem(CONNECTION_STORAGE_KEY, connectionMode.value);
   localStorage.setItem(CONNECTION_API_KEY,     connectionApi.value.trim());
   localStorage.setItem(CONNECTION_PLAYER_KEY,  connectionPlayer.value.trim());
-  toast("Saved — reload to apply.", "info");
+  toast(Khan.t("toast.settings_saved"), "info");
 });
 
 connectionReset?.addEventListener("click", () => {
@@ -1329,7 +1340,7 @@ connectionReset?.addEventListener("click", () => {
   localStorage.removeItem(CONNECTION_API_KEY);
   localStorage.removeItem(CONNECTION_PLAYER_KEY);
   connectionMode.value = "local"; connectionApi.value = ""; connectionPlayer.value = "";
-  toast("Reset — reload to apply.", "info");
+  toast(Khan.t("toast.settings_reset"), "info");
 });
 
 /* ── Boot ────────────────────────────────────────────────────── */
@@ -1475,14 +1486,48 @@ async function showPairView(initialCode) {
   updatePairSubmitEnabled();
 }
 
+function bindLangToggle() {
+  const btn = document.getElementById("lang-toggle");
+  if (!btn || btn.dataset.bound === "1") return;
+  btn.dataset.bound = "1";
+  btn.addEventListener("click", async () => {
+    const next = Khan.currentLocale() === "en" ? "ar" : "en";
+    if (authToken && currentUser?.is_admin) {
+      try {
+        await api("/organizations/me", { method: "PATCH", body: JSON.stringify({ locale: next }) });
+      } catch (err) {
+        console.error("PATCH /organizations/me failed", err);
+      }
+    }
+    Khan.setLocale(next);
+    location.reload();
+  });
+}
+
 async function boot() {
+  let orgLocale;
+  if (authToken) {
+    try {
+      const me = await api("/auth/me");
+      setAuth(authToken, me);
+      orgLocale = me.organization?.locale;
+    } catch (err) {
+      // fall through to cookie/browser detection
+    }
+  }
+  const locale = Khan.detectInitialLocale(orgLocale);
+  await Khan.loadLocale(locale);
+  Khan.applyTranslations(document);
+
+  bindLangToggle();
+
   const isPairPath = location.pathname === "/pair";
   const isBillingPath = location.pathname === "/billing";
   const pairCodeParam = isPairPath
     ? new URLSearchParams(location.search).get("code") || ""
     : "";
 
-  if (!authToken) {
+  if (!authToken || !currentUser) {
     if (isPairPath) {
       sessionStorage.setItem("pair_resume", JSON.stringify({ path: "/pair", code: pairCodeParam }));
     }
@@ -1492,28 +1537,21 @@ async function boot() {
     return;
   }
 
-  try {
-    const me = await api("/auth/me");
-    setAuth(authToken, me);
-    if (isPairPath) {
-      await showPairView(pairCodeParam);
-    } else if (isBillingPath) {
-      await showBilling();
-    } else {
-      showDashboard();
-      await bootData();
-      updateResolutionCustomVisibility();
-      if (location.hash === '#signup') showAuthTab('signup');
-    }
-  } catch (err) {
-    console.error(err);
-    handleAuthFailure();
+  if (isPairPath) {
+    await showPairView(pairCodeParam);
+  } else if (isBillingPath) {
+    await showBilling();
+  } else {
+    showDashboard();
+    await bootData();
+    updateResolutionCustomVisibility();
+    if (location.hash === '#signup') showAuthTab('signup');
   }
 }
 
 boot().catch((err) => {
   console.error(err);
-  toast("Failed to load dashboard. Check your connection.", "error", 6000);
+  toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
 });
 
 /* ── Misc bindings ───────────────────────────────────────────── */
@@ -1647,7 +1685,7 @@ function onPairViewDashboard() {
   showDashboard();
   bootData().catch((err) => {
     console.error(err);
-    toast("Failed to load dashboard. Check your connection.", "error", 6000);
+    toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
   });
 }
 
@@ -1656,12 +1694,12 @@ document.getElementById("pair-another-btn")  .addEventListener("click",  onPairA
 document.getElementById("pair-dashboard-btn").addEventListener("click",  onPairViewDashboard);
 
 /* ── Billing view ───────────────────────────────────────────── */
-const USD_TO_KWD = 0.306;
+const KWD_TO_USD = 3.267;
 const PLAN_TIERS = [
-  { tier: "starter",  label: "Starter",  usd: 9.99,  screens: 3  },
-  { tier: "growth",   label: "Growth",   usd: 12.99, screens: 5  },
-  { tier: "business", label: "Business", usd: 24.99, screens: 10 },
-  { tier: "pro",      label: "Pro",      usd: 49.99, screens: 25 },
+  { tier: "starter",  label: "Starter",  kwd: 3,  screens: 3  },
+  { tier: "growth",   label: "Growth",   kwd: 4,  screens: 5  },
+  { tier: "business", label: "Business", kwd: 8,  screens: 10 },
+  { tier: "pro",      label: "Pro",      kwd: 15, screens: 25 },
 ];
 const BILLING_TERMS = [
   { months: 1,  multiplier: 1,  saveLabel: "" },
@@ -1677,9 +1715,9 @@ function billingAmountsFor(tier, months) {
   const plan = PLAN_TIERS.find((p) => p.tier === tier);
   const term = BILLING_TERMS.find((t) => t.months === months);
   if (!plan || !term) return null;
-  const usd = +(plan.usd * term.multiplier).toFixed(2);
-  const kwd = Math.round(usd * USD_TO_KWD);
-  return { usd, kwd };
+  const kwd = plan.kwd * term.multiplier;
+  const usdApprox = (kwd * KWD_TO_USD).toFixed(2);
+  return { kwd, usdApprox };
 }
 
 function showBillingPanel() {
@@ -1720,8 +1758,8 @@ function renderBillingTiers() {
     card.innerHTML = `
       <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
       <div class="billing-tier-limit">up to ${plan.screens} screens</div>
-      <div class="billing-tier-usd">$${amounts.usd.toFixed(2)}${billingCurrentTerm === 1 ? " / month" : ""}</div>
-      <div class="billing-tier-kwd">≈ ${amounts.kwd} KWD</div>
+      <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " / month" : ""}</div>
+      <div class="billing-tier-usd">≈ $${amounts.usdApprox}</div>
       ${saveMarkup}
       <button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
         Pay ${amounts.kwd} KWD${termInfo.saveLabel ? " · " + escHtml(termInfo.saveLabel) : ""}
@@ -1854,3 +1892,886 @@ document.querySelector('nav button[data-section="billing"]')?.addEventListener("
   history.pushState({}, "", "/billing");
   showBilling();
 });
+
+// ====== MediaPicker ======
+const MediaPicker = (() => {
+  // Single-instance state. While `state.overlay` is non-null, open() is a no-op.
+  const state = {
+    overlay:      null,
+    mediaList:    [],   // raw /media response, filtered to allowedTypes
+    selection:    [],   // ordered array of media_ids picked
+    durations:    {},   // { media_id: number } — only for items the user touched in Advanced
+    chip:         "all",
+    search:       "",
+    advancedOpen: false,
+    resolve:      null,
+    reject:       null,
+    allowedTypes: [],
+  };
+
+  function attrEscape(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  }
+
+  function classifyMime(mime) {
+    if (!mime) return "other";
+    const m = mime.toLowerCase();
+    if (m.startsWith("image/")) return "image";
+    if (m.startsWith("video/")) return "video";
+    if (m === "application/pdf") return "pdf";
+    if (m === "text/url") return "url";
+    return "other";
+  }
+
+  function open({ allowedTypes }) {
+    if (!Array.isArray(allowedTypes) || allowedTypes.length === 0) {
+      throw new Error("MediaPicker.open: allowedTypes must be a non-empty array");
+    }
+    if (state.overlay) {
+      console.warn("MediaPicker already open; ignoring open() call");
+      return Promise.resolve([]);
+    }
+    state.allowedTypes = allowedTypes.slice();
+    state.selection = [];
+    state.durations = {};
+    state.chip = "all";
+    state.search = "";
+    state.advancedOpen = false;
+    return new Promise(async (resolve, reject) => {
+      state.resolve = resolve;
+      state.reject  = reject;
+      mountOverlay();
+      await loadMedia();
+    });
+  }
+
+  function close(picksOrCancel) {
+    if (!state.resolve && !state.reject) return; // guard against double-fire
+    const overlay = state.overlay;
+    state.overlay = null;
+    document.removeEventListener("keydown", onKeyDown);
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    if (picksOrCancel && picksOrCancel.cancelled) {
+      state.reject({ cancelled: true });
+    } else {
+      state.resolve(picksOrCancel);
+    }
+    state.resolve = null;
+    state.reject  = null;
+  }
+
+  function mountOverlay() {
+    const o = document.createElement("div");
+    o.className = "modal media-picker-modal";
+    o.innerHTML = `
+      <div class="modal-card media-picker-card">
+        <div class="media-picker-header">
+          <h3>${Khan.t("media_picker.title", "Pick media")}</h3>
+          <input class="media-picker-search" type="search"
+                 placeholder="${Khan.t("media_picker.search_placeholder", "Search by name…")}" />
+          <button class="media-picker-close btn-ghost" aria-label="Close">✕</button>
+        </div>
+        <div class="media-picker-chips"></div>
+        <div class="media-picker-grid" aria-live="polite"></div>
+        <div class="media-picker-advanced">
+          <button class="media-picker-advanced-toggle btn-ghost" type="button">
+            ▸ ${Khan.t("media_picker.advanced_durations", "Advanced: set per-item durations")}
+          </button>
+          <div class="media-picker-advanced-list hidden"></div>
+        </div>
+        <div class="media-picker-footer">
+          <span class="media-picker-count">${Khan.t("media_picker.selected_n", "{n} selected").replace("{n}", "0")}</span>
+          <div class="media-picker-actions">
+            <button class="btn btn-ghost media-picker-cancel">${Khan.t("media_picker.cancel", "Cancel")}</button>
+            <button class="btn btn-primary media-picker-confirm" disabled>${
+              Khan.t("media_picker.add_n", "Add {n} items").replace("{n}", "0")}</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(o);
+    state.overlay = o;
+
+    // Close on backdrop click (but not on card click).
+    o.addEventListener("click", (e) => {
+      if (e.target === o) close({ cancelled: true });
+    });
+    o.querySelector(".media-picker-close").addEventListener("click", () => close({ cancelled: true }));
+    o.querySelector(".media-picker-cancel").addEventListener("click", () => close({ cancelled: true }));
+    o.querySelector(".media-picker-search").addEventListener("input", (e) => {
+      state.search = e.target.value.trim().toLowerCase();
+      renderGrid();
+    });
+    o.querySelector(".media-picker-advanced-toggle").addEventListener("click", () => {
+      state.advancedOpen = !state.advancedOpen;
+      renderAdvanced();
+    });
+    o.querySelector(".media-picker-confirm").addEventListener("click", confirmPicks);
+
+    document.addEventListener("keydown", onKeyDown);
+    renderChips();
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Escape" && state.overlay) close({ cancelled: true });
+  }
+
+  async function loadMedia() {
+    if (!state.overlay) return; // picker was closed
+    const grid = state.overlay.querySelector(".media-picker-grid");
+    grid.textContent = "…";
+    try {
+      const all = await api("/media");
+      if (!state.overlay) return; // closed during fetch
+      state.mediaList = all.filter(m =>
+        state.allowedTypes.includes(classifyMime(m.mime_type))
+      );
+      renderGrid();
+    } catch (err) {
+      if (!state.overlay) return; // closed during fetch
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.fetch_failed", "Couldn't load media.")}</p>
+          <button class="btn media-picker-retry">Retry</button>
+        </div>
+      `;
+      grid.querySelector(".media-picker-retry").addEventListener("click", loadMedia);
+    }
+  }
+
+  function renderChips() {
+    const root = state.overlay.querySelector(".media-picker-chips");
+    const labels = {
+      all:    "filter_all",
+      image:  "filter_images",
+      video:  "filter_videos",
+      pdf:    "filter_pdfs",
+      url:    "filter_urls",
+    };
+    const fallbacks = { all: "All", image: "Images", video: "Videos", pdf: "PDFs", url: "URLs" };
+    const chips = ["all", ...state.allowedTypes];
+    root.innerHTML = chips.map(c => `
+      <button type="button"
+              data-chip="${c}"
+              class="media-picker-chip ${state.chip === c ? "active" : ""}">
+        ${Khan.t("media_picker." + labels[c], fallbacks[c])}
+      </button>
+    `).join("");
+    root.querySelectorAll(".media-picker-chip").forEach(el => {
+      el.addEventListener("click", () => {
+        const c = el.dataset.chip;
+        state.chip = state.chip === c ? "all" : c;
+        renderChips();
+        renderGrid();
+      });
+    });
+  }
+
+  function visibleItems() {
+    return state.mediaList.filter(m => {
+      const cls = classifyMime(m.mime_type);
+      if (state.chip !== "all" && cls !== state.chip) return false;
+      if (state.search && !(m.name || "").toLowerCase().includes(state.search)) return false;
+      return true;
+    });
+  }
+
+  function renderGrid() {
+    const grid = state.overlay.querySelector(".media-picker-grid");
+    if (!state.mediaList.length) {
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.empty_library", "No media yet. Upload some in the Media tab.")}</p>
+          <button class="btn media-picker-go-to-media">${Khan.t("nav.media", "Media")}</button>
+        </div>
+      `;
+      grid.querySelector(".media-picker-go-to-media").addEventListener("click", () => {
+        close({ cancelled: true });
+        if (typeof showSection === "function") showSection("media");
+      });
+      return;
+    }
+    const items = visibleItems();
+    if (!items.length) {
+      grid.innerHTML = `
+        <div class="media-picker-empty">
+          <p>${Khan.t("media_picker.empty_filtered", "No matches.")}</p>
+        </div>
+      `;
+      return;
+    }
+    grid.innerHTML = items.map(m => renderCard(m)).join("");
+    grid.querySelectorAll(".media-picker-card").forEach(el => {
+      el.addEventListener("click", () => toggleSelect(parseInt(el.dataset.mediaId, 10)));
+    });
+  }
+
+  function renderCard(m) {
+    const cls = classifyMime(m.mime_type);
+    const idx = state.selection.indexOf(m.id);
+    const checked = idx !== -1;
+    const badge = checked ? `${idx + 1}` : "";
+    const pill = cls === "url" ? "URL" : cls.toUpperCase();
+    let thumb = "";
+    if (cls === "image") {
+      thumb = `<img src="/uploads/${attrEscape(m.filename)}" loading="lazy" alt="" />`;
+    } else if (cls === "video") {
+      thumb = `<video src="/uploads/${attrEscape(m.filename)}" preload="metadata" muted></video>`;
+    } else if (cls === "pdf") {
+      thumb = `<div class="picker-thumb-pdf">PDF</div>`;
+    } else if (cls === "url") {
+      let host = "";
+      try { host = new URL(m.url || "").hostname; } catch (_) {}
+      thumb = host
+        ? `<div class="picker-thumb-url"><img src="https://www.google.com/s2/favicons?domain=${attrEscape(host)}&sz=64" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🌐'}))" /></div>`
+        : `<div class="picker-thumb-url">🌐</div>`;
+    } else {
+      thumb = `<div class="picker-thumb-other">?</div>`;
+    }
+    return `
+      <div class="media-picker-card ${checked ? "checked" : ""}" data-media-id="${m.id}">
+        <div class="media-picker-thumb">${thumb}</div>
+        <div class="media-picker-badge">${badge}</div>
+        <div class="media-picker-bottom">
+          <span class="media-picker-name" title="${(m.name || "").replace(/"/g, "&quot;")}">${(m.name || "").replace(/</g, "&lt;")}</span>
+          <span class="media-picker-pill">${pill}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function toggleSelect(mediaId) {
+    const i = state.selection.indexOf(mediaId);
+    if (i === -1) state.selection.push(mediaId);
+    else { state.selection.splice(i, 1); delete state.durations[mediaId]; }
+    renderGrid();
+    renderFooter();
+    if (state.advancedOpen) renderAdvanced();
+  }
+
+  function renderFooter() {
+    const n = state.selection.length;
+    state.overlay.querySelector(".media-picker-count").textContent =
+      Khan.t("media_picker.selected_n", "{n} selected").replace("{n}", String(n));
+    const btn = state.overlay.querySelector(".media-picker-confirm");
+    btn.textContent = Khan.t("media_picker.add_n", "Add {n} items").replace("{n}", String(n));
+    btn.disabled = n === 0;
+  }
+
+  function renderAdvanced() {
+    const wrap = state.overlay.querySelector(".media-picker-advanced-list");
+    wrap.classList.toggle("hidden", !state.advancedOpen);
+    if (!state.advancedOpen) return;
+    if (!state.selection.length) {
+      wrap.innerHTML = `<p class="media-picker-advanced-empty">—</p>`;
+      return;
+    }
+    wrap.innerHTML = state.selection.map((mid, i) => {
+      const m = state.mediaList.find(x => x.id === mid);
+      const dur = state.durations[mid];
+      const safeName = (m?.name || "").replace(/</g, "&lt;");
+      return `
+        <div class="media-picker-advanced-row" data-media-id="${mid}">
+          <span class="media-picker-advanced-idx">${i + 1}</span>
+          <span class="media-picker-advanced-name">${safeName}</span>
+          <input type="number" min="1" max="3600" placeholder="default"
+                 value="${dur ?? ""}" class="media-picker-advanced-duration" />
+        </div>
+      `;
+    }).join("");
+    wrap.querySelectorAll(".media-picker-advanced-duration").forEach(el => {
+      el.addEventListener("input", () => {
+        const row = el.closest(".media-picker-advanced-row");
+        const mid = parseInt(row.dataset.mediaId, 10);
+        const v = el.value.trim();
+        if (v === "") delete state.durations[mid];
+        else state.durations[mid] = Math.max(1, Math.min(3600, parseInt(v, 10)));
+      });
+    });
+  }
+
+  function confirmPicks() {
+    const picks = state.selection.map(mid => {
+      const out = { media_id: mid };
+      if (state.durations[mid] != null) out.duration_seconds = state.durations[mid];
+      return out;
+    });
+    close(picks);
+  }
+
+  return { open };
+})();
+
+// ====== Walls ======
+const Walls = (() => {
+  const state = { walls: [], editing: null, pairing: null };
+
+  async function api(path, opts = {}) {
+    const headers = { "Content-Type": "application/json" };
+    const token = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}${path}`,
+      { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+    if (!res.ok && res.status !== 204) {
+      if (res.status === 401) handleAuthFailure();
+      let body = {};
+      try { body = await res.json(); } catch (_) {}
+      const code = body?.detail?.code || `http_${res.status}`;
+      throw Object.assign(new Error(body?.detail?.message || res.statusText), { code });
+    }
+    return res.status === 204 ? null : res.json();
+  }
+
+  async function loadList() {
+    state.walls = await api("/walls");
+    renderList();
+  }
+
+  function renderList() {
+    const root = document.getElementById("walls-list");
+    if (!state.walls.length) {
+      root.innerHTML = `<p class="empty" data-i18n="walls.empty">${
+        Khan.t("walls.empty", "No walls yet. Click \"Create wall\" to start.")}</p>`;
+      return;
+    }
+    root.innerHTML = state.walls.map(w => `
+      <article class="walls-card" data-wall-id="${w.id}">
+        <h4>${escHtml(w.name)}</h4>
+        <div class="walls-meta">
+          ${w.mode === "mirrored" ? Khan.t("walls.mode_mirrored", "Mirrored")
+                                   : Khan.t("walls.mode_spanned", "Spanned")}
+          · ${w.rows}×${w.cols}
+        </div>
+        <div class="walls-mosaic" style="grid-template-columns: repeat(${w.cols}, 1fr);">
+          ${(w.cells || []).map(c => `
+            <div class="walls-mosaic-cell ${c.screen_id ? "online" : "offline"}">
+              ${c.screen_id ? "●" : ""}
+            </div>`).join("")}
+        </div>
+        <div class="walls-actions">
+          <button class="btn btn-ghost" data-action="edit">${Khan.t("walls.edit", "Edit")}</button>
+          <button class="btn btn-danger" data-action="delete">${Khan.t("walls.delete", "Delete")}</button>
+        </div>
+      </article>
+    `).join("");
+    root.querySelectorAll("[data-wall-id]").forEach(card => {
+      const id = parseInt(card.dataset.wallId, 10);
+      card.querySelector('[data-action="edit"]').addEventListener("click", () => openEditor(id));
+      card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteWall(id));
+    });
+  }
+
+  async function createWizard() {
+    const playlists = await api("/playlists");
+    const editor = document.getElementById("walls-editor");
+    const body = document.getElementById("walls-editor-body");
+    document.getElementById("walls-editor-title").textContent =
+      Khan.t("walls.wizard_title", "New wall");
+    editor.classList.remove("hidden");
+    body.innerHTML = `
+      <form id="walls-wizard">
+        <label>${Khan.t("walls.name", "Name")}
+          <input name="name" required maxlength="120" /></label>
+        <fieldset>
+          <legend>${Khan.t("walls.mode", "Mode")}</legend>
+          <label><input type="radio" name="mode" value="mirrored" checked />
+            ${Khan.t("walls.mode_mirrored", "Mirrored")}</label>
+          ${window.WALLS_PHASE2_ENABLED ? `
+          <label><input type="radio" name="mode" value="spanned" />
+            ${Khan.t("walls.mode_spanned", "Spanned")}</label>` : `
+          <label><input type="radio" name="mode" value="spanned" disabled />
+            ${Khan.t("walls.mode_spanned_phase2", "Spanned (coming soon)")}</label>`}
+        </fieldset>
+        <div class="walls-grid-picker">
+          <label>${Khan.t("walls.rows", "Rows")}
+            <input name="rows" type="number" min="1" max="8" value="1" required /></label>
+          <label>${Khan.t("walls.cols", "Cols")}
+            <input name="cols" type="number" min="1" max="8" value="2" required /></label>
+        </div>
+        <fieldset class="spanned-fields hidden">
+          <legend>${Khan.t("walls.canvas_resolution", "Canvas resolution")}</legend>
+          <select name="canvas_resolution">
+            <option value="1920x1080">1080p (1920×1080)</option>
+            <option value="3840x2160" selected>4K (3840×2160)</option>
+            <option value="7680x4320">8K (7680×4320)</option>
+          </select>
+          <label>${Khan.t("walls.bezel_horizontal_pct", "Horizontal bezel %")}
+            <input type="number" name="bezel_h_pct" min="0" max="10" step="0.1" value="0" /></label>
+          <label>${Khan.t("walls.bezel_vertical_pct", "Vertical bezel %")}
+            <input type="number" name="bezel_v_pct" min="0" max="10" step="0.1" value="0" /></label>
+        </fieldset>
+        <fieldset class="mirrored-fields">
+          <legend>${Khan.t("walls.mirrored_submode", "Mirrored sub-mode")}</legend>
+          <label><input type="radio" name="mirrored_mode" value="same_playlist" checked />
+            ${Khan.t("walls.same_playlist", "Same playlist on all screens")}</label>
+          <label><input type="radio" name="mirrored_mode" value="synced_rotation" />
+            ${Khan.t("walls.synced_rotation", "Different playlist per cell, synchronized rotation")}</label>
+          <label class="same-playlist-only">
+            ${Khan.t("walls.playlist", "Playlist")}
+            <select name="mirrored_playlist_id" required>
+              ${playlists.map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join("")}
+            </select>
+          </label>
+        </fieldset>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-primary">${Khan.t("walls.save", "Create")}</button>
+          <button type="button" class="btn btn-ghost" id="walls-wizard-cancel">${Khan.t("walls.cancel", "Cancel")}</button>
+        </div>
+      </form>
+    `;
+    body.querySelector("#walls-wizard-cancel").addEventListener("click", closeEditor);
+    body.querySelector("#walls-wizard").addEventListener("submit", submitWizard);
+    body.querySelectorAll('input[name="mirrored_mode"]').forEach(el => {
+      el.addEventListener("change", () => {
+        const same = body.querySelector('input[name="mirrored_mode"]:checked').value === "same_playlist";
+        body.querySelector(".same-playlist-only").style.display = same ? "" : "none";
+      });
+    });
+    body.querySelectorAll('input[name="mode"]').forEach(el => {
+      el.addEventListener("change", () => {
+        const mode = body.querySelector('input[name="mode"]:checked').value;
+        body.querySelector(".spanned-fields").classList.toggle("hidden", mode !== "spanned");
+        body.querySelector(".mirrored-fields").classList.toggle("hidden", mode !== "mirrored");
+      });
+    });
+  }
+
+  async function submitWizard(ev) {
+    ev.preventDefault();
+    const f = ev.target;
+    const payload = {
+      name: f.name.value.trim(),
+      mode: f.mode.value,
+      rows: parseInt(f.rows.value, 10),
+      cols: parseInt(f.cols.value, 10),
+    };
+    if (f.mode.value === "spanned") {
+      const [w, h] = f.canvas_resolution.value.split("x").map(Number);
+      payload.canvas_width_px = w;
+      payload.canvas_height_px = h;
+      payload.bezel_h_pct = parseFloat(f.bezel_h_pct.value) || 0;
+      payload.bezel_v_pct = parseFloat(f.bezel_v_pct.value) || 0;
+    } else {
+      const sub = f.mirrored_mode.value;
+      payload.mirrored_mode = sub;
+      if (sub === "same_playlist") payload.mirrored_playlist_id = parseInt(f.mirrored_playlist_id.value, 10);
+    }
+    try {
+      const w = await api("/walls", { method: "POST", body: JSON.stringify(payload) });
+      toast(Khan.t("walls.created", "Wall created"));
+      await loadList();
+      openEditor(w.id);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.create_failed", "Couldn't create wall"), "error");
+    }
+  }
+
+  async function deleteWall(id) {
+    if (!confirm(Khan.t("walls.confirm_delete", "Delete this wall? Paired screens will revert to standalone."))) return;
+    try {
+      await api(`/walls/${id}`, { method: "DELETE" });
+      toast(Khan.t("walls.deleted", "Wall deleted"));
+      await loadList();
+    } catch (err) {
+      toast(err.message || Khan.t("walls.delete_failed", "Couldn't delete wall"), "error");
+    }
+  }
+
+  function closeEditor() {
+    if (mosaicTimer) { clearInterval(mosaicTimer); mosaicTimer = null; }
+    if (pairTimer)   { clearInterval(pairTimer);   pairTimer   = null; }
+    document.getElementById("walls-pair-modal")?.classList.add("hidden");
+    state.pairing = null;
+    document.getElementById("walls-editor").classList.add("hidden");
+    state.editing = null;
+  }
+
+  // openEditor and pair-flow are filled in by Task 9.
+  async function openEditor(id) {
+    state.editing = id;
+    document.getElementById("walls-editor").classList.remove("hidden");
+    document.getElementById("walls-editor-body").innerHTML =
+      `<p>${Khan.t("walls.editor_loading", "Loading…")}</p>`;
+    // Implementation continues in Task 9.
+    if (typeof Walls.renderEditor === "function") {
+      await Walls.renderEditor(id);
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("walls-create-btn");
+    if (btn) btn.addEventListener("click", createWizard);
+    const close = document.getElementById("walls-editor-close");
+    if (close) close.addEventListener("click", closeEditor);
+  });
+
+  let pairTimer = null;
+  let mosaicTimer = null;
+
+  async function renderEditor(id) {
+    const wall = await api(`/walls/${id}`);
+    if (wall.mode === "spanned") {
+      return renderCanvasEditor(wall);
+    }
+    const body = document.getElementById("walls-editor-body");
+    document.getElementById("walls-editor-title").textContent = wall.name;
+    const playlists = wall.mirrored_mode === "synced_rotation" ? await api("/playlists") : [];
+    body.innerHTML = `
+      <div class="walls-editor-summary">
+        <span class="walls-meta">
+          ${wall.mode === "mirrored"
+            ? Khan.t("walls.mode_mirrored", "Mirrored") + (wall.mirrored_mode === "synced_rotation"
+                ? " · " + Khan.t("walls.synced_rotation_short", "Synced rotation")
+                : " · " + Khan.t("walls.same_playlist_short", "Same playlist"))
+            : Khan.t("walls.mode_spanned", "Spanned")}
+          · ${wall.rows}×${wall.cols}
+        </span>
+      </div>
+      <div class="walls-editor-grid"
+           style="grid-template-columns: repeat(${wall.cols}, 1fr);">
+        ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+      </div>
+    `;
+    body.querySelectorAll(".walls-editor-cell").forEach(el => {
+      const r = parseInt(el.dataset.row, 10);
+      const c = parseInt(el.dataset.col, 10);
+      el.querySelector('[data-action="pair"]')?.addEventListener("click",
+        () => openPairModal(wall.id, r, c));
+      el.querySelector('[data-action="unpair"]')?.addEventListener("click",
+        () => unpairCell(wall.id, r, c));
+      el.querySelector('select[data-action="cell-playlist"]')?.addEventListener("change", (ev) =>
+        patchCell(wall.id, r, c, {
+          playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
+        }));
+    });
+    mountModeSwitchButton(wall);
+    refreshMosaic(wall.id);
+  }
+
+  function mountModeSwitchButton(wall) {
+    const header = document.querySelector(".walls-editor-header");
+    if (!header) return;
+    header.querySelector(".walls-mode-switch-btn")?.remove();
+    const otherMode = wall.mode === "spanned" ? "mirrored" : "spanned";
+    const modeBtn = document.createElement("button");
+    modeBtn.className = "btn btn-ghost walls-mode-switch-btn";
+    modeBtn.textContent = Khan.t(`walls.switch_to_${otherMode}`,
+      `Switch to ${otherMode}`);
+    modeBtn.addEventListener("click", () => openModeChangeModal(wall, otherMode));
+    header.appendChild(modeBtn);
+  }
+
+  function renderCellTile(c, wall, playlists) {
+    const paired = !!c.screen_id;
+    const playlistPicker = wall.mirrored_mode === "synced_rotation"
+      ? `<label class="cell-playlist">
+           ${Khan.t("walls.playlist", "Playlist")}
+           <select data-action="cell-playlist">
+             <option value="">—</option>
+             ${playlists.map(p =>
+               `<option value="${p.id}" ${p.id === c.playlist_id ? "selected" : ""}>${escHtml(p.name)}</option>`
+             ).join("")}
+           </select>
+         </label>` : "";
+    return `
+      <div class="walls-editor-cell ${paired ? "paired" : "empty"}"
+           data-row="${c.row_index}" data-col="${c.col_index}">
+        <strong>(${c.row_index},${c.col_index})</strong>
+        ${paired
+          ? `<span>${Khan.t("walls.cell_paired", "Paired")}</span>
+             <button class="btn btn-ghost" data-action="unpair">${Khan.t("walls.cell_unpair", "Unpair")}</button>`
+          : `<button class="btn" data-action="pair">${Khan.t("walls.cell_pair", "Pair this screen")}</button>`}
+        ${playlistPicker}
+      </div>
+    `;
+  }
+
+  async function openPairModal(wallId, row, col) {
+    const modal = document.getElementById("walls-pair-modal");
+    modal.classList.remove("hidden");
+    state.pairing = { wallId, row, col };
+    await refreshPairCode();
+    document.getElementById("walls-pair-refresh").onclick = refreshPairCode;
+    document.getElementById("walls-pair-close").onclick = () => {
+      modal.classList.add("hidden");
+      state.pairing = null;
+      if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+      renderEditor(wallId);
+    };
+  }
+
+  async function refreshPairCode() {
+    if (!state.pairing) return;
+    if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+    const { wallId, row, col } = state.pairing;
+    try {
+      const r = await api(`/walls/${wallId}/cells/${row}/${col}/pair`, { method: "POST" });
+      document.getElementById("walls-pair-code").textContent = r.code;
+      let remaining = r.expires_in_seconds;
+      const setLabel = () => {
+        const m = Math.floor(remaining / 60);
+        const s = String(remaining % 60).padStart(2, "0");
+        document.getElementById("walls-pair-countdown").textContent =
+          Khan.t("walls.pair_expires_in", "Expires in {time}").replace("{time}", `${m}:${s}`);
+      };
+      setLabel();
+      pairTimer = setInterval(() => {
+        remaining = Math.max(0, remaining - 1);
+        setLabel();
+        if (remaining === 0) clearInterval(pairTimer);
+      }, 1000);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.pair_code_failed", "Couldn't get pair code"), "error");
+    }
+  }
+
+  async function unpairCell(wallId, row, col) {
+    if (!confirm(Khan.t("walls.confirm_unpair", "Unpair this cell?"))) return;
+    try {
+      await api(`/walls/${wallId}/cells/${row}/${col}/pairing`, { method: "DELETE" });
+      toast(Khan.t("walls.unpaired", "Unpaired"));
+      renderEditor(wallId);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.unpair_failed", "Couldn't unpair"), "error");
+    }
+  }
+
+  async function patchCell(wallId, row, col, fields) {
+    try {
+      await api(`/walls/${wallId}/cells`, {
+        method: "PATCH",
+        body: JSON.stringify({ row_index: row, col_index: col, ...fields }),
+      });
+      toast(Khan.t("walls.cell_updated", "Cell updated"));
+    } catch (err) {
+      toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update cell"), "error");
+    }
+  }
+
+  async function refreshMosaic(wallId) {
+    if (mosaicTimer) clearInterval(mosaicTimer);
+    let timerId;
+    const tick = async () => {
+      if (state.editing !== wallId) { clearInterval(timerId); return; }
+      try {
+        const w = await api(`/walls/${wallId}`);
+        document.querySelectorAll(".walls-editor-cell").forEach(el => {
+          const r = parseInt(el.dataset.row, 10);
+          const c = parseInt(el.dataset.col, 10);
+          const cell = w.cells.find(x => x.row_index === r && x.col_index === c);
+          if (!cell) return;
+          el.classList.toggle("paired", !!cell.screen_id);
+          el.classList.toggle("empty", !cell.screen_id);
+        });
+      } catch (_) { /* ignore */ }
+    };
+    timerId = setInterval(tick, 5000);
+    mosaicTimer = timerId;
+  }
+
+  async function renderCanvasEditor(wall) {
+    const body = document.getElementById("walls-editor-body");
+    document.getElementById("walls-editor-title").textContent = wall.name;
+    const list = await api(`/walls/${wall.id}/canvas-playlist`);
+    state.editing = wall.id;
+    body.innerHTML = `
+      <div class="canvas-editor-summary">
+        <span class="walls-meta">
+          ${Khan.t("walls.mode_spanned", "Spanned")} ·
+          ${wall.canvas_width_px}×${wall.canvas_height_px} ·
+          ${wall.rows}×${wall.cols}
+        </span>
+      </div>
+      <div class="canvas-editor-grid">
+        <div class="canvas-editor-rail">
+          <h4>${Khan.t("walls.canvas_items", "Items")}</h4>
+          <ul id="canvas-items-list"></ul>
+          <button id="canvas-add-item" class="btn">${Khan.t("walls.canvas_add_item", "Add item")}</button>
+        </div>
+        <div class="canvas-editor-preview" id="canvas-preview">
+          <div class="canvas-bezel-grid"
+               style="grid-template-columns: repeat(${wall.cols}, 1fr);
+                      grid-template-rows: repeat(${wall.rows}, 1fr);
+                      aspect-ratio: ${wall.canvas_width_px} / ${wall.canvas_height_px};
+                      gap: ${wall.bezel_h_pct}% ${wall.bezel_v_pct}%;">
+            ${Array.from({length: wall.rows * wall.cols}).map(() =>
+              `<div class="canvas-bezel-cell"></div>`).join("")}
+          </div>
+          <div id="canvas-preview-media" class="canvas-preview-media"></div>
+        </div>
+      </div>
+      <div id="canvas-item-detail" class="canvas-item-detail hidden">
+        <h4>${Khan.t("walls.selected_item", "Selected item")}</h4>
+        <label>${Khan.t("walls.duration_override_seconds", "Duration (seconds)")}
+          <input id="canvas-item-duration" type="number" min="1" max="86400" /></label>
+        <fieldset>
+          <legend>${Khan.t("walls.fit_mode", "Fit mode")}</legend>
+          <label><input type="radio" name="fit" value="fit" />${Khan.t("walls.fit_fit", "Fit")}</label>
+          <label><input type="radio" name="fit" value="fill" />${Khan.t("walls.fit_fill", "Fill")}</label>
+          <label><input type="radio" name="fit" value="stretch" />${Khan.t("walls.fit_stretch", "Stretch")}</label>
+        </fieldset>
+        <button id="canvas-item-save" class="btn btn-primary">${Khan.t("walls.save", "Save")}</button>
+        <button id="canvas-item-delete" class="btn btn-danger">${Khan.t("walls.delete", "Delete")}</button>
+      </div>
+    `;
+    renderCanvasItemList(wall, list.items);
+    body.querySelector("#canvas-add-item").addEventListener("click",
+      () => openCanvasMediaPicker(wall));
+    mountModeSwitchButton(wall);
+  }
+
+  function renderCanvasItemList(wall, items) {
+    const root = document.getElementById("canvas-items-list");
+    if (!items.length) {
+      root.innerHTML = `<li class="empty">${Khan.t("walls.canvas_empty", "No items yet.")}</li>`;
+      return;
+    }
+    root.innerHTML = items.map(it => `
+      <li data-item-id="${it.id}">
+        <span>${escHtml(it.media_name)}</span>
+        <small>${it.fit_mode} · ${it.duration_override_seconds || it.duration_seconds}s</small>
+      </li>
+    `).join("");
+    root.querySelectorAll("[data-item-id]").forEach(li => {
+      li.addEventListener("click", () => selectCanvasItem(wall, items.find(
+        it => String(it.id) === li.dataset.itemId)));
+    });
+  }
+
+  function selectCanvasItem(wall, item) {
+    state.canvasSelectedItem = item;
+    const detail = document.getElementById("canvas-item-detail");
+    detail.classList.remove("hidden");
+    detail.querySelector("#canvas-item-duration").value =
+      item.duration_override_seconds || item.duration_seconds || "";
+    detail.querySelectorAll('input[name="fit"]').forEach(el => {
+      el.checked = el.value === item.fit_mode;
+    });
+    detail.querySelector("#canvas-item-save").onclick = () => saveCanvasItem(wall, item);
+    detail.querySelector("#canvas-item-delete").onclick = () => deleteCanvasItem(wall, item);
+    const preview = document.getElementById("canvas-preview-media");
+    if (item.mime_type.startsWith("video/")) {
+      preview.innerHTML = `<video src="${item.filename ? '/uploads/' + item.filename : ''}"
+        muted autoplay loop playsinline></video>`;
+    } else if (item.mime_type === "application/pdf") {
+      preview.innerHTML = `<div class="pdf-thumb">PDF — ${escHtml(item.media_name)}</div>`;
+    } else {
+      preview.innerHTML = `<img src="/uploads/${item.filename || ''}" alt="" />`;
+    }
+  }
+
+  async function saveCanvasItem(wall, item) {
+    const detail = document.getElementById("canvas-item-detail");
+    const dur = parseInt(detail.querySelector("#canvas-item-duration").value, 10);
+    const fit = detail.querySelector('input[name="fit"]:checked')?.value || "fit";
+    try {
+      await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({duration_override_seconds: isNaN(dur) ? null : dur, fit_mode: fit}),
+      });
+      toast(Khan.t("walls.cell_updated", "Updated"));
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
+    }
+  }
+
+  async function deleteCanvasItem(wall, item) {
+    if (!confirm(Khan.t("walls.canvas_confirm_delete", "Delete this item?"))) return;
+    try {
+      await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {method: "DELETE"});
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || "delete failed", "error");
+    }
+  }
+
+  async function openCanvasMediaPicker(wall) {
+    let picks;
+    try {
+      picks = await MediaPicker.open({ allowedTypes: ["image", "video", "pdf"] });
+    } catch (e) {
+      if (e && e.cancelled) return;
+      throw e;
+    }
+    if (!picks.length) return;
+    const list = await api(`/walls/${wall.id}/canvas-playlist`);
+    let position = list.items.length;
+    try {
+      for (const p of picks) {
+        const body = { media_id: p.media_id, position, fit_mode: "fit" };
+        if (p.duration_seconds != null) body.duration_override_seconds = p.duration_seconds;
+        await api(`/walls/${wall.id}/canvas-playlist/items`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        position++;
+      }
+      toast(Khan.t("walls.canvas_added", "Item added"));
+      await renderCanvasEditor(wall);
+    } catch (err) {
+      toast(err.message || "add failed", "error");
+    }
+  }
+
+  function openModeChangeModal(wall, newMode) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal";
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <h3>${Khan.t("walls.mode_change_confirm_title", "Switch wall mode")}</h3>
+        <p>${Khan.t("walls.mode_change_confirm_body",
+          "Switching this wall to {mode} will permanently delete its current playlist. Cell pairings stay.")
+          .replace("{mode}", Khan.t(`walls.mode_${newMode}`, newMode))}</p>
+        <p>${Khan.t("walls.mode_change_type_name_to_confirm",
+          "Type the wall name to confirm:")}</p>
+        <input id="mode-change-typed" autocomplete="off" />
+        <div class="modal-actions">
+          <button class="btn" id="mode-change-cancel">${Khan.t("walls.cancel", "Cancel")}</button>
+          <button class="btn btn-danger" id="mode-change-switch" disabled>${
+            Khan.t("walls.mode_change_switch_btn", "Switch")}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const typed = overlay.querySelector("#mode-change-typed");
+    const switchBtn = overlay.querySelector("#mode-change-switch");
+    typed.addEventListener("input", () => {
+      switchBtn.disabled = typed.value !== wall.name;
+    });
+    overlay.querySelector("#mode-change-cancel").addEventListener("click",
+      () => overlay.remove());
+    switchBtn.addEventListener("click", async () => {
+      const payload = {mode: newMode};
+      if (newMode === "spanned") {
+        payload.canvas_width_px = 3840;
+        payload.canvas_height_px = 2160;
+        payload.bezel_h_pct = 0;
+        payload.bezel_v_pct = 0;
+      } else {
+        payload.mirrored_mode = "same_playlist";
+      }
+      try {
+        await api(`/walls/${wall.id}`, {method: "PATCH", body: JSON.stringify(payload)});
+        toast(Khan.t("walls.mode_changed", "Mode changed"));
+        overlay.remove();
+        await loadList();
+        openEditor(wall.id);
+      } catch (err) {
+        toast(err.message || "mode change failed", "error");
+      }
+    });
+  }
+
+  return {
+    onShow: loadList,
+    state,
+    api,
+    loadList,
+    openEditor,
+    closeEditor,
+    renderList,
+    renderEditor,
+  };
+})();
+

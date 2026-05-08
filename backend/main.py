@@ -1,6 +1,8 @@
 import hashlib
+import hmac
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -12,13 +14,18 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
+from email_utils import is_valid_email, send_via_resend
+from walls import attach_walls
 
 logger = logging.getLogger("signage")
 logging.basicConfig(level=logging.INFO)
@@ -84,7 +91,32 @@ SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "86400"))
 PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "300"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 
-app = FastAPI(title="Menu Signage Backend")
+DOCS_ENABLED = os.getenv("DOCS_ENABLED", "0").lower() in ("1", "true", "yes")
+
+app = FastAPI(
+    title="Menu Signage Backend",
+    version="",
+    docs_url="/docs" if DOCS_ENABLED else None,
+    redoc_url="/redoc" if DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if DOCS_ENABLED else None,
+)
+
+_RATE_LIMITS_ENABLED = os.getenv("RATE_LIMITS_ENABLED", "1").lower() in ("1", "true", "yes")
+limiter = Limiter(key_func=get_remote_address, enabled=_RATE_LIMITS_ENABLED)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: https:; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self' https://api.khanshoof.com"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
 def parse_allowed_origins(value: str) -> list[str]:
@@ -97,12 +129,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_allowed_origins(ALLOWED_ORIGINS),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+attach_walls(app)
 
 
 def slugify(value: str) -> str:
@@ -131,8 +165,8 @@ def generate_unique_token() -> str:
 
 
 PAIR_CODE_CHARSET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-PAIR_CODE_LENGTH = 5
-PAIR_CODE_TTL_SECONDS = int(os.getenv("PAIR_CODE_TTL_SECONDS", "600"))
+PAIR_CODE_LENGTH = 6
+PAIR_CODE_TTL_SECONDS = int(os.getenv("PAIR_CODE_TTL_SECONDS", "300"))
 
 
 def generate_pair_code_v2() -> str:
@@ -164,6 +198,15 @@ def verify_password(password: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
+def http_error(status: int, code: str, message: str) -> HTTPException:
+    """Structured error response: detail = {code, message}.
+
+    Frontend reads `code` to look up a localized string; falls back to
+    `message` (English) if the code is unrecognized.
+    """
+    return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 OTP_RESEND_COOLDOWN_SECONDS = int(os.getenv("OTP_RESEND_COOLDOWN_SECONDS", "60"))
@@ -193,59 +236,95 @@ def verify_otp(otp: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
-def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
-    """Dev stub for outbound signup email.
+def _signup_otp_email_html(business_name: str, otp: str) -> str:
+    return (
+        f"<div style=\"font-family:system-ui,sans-serif;color:#2a2438;max-width:480px\">"
+        f"<h1 style=\"font-size:18px;margin:0 0 16px\">Welcome to Khanshoof</h1>"
+        f"<p style=\"margin:0 0 12px\">Hi {business_name}, here's your verification code:</p>"
+        f"<p style=\"font-size:32px;letter-spacing:6px;font-weight:700;"
+        f"background:#fef6e4;padding:16px 24px;border-radius:12px;display:inline-block;"
+        f"margin:8px 0\">{otp}</p>"
+        f"<p style=\"font-size:13px;color:#6b6480;margin:16px 0 0\">"
+        f"This code expires in 10 minutes. If you didn't request it, ignore this email.</p>"
+        f"</div>"
+    )
 
-    DEV_MODE writes the OTP to the container log so operators can recover it
-    locally without a provider. Production use (Resend) is wired in a separate
-    plan once the khanshoof.com DNS is pointed and an API key is issued.
+
+def _signup_otp_email_text(business_name: str, otp: str) -> str:
+    return (
+        f"Hi {business_name},\n\n"
+        f"Your Khanshoof verification code: {otp}\n\n"
+        f"This code expires in 10 minutes. If you didn't request it, ignore this email.\n"
+    )
+
+
+def send_signup_otp_email(to_email: str, business_name: str, otp: str) -> None:
+    """Send the signup OTP via Resend; fall back to logging if no API key.
+
+    Failures are swallowed (logged but not raised) so a flaky email provider
+    never 500s the signup endpoint — the OTP is still in the DB and the user
+    can hit "resend".
     """
     logger.info("SIGNUP_OTP for %s (%s): %s", to_email, business_name, otp)
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    if not api_key:
+        return
+    from_addr = os.getenv("RESEND_FROM", "Khanshoof <noreply@khanshoof.com>")
+    try:
+        send_via_resend(
+            api_key=api_key,
+            from_addr=from_addr,
+            to=to_email,
+            subject="Your Khanshoof verification code",
+            html=_signup_otp_email_html(business_name, otp),
+            text=_signup_otp_email_text(business_name, otp),
+        )
+    except Exception as exc:
+        logger.error("Resend send failed for %s: %s", to_email, exc)
 
 
 ROLE_LEVELS = {"viewer": 1, "editor": 2, "admin": 3}
 
 PLANS = {
-    "starter":    {"screen_limit": 3,    "price_usd_monthly":  9.99, "label": "Starter"},
-    "growth":     {"screen_limit": 5,    "price_usd_monthly": 12.99, "label": "Growth"},
-    "business":   {"screen_limit": 10,   "price_usd_monthly": 24.99, "label": "Business"},
-    "pro":        {"screen_limit": 25,   "price_usd_monthly": 49.99, "label": "Pro"},
-    "enterprise": {"screen_limit": 9999, "price_usd_monthly":  0.0,  "label": "Enterprise"},
+    "starter":    {"screen_limit": 3,    "price_kwd_monthly": 3,  "label": "Starter"},
+    "growth":     {"screen_limit": 5,    "price_kwd_monthly": 4,  "label": "Growth"},
+    "business":   {"screen_limit": 10,   "price_kwd_monthly": 8,  "label": "Business"},
+    "pro":        {"screen_limit": 25,   "price_kwd_monthly": 15, "label": "Pro"},
+    "enterprise": {"screen_limit": 9999, "price_kwd_monthly": 0,  "label": "Enterprise"},
 }
 
-# ── Billing pricing table ────────────────────────────────────────────
-USD_TO_KWD = Decimal("0.306")   # fixed rate; update manually when KWD moves >2%
-PLAN_PRICING_USD: dict[str, Decimal] = {
-    "starter":  Decimal("9.99"),
-    "growth":   Decimal("12.99"),
-    "business": Decimal("24.99"),
-    "pro":      Decimal("49.99"),
+KWD_TO_USD = Decimal("3.267")
+PLAN_PRICING_KWD: dict[str, Decimal] = {
+    "starter":  Decimal("3"),
+    "growth":   Decimal("4"),
+    "business": Decimal("8"),
+    "pro":      Decimal("15"),
 }
 PLAN_SCREEN_LIMITS: dict[str, int] = {
     "starter": 3, "growth": 5, "business": 10, "pro": 25,
 }
-TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}   # 6m = 5×monthly (save 1); 12m = 10×monthly (save 2)
-ALLOWED_TIERS  = frozenset(PLAN_PRICING_USD.keys())
+TERM_MULTIPLIERS: dict[int, int] = {1: 1, 6: 5, 12: 10}
+ALLOWED_TIERS  = frozenset(PLAN_PRICING_KWD.keys())
 ALLOWED_TERMS  = frozenset(TERM_MULTIPLIERS.keys())
-TERM_DAYS      = 30                                       # days per month credited on CAPTURED
+TERM_DAYS      = 30
 
 def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
     """Return (amount_kwd_int, amount_usd_display) for a tier/term combo."""
-    monthly_usd = PLAN_PRICING_USD[tier]
+    monthly_kwd = PLAN_PRICING_KWD[tier]
     mult = TERM_MULTIPLIERS[term_months]
-    amount_usd = (monthly_usd * mult).quantize(Decimal("0.01"))
-    amount_kwd_exact = amount_usd * USD_TO_KWD
-    amount_kwd = int(amount_kwd_exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    amount_kwd_dec = monthly_kwd * mult
+    amount_kwd = int(amount_kwd_dec)
+    amount_usd = (amount_kwd_dec * KWD_TO_USD).quantize(Decimal("0.01"))
     return amount_kwd, amount_usd
 
 
 def validate_password(password: str) -> None:
     if len(password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        raise http_error(400, "password_too_short", "Password must be at least 8 characters")
     if not re.search(r"[A-Za-z]", password):
-        raise HTTPException(status_code=400, detail="Password must include a letter")
+        raise http_error(400, "password_no_letter", "Password must include a letter")
     if not re.search(r"\d", password):
-        raise HTTPException(status_code=400, detail="Password must include a number")
+        raise http_error(400, "password_no_number", "Password must include a number")
 
 
 def is_online(last_seen: Optional[str]) -> bool:
@@ -351,6 +430,16 @@ def sanitize_screen(screen: dict, include_token: bool = False) -> dict:
     return sanitized
 
 
+def serialize_wall(wall: dict, include_cells: bool = True) -> dict:
+    out = dict(wall)
+    if include_cells:
+        out["cells"] = query_all(
+            "SELECT * FROM wall_cells WHERE wall_id = ? ORDER BY row_index, col_index",
+            (wall["id"],),
+        )
+    return out
+
+
 def cleanup_sessions() -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SESSION_TTL_SECONDS)).isoformat()
     execute("DELETE FROM sessions WHERE COALESCE(last_used, created_at) < ?", (cutoff,))
@@ -400,7 +489,7 @@ class PlaylistUpdate(BaseModel):
 
 class PlaylistItemCreate(BaseModel):
     media_id: int
-    duration_seconds: int = Field(10, ge=1, le=3600)
+    duration_seconds: Optional[int] = Field(None, ge=1, le=3600)
 
 
 class MediaUrlCreate(BaseModel):
@@ -427,6 +516,44 @@ class ZonePayload(BaseModel):
 
 class ScreenZonesPayload(BaseModel):
     zones: list[ZonePayload] = Field(default_factory=list)
+
+
+class WallCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    mode: str = Field(..., pattern="^(spanned|mirrored)$")
+    rows: int = Field(..., ge=1, le=8)
+    cols: int = Field(..., ge=1, le=8)
+    canvas_width_px: Optional[int] = Field(default=None, ge=320, le=32768)
+    canvas_height_px: Optional[int] = Field(default=None, ge=240, le=32768)
+    bezel_enabled: bool = False
+    bezel_h_pct: float = Field(default=0.0, ge=0.0, le=10.0)
+    bezel_v_pct: float = Field(default=0.0, ge=0.0, le=10.0)
+    spanned_playlist_id: Optional[int] = None
+    mirrored_mode: Optional[str] = Field(default=None, pattern="^(same_playlist|synced_rotation)$")
+    mirrored_playlist_id: Optional[int] = None
+
+
+class WallUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    mode: Optional[str] = Field(default=None, pattern="^(spanned|mirrored)$")
+    mirrored_mode: Optional[str] = Field(default=None, pattern="^(same_playlist|synced_rotation)$")
+    mirrored_playlist_id: Optional[int] = None
+    bezel_enabled: Optional[bool] = None
+    bezel_h_pct: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    bezel_v_pct: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    canvas_width_px: Optional[int] = Field(default=None, ge=320, le=32768)
+    canvas_height_px: Optional[int] = Field(default=None, ge=240, le=32768)
+
+
+class WallCellUpdate(BaseModel):
+    row_index: int
+    col_index: int
+    playlist_id: Optional[int] = None
+    screen_size_inches: Optional[float] = Field(default=None, ge=5, le=120)
+    bezel_top_mm: Optional[float] = Field(default=None, ge=0, le=200)
+    bezel_right_mm: Optional[float] = Field(default=None, ge=0, le=200)
+    bezel_bottom_mm: Optional[float] = Field(default=None, ge=0, le=200)
+    bezel_left_mm: Optional[float] = Field(default=None, ge=0, le=200)
 
 
 class ZoneTemplateCreate(BaseModel):
@@ -528,14 +655,28 @@ def list_plans() -> dict:
     return {"plans": [{"key": key, **values} for key, values in PLANS.items()]}
 
 
+def _is_local_request(request: Request) -> bool:
+    """True only when the request did NOT come through a proxy/CDN.
+
+    Production sits behind Cloudflare + nginx, both of which add forwarding
+    headers. Their absence + a loopback client host means we're talking to
+    localhost. Used to gate dev-only debug fields.
+    """
+    if request.headers.get("x-forwarded-for") or request.headers.get("cf-connecting-ip"):
+        return False
+    host = (request.client.host if request.client else "") or ""
+    return host in ("127.0.0.1", "::1", "localhost", "testclient")
+
+
 @app.post("/auth/signup/request")
-def signup_request(payload: SignupStartRequest) -> dict:
+@limiter.limit("10/5minutes")
+def signup_request(request: Request, payload: SignupStartRequest) -> dict:
     email = payload.email.strip().lower()
     business_name = payload.business_name.strip()
-    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
-        raise HTTPException(status_code=400, detail="Invalid email address")
+    if not is_valid_email(email):
+        raise http_error(400, "invalid_email", "Invalid email address")
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
-        raise HTTPException(status_code=400, detail="Email is already registered")
+        raise http_error(400, "email_taken", "Email is already registered")
 
     now = datetime.now(timezone.utc)
     existing = query_one("SELECT last_sent_at FROM pending_signups WHERE email = ?", (email,))
@@ -543,10 +684,7 @@ def signup_request(payload: SignupStartRequest) -> dict:
         try:
             last_sent_dt = datetime.fromisoformat(existing["last_sent_at"])
             if (now - last_sent_dt).total_seconds() < OTP_RESEND_COOLDOWN_SECONDS:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.",
-                )
+                raise http_error(429, "otp_cooldown", f"Please wait {OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code.")
         except ValueError:
             pass
 
@@ -578,7 +716,7 @@ def signup_request(payload: SignupStartRequest) -> dict:
 
     send_signup_otp_email(email, business_name, otp)
     response: dict = {"status": "otp_sent", "expires_in_seconds": OTP_TTL_SECONDS}
-    if DEV_MODE:
+    if DEV_MODE and _is_local_request(request):
         response["dev_otp"] = otp
     return response
 
@@ -593,7 +731,7 @@ def signup_verify(payload: SignupVerifyRequest) -> dict:
     email = payload.email.strip().lower()
     row = query_one("SELECT * FROM pending_signups WHERE email = ?", (email,))
     if not row:
-        raise HTTPException(status_code=400, detail="No pending signup for this email")
+        raise http_error(400, "no_pending_signup", "No pending signup for this email")
 
     now = datetime.now(timezone.utc)
     try:
@@ -601,17 +739,17 @@ def signup_verify(payload: SignupVerifyRequest) -> dict:
     except (TypeError, ValueError):
         expires_dt = now - timedelta(seconds=1)
     if now > expires_dt:
-        raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
+        raise http_error(400, "otp_expired", "Code expired. Please request a new one.")
 
     if (row.get("attempts") or 0) >= OTP_MAX_ATTEMPTS:
-        raise HTTPException(status_code=400, detail="Too many incorrect attempts. Request a new code.")
+        raise http_error(400, "otp_attempts_exceeded", "Too many incorrect attempts. Request a new code.")
 
     if not verify_otp(payload.otp, row.get("otp_hash")):
         execute(
             "UPDATE pending_signups SET attempts = attempts + 1 WHERE email = ?",
             (email,),
         )
-        raise HTTPException(status_code=400, detail="Incorrect code")
+        raise http_error(400, "otp_incorrect", "Incorrect code")
 
     verification_token = secrets.token_hex(16)
     verification_expires = (now + timedelta(seconds=VERIFICATION_TOKEN_TTL_SECONDS)).isoformat()
@@ -643,7 +781,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
         (payload.verification_token,),
     )
     if not row:
-        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+        raise http_error(400, "invalid_verification_token", "Invalid or expired verification token")
 
     now = datetime.now(timezone.utc)
     try:
@@ -651,14 +789,14 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
     except (TypeError, ValueError):
         vt_expires_dt = now - timedelta(seconds=1)
     if now > vt_expires_dt:
-        raise HTTPException(status_code=400, detail="Verification token expired. Please restart signup.")
+        raise http_error(400, "verification_token_expired", "Verification token expired. Please restart signup.")
 
     email = row["email"]
     business_name = row["business_name"]
 
     if query_one("SELECT id FROM users WHERE username = ?", (email,)):
         execute("DELETE FROM pending_signups WHERE email = ?", (email,))
-        raise HTTPException(status_code=400, detail="Email is already registered")
+        raise http_error(400, "email_taken", "Email is already registered")
 
     slug_base = slugify(business_name)
     slug = slug_base
@@ -710,6 +848,7 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
             "screen_limit": plan["screen_limit"],
             "subscription_status": "trialing",
             "trial_ends_at": trial_ends_at,
+            "locale": "en",
         },
     }
 
@@ -727,17 +866,38 @@ def get_organization(user: dict = Depends(get_current_user)) -> dict:
     return org
 
 
+class OrganizationLocaleUpdate(BaseModel):
+    locale: str = Field(..., min_length=2, max_length=2)
+
+
+@app.patch("/organizations/me")
+def patch_organization_me(
+    payload: OrganizationLocaleUpdate,
+    user: dict = Depends(require_roles("admin")),
+) -> dict:
+    if payload.locale not in ("en", "ar"):
+        raise http_error(400, "invalid_locale", "Locale must be 'en' or 'ar'")
+    execute(
+        "UPDATE organizations SET locale = ? WHERE id = ?",
+        (payload.locale, org_id(user)),
+    )
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))
+    return org
+
+
 @app.post("/auth/login")
-def login(payload: LoginRequest) -> dict:
+@limiter.limit("10/5minutes")
+def login(request: Request, payload: LoginRequest) -> dict:
     user = query_one("SELECT * FROM users WHERE username = ?", (payload.username,))
     if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise http_error(401, "invalid_credentials", "Invalid credentials")
     cleanup_sessions()
     token = uuid.uuid4().hex
     execute(
         "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
         (user["id"], token, utc_now_iso(), utc_now_iso()),
     )
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
     return {
         "token": token,
         "user": {
@@ -745,6 +905,16 @@ def login(payload: LoginRequest) -> dict:
             "username": user["username"],
             "role": user.get("role") or ("admin" if user["is_admin"] else "viewer"),
             "is_admin": bool(user["is_admin"]),
+        },
+        "organization": {
+            "id": org["id"],
+            "name": org["name"],
+            "slug": org["slug"],
+            "plan": org["plan"],
+            "screen_limit": org["screen_limit"],
+            "subscription_status": org["subscription_status"],
+            "trial_ends_at": org["trial_ends_at"],
+            "locale": org["locale"],
         },
     }
 
@@ -761,7 +931,7 @@ def change_password(
 ) -> dict:
     db_user = query_one("SELECT * FROM users WHERE id = ?", (user["id"],))
     if not db_user or not verify_password(payload.current_password, db_user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid current password")
+        raise http_error(401, "invalid_current_password", "Invalid current password")
     validate_password(payload.new_password)
     execute(
         "UPDATE users SET password_hash = ? WHERE id = ?",
@@ -773,11 +943,22 @@ def change_password(
 
 @app.get("/auth/me")
 def me(user: dict = Depends(get_current_user)) -> dict:
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
     return {
         "id": user["id"],
         "username": user["username"],
         "role": user["role"],
         "is_admin": user["is_admin"],
+        "organization": {
+            "id": org["id"],
+            "name": org["name"],
+            "slug": org["slug"],
+            "plan": org["plan"],
+            "screen_limit": org["screen_limit"],
+            "subscription_status": org["subscription_status"],
+            "trial_ends_at": org["trial_ends_at"],
+            "locale": org["locale"],
+        },
     }
 
 
@@ -796,9 +977,9 @@ def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
 @app.post("/users")
 def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
-        raise HTTPException(status_code=400, detail="Username already exists")
+        raise http_error(400, "username_taken", "Username already exists")
     if payload.role not in ROLE_LEVELS:
-        raise HTTPException(status_code=400, detail="Invalid role")
+        raise http_error(400, "invalid_role", "Invalid role")
     validate_password(payload.password)
     user_id = execute(
         "INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -836,7 +1017,7 @@ def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_
         )
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
-            raise HTTPException(status_code=400, detail="Invalid role")
+            raise http_error(400, "invalid_role", "Invalid role")
         execute(
             "UPDATE users SET role = ?, is_admin = ? WHERE id = ?",
             (payload.role, int(payload.role == "admin"), user_id),
@@ -976,9 +1157,10 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
         current = int(count_row["n"] if count_row else 0)
         limit = int(org["screen_limit"])
         if current >= limit:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+            raise http_error(
+                402,
+                "plan_limit",
+                f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
             )
     pair_code = generate_unique_pair_code()
     token = generate_unique_token()
@@ -1431,7 +1613,8 @@ class PairRequestStart(BaseModel):
 
 
 @app.post("/screens/request_code")
-def request_pair_code(payload: PairRequestStart | None = None) -> dict:
+@limiter.limit("10/minute")
+def request_pair_code(request: Request, payload: PairRequestStart | None = None) -> dict:
     now = datetime.now(timezone.utc)
     code = generate_unique_pair_code_v2()
     device_id = secrets.token_hex(16)
@@ -1452,7 +1635,8 @@ def request_pair_code(payload: PairRequestStart | None = None) -> dict:
 
 
 @app.get("/screens/poll/{code}")
-def poll_pair_code(code: str) -> dict:
+@limiter.limit("30/minute")
+def poll_pair_code(request: Request, code: str) -> dict:
     row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (code,))
     if not row:
         raise HTTPException(status_code=404, detail="Unknown pairing code")
@@ -1562,7 +1746,425 @@ def screen_content(token: str) -> dict:
 
     payload = build_screen_payload(screen)
     payload["screen"] = sanitize_screen(screen)
+    if screen.get("wall_cell_id"):
+        cell = query_one("SELECT * FROM wall_cells WHERE id = ?", (screen["wall_cell_id"],))
+        if cell:
+            wall = query_one("SELECT * FROM walls WHERE id = ?", (cell["wall_id"],))
+            if wall:
+                payload["wall_id"] = wall["id"]
+                payload["wall_cell"] = {
+                    "row": cell["row_index"], "col": cell["col_index"],
+                    "rows": wall["rows"], "cols": wall["cols"],
+                }
+                payload["wall_mode"] = wall["mode"]
     return payload
+
+
+# -------------------- Walls --------------------
+
+_VALID_CANVAS_RESOLUTIONS = {(1920, 1080), (3840, 2160), (7680, 4320)}
+
+
+def _validate_spanned_fields(payload: WallCreate) -> None:
+    if (payload.canvas_width_px, payload.canvas_height_px) not in _VALID_CANVAS_RESOLUTIONS:
+        raise http_error(400, "wall.canvas_resolution_invalid",
+                         "Canvas resolution must be 1080p, 4K, or 8K.")
+    if payload.cols * payload.bezel_h_pct >= 100 or payload.rows * payload.bezel_v_pct >= 100:
+        raise http_error(400, "wall.bezel_too_large",
+                         "Bezel percentages too large — visible area would collapse.")
+
+
+@app.post("/walls", status_code=201)
+def create_wall(payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    if payload.mode == "spanned":
+        _validate_spanned_fields(payload)
+    elif payload.mode == "mirrored":
+        if not payload.mirrored_mode:
+            raise http_error(422, "wall.mirrored_mode_required",
+                             "Mirrored walls need a sub-mode (same_playlist or synced_rotation).")
+        if payload.mirrored_mode == "same_playlist" and not payload.mirrored_playlist_id:
+            raise http_error(422, "wall.mirrored_playlist_required",
+                             "Same-playlist mirrored walls need a playlist.")
+        if payload.mirrored_playlist_id is not None:
+            own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
+                            (payload.mirrored_playlist_id, org_id(user)))
+            if not own:
+                raise http_error(404, "playlist.not_found", "Playlist not found")
+
+    now = utc_now_iso()
+
+    # For spanned walls, auto-create the wall_canvas playlist BEFORE the wall row,
+    # so we can FK the wall to it atomically.
+    spanned_playlist_id = payload.spanned_playlist_id
+    if payload.mode == "spanned":
+        spanned_playlist_id = execute(
+            "INSERT INTO playlists (organization_id, name, kind, created_at) "
+            "VALUES (?, ?, 'wall_canvas', ?)",
+            (org_id(user), f"Canvas: {payload.name}", now),
+        )
+        bezel_enabled = (payload.bezel_h_pct > 0 or payload.bezel_v_pct > 0)
+    else:
+        bezel_enabled = payload.bezel_enabled
+
+    wall_id = execute(
+        """INSERT INTO walls (organization_id, name, mode, rows, cols,
+               canvas_width_px, canvas_height_px, bezel_enabled,
+               bezel_h_pct, bezel_v_pct,
+               spanned_playlist_id, mirrored_mode, mirrored_playlist_id,
+               created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (org_id(user), payload.name, payload.mode, payload.rows, payload.cols,
+         payload.canvas_width_px, payload.canvas_height_px, bezel_enabled,
+         payload.bezel_h_pct, payload.bezel_v_pct,
+         spanned_playlist_id, payload.mirrored_mode, payload.mirrored_playlist_id,
+         now, now),
+    )
+    for r in range(payload.rows):
+        for c in range(payload.cols):
+            execute(
+                "INSERT INTO wall_cells (wall_id, row_index, col_index, created_at) VALUES (?, ?, ?, ?)",
+                (wall_id, r, c, now),
+            )
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    return serialize_wall(wall)
+
+
+@app.get("/walls")
+def list_walls(user: dict = Depends(get_current_user)) -> list[dict]:
+    walls = query_all(
+        "SELECT * FROM walls WHERE organization_id = ? ORDER BY id DESC",
+        (org_id(user),),
+    )
+    return [serialize_wall(w) for w in walls]
+
+
+@app.get("/walls/{wall_id}")
+def get_wall(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    return serialize_wall(wall)
+
+
+@app.patch("/walls/{wall_id}")
+def patch_wall(wall_id: int, payload: WallUpdate,
+               user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+
+    fields = payload.model_dump(exclude_unset=True)
+
+    # Mode change side effects: delete outgoing playlist, create incoming.
+    # Pairings (wall_cells.screen_id) are preserved.
+    if "mode" in fields and fields["mode"] != wall["mode"]:
+        new_mode = fields["mode"]
+        if wall["mode"] == "mirrored" and wall.get("mirrored_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ?",
+                    (wall["mirrored_playlist_id"],))
+            fields["mirrored_playlist_id"] = None
+            fields["mirrored_mode"] = None
+        elif wall["mode"] == "spanned" and wall.get("spanned_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ?",
+                    (wall["spanned_playlist_id"],))
+            fields["spanned_playlist_id"] = None
+        if new_mode == "spanned":
+            new_pl = execute(
+                "INSERT INTO playlists (organization_id, name, kind, created_at) "
+                "VALUES (?, ?, 'wall_canvas', ?)",
+                (org_id(user), f"Canvas: {wall['name']}", utc_now_iso()),
+            )
+            fields["spanned_playlist_id"] = new_pl
+
+    if not fields:
+        return serialize_wall(wall)
+
+    sets = ", ".join(f"{k} = ?" for k in fields.keys())
+    params = list(fields.values()) + [utc_now_iso(), wall_id]
+    execute(f"UPDATE walls SET {sets}, updated_at = ? WHERE id = ?", tuple(params))
+    return serialize_wall(query_one("SELECT * FROM walls WHERE id = ?", (wall_id,)))
+
+
+@app.patch("/walls/{wall_id}/cells")
+def patch_wall_cell(wall_id: int, payload: WallCellUpdate,
+                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    fields = payload.model_dump(exclude_unset=True)
+    if payload.playlist_id is not None:
+        own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
+                        (payload.playlist_id, org_id(user)))
+        if not own:
+            raise http_error(404, "playlist.not_found", "Playlist not found")
+    set_fields = {k: v for k, v in fields.items() if k not in ("row_index", "col_index")}
+    if set_fields:
+        sets = ", ".join(f"{k} = ?" for k in set_fields.keys())
+        params = list(set_fields.values()) + [wall_id, payload.row_index, payload.col_index]
+        execute(
+            f"UPDATE wall_cells SET {sets} "
+            f"WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+            tuple(params),
+        )
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, payload.row_index, payload.col_index),
+    )
+    return cell
+
+
+@app.delete("/walls/{wall_id}", status_code=204)
+def delete_wall(wall_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> None:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+    return None
+
+
+class WallRedeemRequest(BaseModel):
+    code: str = Field(..., min_length=PAIR_CODE_LENGTH, max_length=PAIR_CODE_LENGTH)
+
+
+def _generate_unique_wall_pair_code() -> str:
+    while True:
+        code = generate_pair_code_v2()
+        if not query_one("SELECT id FROM wall_pairing_codes WHERE code = ?", (code,)):
+            return code
+
+
+@app.post("/walls/{wall_id}/cells/{row}/{col}/pair")
+def pair_wall_cell(wall_id: int, row: int, col: int,
+                   user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, row, col),
+    )
+    if not cell:
+        raise http_error(404, "wall.cell_not_found", "Cell not found")
+    now = datetime.now(timezone.utc)
+    code = _generate_unique_wall_pair_code()
+    expires_at = (now + timedelta(seconds=PAIR_CODE_TTL_SECONDS)).isoformat()
+    execute(
+        """INSERT INTO wall_pairing_codes (code, wall_id, row_index, col_index,
+               status, expires_at, created_at)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+        (code, wall_id, row, col, expires_at, now.isoformat()),
+    )
+    return {"code": code, "expires_at": expires_at,
+            "expires_in_seconds": PAIR_CODE_TTL_SECONDS}
+
+
+@app.post("/walls/cells/redeem")
+@limiter.limit("30/minute")
+def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
+    row = query_one("SELECT * FROM wall_pairing_codes WHERE code = ?", (payload.code,))
+    if not row:
+        raise http_error(404, "wall.pair_code_unknown", "Code not recognized")
+    now = datetime.now(timezone.utc)
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+    if row["status"] == "claimed":
+        raise http_error(409, "wall.pair_code_used", "This code was already used")
+    if now > expires_dt:
+        execute("UPDATE wall_pairing_codes SET status = 'expired' WHERE id = ?", (row["id"],))
+        raise http_error(410, "wall.pair_code_expired", "Code expired")
+
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (row["wall_id"],))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall is gone")
+
+    name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
+    pair_code = generate_unique_pair_code()
+    screen_token = generate_unique_token()
+    screen_id = execute(
+        """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (wall["organization_id"], name, pair_code, screen_token, now.isoformat()),
+    )
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (row["wall_id"], row["row_index"], row["col_index"]),
+    )
+    execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
+    execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
+    execute(
+        "UPDATE wall_pairing_codes SET status = 'claimed', claimed_at = ? WHERE id = ?",
+        (now.isoformat(), row["id"]),
+    )
+    return {
+        "status": "paired",
+        "screen_token": screen_token,
+        "wall_id": wall["id"],
+        "cell": {"row": row["row_index"], "col": row["col_index"],
+                 "rows": wall["rows"], "cols": wall["cols"]},
+        "mode": wall["mode"],
+    }
+
+
+@app.delete("/walls/{wall_id}/cells/{row}/{col}/pairing", status_code=204)
+def unpair_wall_cell(wall_id: int, row: int, col: int,
+                     user: dict = Depends(require_roles("admin", "editor"))) -> None:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, org_id(user)))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, row, col),
+    )
+    if not cell:
+        raise http_error(404, "wall.cell_not_found", "Cell not found")
+    if cell["screen_id"]:
+        execute("UPDATE screens SET wall_cell_id = NULL WHERE id = ?", (cell["screen_id"],))
+    execute("UPDATE wall_cells SET screen_id = NULL WHERE id = ?", (cell["id"],))
+    try:
+        from walls import broadcast_bye  # type: ignore
+        broadcast_bye(wall_id, row, col, "cell_unpaired")
+    except Exception:
+        pass
+    return None
+
+
+# ---- Spanned-mode canvas playlists ----
+
+_ALLOWED_CANVAS_MIME_PREFIXES = ("image/", "video/")
+_ALLOWED_CANVAS_EXACT_MIMES = {"application/pdf"}
+
+
+def _is_allowed_canvas_mime(mime: str) -> bool:
+    if mime in _ALLOWED_CANVAS_EXACT_MIMES:
+        return True
+    return any(mime.startswith(p) for p in _ALLOWED_CANVAS_MIME_PREFIXES)
+
+
+def _load_spanned_wall_or_404(wall_id: int, owner_org_id: int) -> dict:
+    wall = query_one(
+        "SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+        (wall_id, owner_org_id),
+    )
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    if wall["mode"] != "spanned" or not wall.get("spanned_playlist_id"):
+        raise http_error(404, "wall.not_spanned", "Wall is not spanned.")
+    return wall
+
+
+@app.get("/walls/{wall_id}/canvas-playlist")
+def get_canvas_playlist(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    items = query_all(
+        """SELECT pi.id, pi.media_id, pi.position, pi.duration_seconds,
+                  pi.duration_override_seconds, pi.fit_mode,
+                  m.name AS media_name, m.mime_type, m.filename
+           FROM playlist_items pi JOIN media m ON m.id = pi.media_id
+           WHERE pi.playlist_id = ?
+           ORDER BY pi.position ASC, pi.id ASC""",
+        (wall["spanned_playlist_id"],),
+    )
+    return {"wall_id": wall_id, "playlist_id": wall["spanned_playlist_id"], "items": items}
+
+
+class CanvasItemCreate(BaseModel):
+    media_id: int
+    position: int = Field(..., ge=0)
+    duration_override_seconds: Optional[int] = Field(default=None, ge=1, le=86400)
+    fit_mode: str = Field(default="fit", pattern="^(fit|fill|stretch)$")
+
+
+@app.post("/walls/{wall_id}/canvas-playlist/items", status_code=201)
+def add_canvas_item(wall_id: int, payload: CanvasItemCreate,
+                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    media = query_one(
+        "SELECT * FROM media WHERE id = ? AND organization_id = ?",
+        (payload.media_id, org_id(user)),
+    )
+    if not media:
+        raise http_error(404, "media.not_found", "Media not found")
+    if not _is_allowed_canvas_mime(media["mime_type"]):
+        raise http_error(400, "wall.canvas_media_type_blocked",
+                         "URL embeds aren't supported on spanned walls. "
+                         "Use mirrored mode for URL media.")
+    duration_seconds = payload.duration_override_seconds or 5
+    item_id = execute(
+        """INSERT INTO playlist_items
+               (playlist_id, media_id, position, duration_seconds,
+                duration_override_seconds, fit_mode, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (wall["spanned_playlist_id"], payload.media_id, payload.position,
+         duration_seconds, payload.duration_override_seconds, payload.fit_mode,
+         utc_now_iso()),
+    )
+    if media["mime_type"] == "application/pdf":
+        _ensure_pdf_rasterized(media, wall)
+    return query_one("SELECT * FROM playlist_items WHERE id = ?", (item_id,))
+
+
+class CanvasItemUpdate(BaseModel):
+    position: Optional[int] = Field(default=None, ge=0)
+    duration_override_seconds: Optional[int] = Field(default=None, ge=1, le=86400)
+    fit_mode: Optional[str] = Field(default=None, pattern="^(fit|fill|stretch)$")
+
+
+@app.patch("/walls/{wall_id}/canvas-playlist/items/{item_id}")
+def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
+                      user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    item = query_one(
+        "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
+        (item_id, wall["spanned_playlist_id"]),
+    )
+    if not item:
+        raise http_error(404, "playlist_item.not_found", "Item not found")
+    fields = payload.model_dump(exclude_unset=True)
+    if fields:
+        sets = ", ".join(f"{k} = ?" for k in fields.keys())
+        params = list(fields.values()) + [item_id]
+        execute(f"UPDATE playlist_items SET {sets} WHERE id = ?", tuple(params))
+    return query_one("SELECT * FROM playlist_items WHERE id = ?", (item_id,))
+
+
+@app.delete("/walls/{wall_id}/canvas-playlist/items/{item_id}", status_code=204)
+def delete_canvas_item(wall_id: int, item_id: int,
+                       user: dict = Depends(require_roles("admin", "editor"))) -> None:
+    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+    execute(
+        "DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?",
+        (item_id, wall["spanned_playlist_id"]),
+    )
+
+
+def _ensure_pdf_rasterized(media: dict, wall: dict) -> None:
+    """Synchronously rasterize a PDF to the wall's canvas size if not already done."""
+    from pathlib import Path
+    from pdf_render import rasterize_pdf, PdfRenderError  # type: ignore
+    out_dir = (Path(UPLOAD_DIR) / "pdf_pages" / str(media["id"])
+               / f"canvas_{wall['canvas_width_px']}x{wall['canvas_height_px']}")
+    if out_dir.exists() and any(out_dir.iterdir()):
+        return  # Already rendered for this resolution.
+    pdf_path = Path(UPLOAD_DIR) / media["filename"]
+    try:
+        rasterize_pdf(str(pdf_path), str(out_dir),
+                      width_px=wall["canvas_width_px"],
+                      height_px=wall["canvas_height_px"])
+        execute("UPDATE media SET pdf_pages_status = 'ready' WHERE id = ?",
+                (media["id"],))
+    except PdfRenderError as exc:
+        execute("UPDATE media SET pdf_pages_status = 'error' WHERE id = ?",
+                (media["id"],))
+        raise http_error(500, "wall.pdf_rasterize_failed",
+                         f"Couldn't render PDF: {exc}")
 
 
 @app.post("/screens/{screen_id}/preview-token")
@@ -1688,6 +2290,25 @@ def delete_playlist(playlist_id: int, user: dict = Depends(require_roles("admin"
     return {"status": "deleted"}
 
 
+def _default_duration_seconds(media: dict) -> int:
+    """Default playlist-item duration when caller omits duration_seconds."""
+    mime = (media.get("mime_type") or "").lower()
+    if mime.startswith("image/"):
+        return 10
+    if mime.startswith("video/"):
+        # forward-hook: media table has no duration_seconds column yet,
+        # so this currently always falls through to the 10s default.
+        stored = media.get("duration_seconds")
+        if isinstance(stored, (int, float)) and stored > 0:
+            return max(1, math.ceil(stored))
+        return 10
+    if mime == "application/pdf":
+        return 30
+    if mime == "text/url":
+        return 10
+    return 10
+
+
 @app.post("/playlists/{playlist_id}/items")
 def add_playlist_item(
     playlist_id: int, payload: PlaylistItemCreate, user: dict = Depends(require_roles("admin", "editor"))
@@ -1710,13 +2331,18 @@ def add_playlist_item(
         (playlist_id,),
     )
     position = (max_position["max_position"] or 0) + 1
+    duration_seconds = (
+        payload.duration_seconds
+        if payload.duration_seconds is not None
+        else _default_duration_seconds(media)
+    )
     item_id = execute(
         """
         INSERT INTO playlist_items
         (playlist_id, media_id, duration_seconds, position, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (playlist_id, payload.media_id, payload.duration_seconds, position, utc_now_iso()),
+        (playlist_id, payload.media_id, duration_seconds, position, utc_now_iso()),
     )
     item = query_one("SELECT * FROM playlist_items WHERE id = ?", (item_id,))
     item["media"] = media
@@ -1853,6 +2479,24 @@ def _billing_callback_secret() -> str:
     return secret
 
 
+def _verify_billing_callback(raw_body: bytes, headers, query_secret: str) -> bool:
+    """Two-path auth: HMAC body signature (preferred) or query-string shared secret.
+
+    Fails closed if neither verifies. Constant-time compares throughout.
+    """
+    webhook_secret = os.environ.get("BILLING_WEBHOOK_SECRET", "").strip()
+    sig_header = (headers.get("x-niupay-signature") or headers.get("x-webhook-signature") or "").strip()
+    if webhook_secret and sig_header:
+        expected = hmac.new(webhook_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(expected, sig_header):
+            return True
+    callback_secret = os.environ.get("NIUPAY_CALLBACK_SECRET", "")
+    if callback_secret and query_secret:
+        if secrets.compare_digest(query_secret, callback_secret):
+            return True
+    return False
+
+
 @app.post("/billing/checkout")
 def billing_checkout(
     payload: BillingCheckoutRequest,
@@ -1943,9 +2587,15 @@ class BillingCallbackBody(BaseModel):
 
 
 @app.post("/billing/callback/{trackid}")
-def billing_callback(trackid: str, body: BillingCallbackBody, s: str = ""):
-    if not secrets.compare_digest(s, _billing_callback_secret()):
+async def billing_callback(request: Request, trackid: str, s: str = ""):
+    raw_body = await request.body()
+    if not _verify_billing_callback(raw_body, request.headers, s):
         raise HTTPException(status_code=404)
+    try:
+        body_dict = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = BillingCallbackBody(**body_dict)
 
     if body.trackid and body.trackid != trackid:
         raise HTTPException(status_code=400, detail="trackid mismatch")

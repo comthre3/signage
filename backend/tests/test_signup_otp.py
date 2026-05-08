@@ -77,7 +77,7 @@ def test_signup_request_rejects_already_registered_email(otp_client):
         json={"business_name": "Kebab Corner", "email": email},
     )
     assert r.status_code == 400
-    assert "registered" in r.json()["detail"].lower()
+    assert r.json()["detail"]["code"] == "email_taken"
 
 
 def test_signup_request_cooldown_blocks_rapid_resend(otp_client):
@@ -92,7 +92,7 @@ def test_signup_request_cooldown_blocks_rapid_resend(otp_client):
         json={"business_name": "Kebab Corner", "email": email},
     )
     assert r2.status_code == 429
-    assert "wait" in r2.json()["detail"].lower()
+    assert r2.json()["detail"]["code"] == "otp_cooldown"
 
 
 def _request_otp(client, email: str) -> str:
@@ -119,7 +119,7 @@ def test_signup_verify_wrong_otp_increments_attempts(otp_client):
     _request_otp(otp_client, email)
     r = otp_client.post("/auth/signup/verify", json={"email": email, "otp": "000000"})
     assert r.status_code == 400
-    assert "incorrect" in r.json()["detail"].lower()
+    assert r.json()["detail"]["code"] == "otp_incorrect"
 
 
 def test_signup_verify_locks_after_max_attempts(otp_client):
@@ -129,7 +129,7 @@ def test_signup_verify_locks_after_max_attempts(otp_client):
         otp_client.post("/auth/signup/verify", json={"email": email, "otp": "000000"})
     r = otp_client.post("/auth/signup/verify", json={"email": email, "otp": "000000"})
     assert r.status_code == 400
-    assert "too many" in r.json()["detail"].lower()
+    assert r.json()["detail"]["code"] == "otp_attempts_exceeded"
 
 
 def test_signup_verify_unknown_email_fails(otp_client):

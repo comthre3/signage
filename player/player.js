@@ -130,7 +130,7 @@ async function onPaired(screenToken) {
   activePairCode = null;
   localStorage.setItem("screen_token", screenToken);
   hidePairingView();
-  setStatus("Loading content...");
+  setStatus(Khan.t("status.loading_content", "Loading content..."));
   // Re-run the same post-auth path boot() uses
   await resumeAfterPair(screenToken);
 }
@@ -223,7 +223,7 @@ function createVideoNode(url, loop) {
 
 function scheduleNext() {
   if (currentItems.length === 0) {
-    setStatus("No content assigned");
+    setStatus(Khan.t("status.no_content", "No content assigned"));
     return;
   }
   const item = currentItems[currentIndex];
@@ -373,7 +373,7 @@ function renderContentData(data) {
     currentItems = [];
     clearPlayback();
     contentEl.innerHTML = "";
-    setStatus("No content assigned");
+    setStatus(Khan.t("status.no_content", "No content assigned"));
     return;
   }
   const signature = buildSignature(items);
@@ -409,12 +409,12 @@ async function startPairingFlow() {
     const data = await requestPairingCode();
     activePairCode = data.code;
     renderPairingCode(data.code);
-    pairingMetaEl.textContent = "Waiting for your phone…";
+    pairingMetaEl.textContent = Khan.t("pairing.waiting", "Waiting for your phone…");
     schedulePairPoll();
   } catch (err) {
     console.error(err);
     pairingCodeEl.textContent = "—";
-    pairingMetaEl.textContent = "Can't reach server. Retrying…";
+    pairingMetaEl.textContent = Khan.t("pairing.no_server", "Can't reach server. Retrying…");
     setTimeout(startPairingFlow, 5000);
   }
 }
@@ -432,14 +432,14 @@ async function runPairPoll() {
       return;
     }
     if (data.status === "expired") {
-      pairingMetaEl.textContent = "Code expired — getting a new one…";
+      pairingMetaEl.textContent = Khan.t("pairing.expired", "Code expired — getting a new one…");
       await startPairingFlow();
       return;
     }
     schedulePairPoll();
   } catch (err) {
     console.error(err);
-    pairingMetaEl.textContent = "Reconnecting…";
+    pairingMetaEl.textContent = Khan.t("pairing.reconnecting", "Reconnecting…");
     schedulePairPoll();
   }
 }
@@ -450,6 +450,7 @@ function startRefreshLoop() {
   if (refreshLoopStarted) return;
   refreshLoopStarted = true;
   setInterval(() => {
+    if (wallSocket && wallSocket.readyState === WebSocket.OPEN) return; // WS drives playback
     if (zonesEl && !zonesEl.classList.contains("hidden")) {
       fetchLayout()
         .then((nextLayout) => {
@@ -463,12 +464,12 @@ function startRefreshLoop() {
         })
         .catch((err) => {
           console.error(err);
-          setStatus("Connection issue");
+          setStatus(Khan.t("status.connection_issue", "Connection issue"));
         });
     } else {
       fetchContent().catch((err) => {
         console.error(err);
-        setStatus("Connection issue");
+        setStatus(Khan.t("status.connection_issue", "Connection issue"));
       });
     }
   }, 15000);
@@ -486,7 +487,7 @@ async function boot() {
     screenToken;
 
   if (!screenToken && codeParam) {
-    setStatus("Pairing...");
+    setStatus(Khan.t("status.pairing", "Pairing..."));
     screenToken = await pairWithCode(codeParam);
     if (!isPreview) {
       localStorage.setItem("screen_token", screenToken);
@@ -498,23 +499,266 @@ async function boot() {
     return;
   }
 
-  setStatus("Loading content...");
+  setStatus(Khan.t("status.loading_content", "Loading content..."));
   const layout = await fetchLayout();
-  if (layout?.zones && layout.zones.length > 0) {
+  let contentResp = null;
+  if (screenToken && !previewToken) {
+    try {
+      contentResp = await (await fetch(
+        `${API_BASE}/screens/${screenToken}/content`)).json();
+    } catch (_) { contentResp = null; }
+  }
+  if (contentResp?.wall_id) {
+    renderSingleLayout();
+    await enterWallMode(contentResp.wall_id);
+  } else if (layout?.zones && layout.zones.length > 0) {
     layoutSignature = getLayoutSignature(layout.zones);
     renderZonesLayout(layout.zones);
   } else {
     renderSingleLayout();
-    await fetchContent();
+    if (contentResp) {
+      try {
+        localStorage.setItem(getCacheKey("content"), JSON.stringify(contentResp));
+      } catch (_) {}
+      renderContentData(contentResp);
+    } else {
+      await fetchContent();
+    }
   }
   startRefreshLoop();
+}
+
+// ====== Wall mode ======
+let wallSocket = null;
+let wallId = null;
+let wallReconnectAttempts = 0;
+let wallClockOffsetMs = 0;
+let wallLastFrame = null;
+let wallDriftTimer = null;
+let wallSpannedGeometry = null;
+const WALL_RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+
+function effectiveNowMs() { return Date.now() + wallClockOffsetMs; }
+
+async function enterWallMode(id) {
+  wallId = id;
+  setStatus(Khan.t("wall.connecting", "Connecting to wall…"));
+  openWallSocket();
+}
+
+function openWallSocket() {
+  if (!wallId || !screenToken) return;
+  const wsBase = API_BASE.replace(/^http/, "ws");
+  const url = `${wsBase}/walls/${wallId}/ws?screen_token=${encodeURIComponent(screenToken)}`;
+  try { wallSocket?.close(); } catch (_) {}
+  wallSocket = new WebSocket(url);
+
+  wallSocket.addEventListener("open", () => {
+    wallReconnectAttempts = 0;
+  });
+  wallSocket.addEventListener("message", (ev) => {
+    let frame;
+    try { frame = JSON.parse(ev.data); } catch (_) { return; }
+    onWallFrame(frame);
+  });
+  wallSocket.addEventListener("close", () => {
+    setStatus(Khan.t("wall.reconnecting", "Reconnecting to wall…"));
+    const delay = WALL_RECONNECT_BACKOFF_MS[
+      Math.min(wallReconnectAttempts, WALL_RECONNECT_BACKOFF_MS.length - 1)
+    ];
+    wallReconnectAttempts += 1;
+    setTimeout(openWallSocket, delay);
+  });
+  wallSocket.addEventListener("error", () => { /* close handler will retry */ });
+}
+
+function onWallFrame(frame) {
+  const clientReceivedMs = Date.now();
+  if (typeof frame.server_now_ms === "number") {
+    wallClockOffsetMs = frame.server_now_ms - clientReceivedMs;
+  }
+  if (frame.type === "hello") {
+    if (frame.mode === "spanned") {
+      wallSpannedGeometry = {
+        canvas:        frame.canvas,
+        cell_geometry: frame.cell_geometry,
+        bezel:         frame.bezel,
+      };
+    }
+    if (frame.current_play) renderWallPlay(frame.current_play);
+  } else if (frame.type === "play") {
+    renderWallPlay(frame);
+  } else if (frame.type === "ping") {
+    try { wallSocket?.send(JSON.stringify({
+      type: "pong", client_received_ms: clientReceivedMs, client_now_ms: Date.now(),
+    })); } catch (_) {}
+  } else if (frame.type === "bye") {
+    try { wallSocket?.close(); } catch (_) {}
+    wallId = null;
+    localStorage.removeItem("screen_token");
+    window.location.reload();
+  } else if (frame.type === "playlist_change") {
+    fetchContent().catch(() => {});
+  }
+}
+
+function renderWallPlay(frame) {
+  const item = frame.item;
+  if (!item) return;
+  if (wallLastFrame && wallLastFrame.item.id === item.id
+      && wallLastFrame.started_at_ms === frame.started_at_ms) {
+    return;
+  }
+  wallLastFrame = frame;
+  if (wallDriftTimer) { clearInterval(wallDriftTimer); wallDriftTimer = null; }
+  contentEl.innerHTML = "";
+  if (wallSpannedGeometry) {
+    renderSpannedFrame(frame);
+    return;
+  }
+  const startedAtMs = frame.started_at_ms;
+  const expectedPositionMs = effectiveNowMs() - startedAtMs;
+  const node = createWallMediaNode(item);
+  contentEl.appendChild(node);
+  if (node.tagName === "VIDEO") {
+    node.addEventListener("loadeddata", () => {
+      const t = Math.max(0, expectedPositionMs / 1000);
+      try { node.currentTime = t; } catch (_) {}
+      node.play().catch(() => {});
+    }, { once: true });
+    wallDriftTimer = setInterval(() => correctVideoDrift(node, frame), 2000);
+  }
+}
+
+function renderSpannedFrame(frame) {
+  const { canvas, cell_geometry } = wallSpannedGeometry;
+  const item = frame.item;
+  if (!item) return;
+  const wrap = document.createElement("div");
+  wrap.className = "cell-viewport";
+  wrap.innerHTML = `
+    <div class="wall-canvas"
+         style="--wall-w-px:${canvas.w}; --wall-h-px:${canvas.h};
+                --cell-x-px:${cell_geometry.x}; --cell-y-px:${cell_geometry.y};">
+    </div>
+  `;
+  contentEl.appendChild(wrap);
+  const wallCanvas = wrap.querySelector(".wall-canvas");
+  const node = createWallMediaNode(item);
+  node.classList.add("wall-media");
+  node.dataset.fit = frame.fit_mode || "fit";
+  node.style.cssText = "position:absolute; inset:0; width:100%; height:100%;";
+  wallCanvas.appendChild(node);
+  if (node.tagName === "VIDEO") {
+    node.addEventListener("loadeddata", () => {
+      const t = Math.max(0, (effectiveNowMs() - frame.started_at_ms) / 1000);
+      try { node.currentTime = t; } catch (_) {}
+      node.play().catch(() => {});
+    }, { once: true });
+    wallDriftTimer = setInterval(() => correctVideoDrift(node, frame), 2000);
+  }
+}
+
+function createWallMediaNode(item) {
+  const mime = item.mime_type || "";
+  if (mime.startsWith("video/")) {
+    const v = document.createElement("video");
+    v.src = item.url; v.muted = true; v.autoplay = true; v.playsInline = true;
+    v.style.cssText = "position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;";
+    return v;
+  }
+  if (mime.startsWith("image/")) {
+    const i = document.createElement("img");
+    i.src = item.url; i.alt = item.name || "";
+    i.style.cssText = "position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;";
+    return i;
+  }
+  const f = document.createElement("iframe");
+  f.src = item.url; f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#000;";
+  return f;
+}
+
+function correctVideoDrift(video, frame) {
+  if (!video.isConnected) {
+    if (wallDriftTimer) { clearInterval(wallDriftTimer); wallDriftTimer = null; }
+    return;
+  }
+  const expectedSec = (effectiveNowMs() - frame.started_at_ms) / 1000;
+  const delta = (video.currentTime - expectedSec) * 1000;
+  if (Math.abs(delta) > 200) {
+    try { video.currentTime = Math.max(0, expectedSec); } catch (_) {}
+    video.playbackRate = 1.0;
+  } else if (Math.abs(delta) > 50) {
+    video.playbackRate = delta < 0 ? 1.02 : 0.98;
+    setTimeout(() => { video.playbackRate = 1.0; }, 1000);
+  }
 }
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
-boot().catch((err) => {
-  console.error(err);
-  setStatus("Failed to start player");
-});
+(async function bootI18nThenBoot() {
+  try {
+    const locale = Khan.detectInitialLocale();
+    await Khan.loadLocale(locale);
+    Khan.applyTranslations(document);
+  } catch (err) {
+    console.error("[i18n] boot failed", err);
+  }
+  try {
+    await boot();
+  } catch (err) {
+    console.error(err);
+    setStatus(Khan.t("status.failed_to_start", "Failed to start player"));
+  }
+})();
+
+// ── "Have a code from admin?" affordance (Task 11) ───────────────
+const adminCodeToggle = document.getElementById("admin-code-toggle");
+const adminCodeForm = document.getElementById("admin-code-form");
+const adminCodeInput = document.getElementById("admin-code-input");
+const adminCodeError = document.getElementById("admin-code-error");
+
+if (adminCodeToggle && adminCodeForm) {
+  adminCodeToggle.addEventListener("click", () => {
+    adminCodeForm.classList.toggle("hidden");
+    if (!adminCodeForm.classList.contains("hidden")) {
+      adminCodeInput?.focus();
+    }
+  });
+}
+if (adminCodeForm) {
+  adminCodeForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const submitBtn = adminCodeForm.querySelector('[type="submit"]');
+    adminCodeError.textContent = "";
+    const code = (adminCodeInput.value || "").trim().toUpperCase();
+    if (code.length !== 6) {
+      adminCodeError.textContent = Khan.t("pairing.code_invalid", "Code not recognized.");
+      return;
+    }
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const res = await fetch(`${API_BASE}/walls/cells/redeem`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        const msgKey = body?.detail?.code === "wall.pair_code_expired"
+          ? "pairing.code_expired"
+          : "pairing.code_invalid";
+        adminCodeError.textContent = Khan.t(msgKey, "Code not recognized.");
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+      localStorage.setItem("screen_token", body.screen_token);
+      stopPairPoll();
+      window.location.reload();
+    } catch (err) {
+      adminCodeError.textContent = Khan.t("pairing.code_invalid", "Code not recognized.");
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+}
