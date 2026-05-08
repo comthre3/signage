@@ -289,5 +289,17 @@
   "walls.confirm_delete_title": "حذف الجدار",
   "walls.confirm_unpair_title": "فصل الخلية",
   "walls.canvas_confirm_delete_title": "حذف العنصر",
-  "walls.unpair_label": "فصل"
+  "walls.unpair_label": "فصل",
+  "users.admin_required": "صلاحية المدير مطلوبة لإدارة المستخدمين.",
+  "users.groups_heading": "المجموعات",
+  "screens.preview_meta_label": "جارٍ معاينة",
+  "screens.preview_meta_unassigned": "غير مُعيَّنة",
+  "screens.preview_meta_expires": "تنتهي",
+  "screens.zone_default_name": "منطقة جديدة",
+  "screens.access_unassigned_option": "غير مُعيَّن",
+  "screens.site_unassigned_label": "غير مُعيَّن",
+  "toast.signup_welcome": "مرحباً بك في خنشوف، {name}! تجربتك المجانية لمدة 5 أيام نشطة الآن.",
+  "toast.files_uploaded_n": "تم رفع {n} ملفاً.",
+  "error.login_failed": "فشل تسجيل الدخول.",
+  "error.code_send_failed": "تعذر إرسال الرمز."
 }

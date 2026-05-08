@@ -413,7 +413,7 @@ function renderUsers() {
   const container = document.getElementById("users-list");
   container.innerHTML = "";
   if (currentUser?.role !== "admin") {
-    container.innerHTML = "<div class='card'>Admin access required to manage users.</div>";
+    container.innerHTML = `<div class='card'>${Khan.t("users.admin_required", "Admin access required to manage users.")}</div>`;
     return;
   }
   state.users.forEach((user) => {
@@ -499,7 +499,7 @@ function renderGroups() {
   if (currentUser?.role !== "admin") return;
   if (state.groups.length) {
     const heading = document.createElement("h3");
-    heading.textContent = "Groups";
+    heading.textContent = Khan.t("users.groups_heading", "Groups");
     heading.style.cssText = "font-size:14px;font-weight:700;color:var(--cyan);font-family:var(--mono);margin-bottom:10px";
     container.appendChild(heading);
   }
@@ -548,7 +548,7 @@ function renderScreens() {
     card.innerHTML = `
       <h3>${escHtml(screen.name)}</h3>
       <div class="card-meta">
-        <span>Site: ${escHtml(screen.site_name || "Unassigned")}</span>
+        <span>Site: ${escHtml(screen.site_name || Khan.t("screens.site_unassigned_label", "Unassigned"))}</span>
         ${screen.location ? `<span>${escHtml(screen.location)}</span>` : ""}
         ${screen.resolution ? `<span>${escHtml(screen.resolution)}</span>` : ""}
         ${screen.orientation ? `<span>${escHtml(screen.orientation)}</span>` : ""}
@@ -617,8 +617,8 @@ function showPreview(screen, previewUrl, expiresAt) {
   const panel = document.getElementById("preview-panel");
   const frame = document.getElementById("preview-frame");
   const meta  = document.getElementById("preview-meta");
-  meta.textContent = `Previewing: ${screen.name} (${screen.site_name || "Unassigned"})` +
-    (expiresAt ? ` · expires ${expiresAt}` : "");
+  meta.textContent = `${Khan.t("screens.preview_meta_label", "Previewing")}: ${screen.name} (${screen.site_name || Khan.t("screens.preview_meta_unassigned", "Unassigned")})` +
+    (expiresAt ? ` · ${Khan.t("screens.preview_meta_expires", "expires")} ${expiresAt}` : "");
   frame.src = previewUrl;
   panel.classList.remove("hidden");
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -681,7 +681,7 @@ function renderZonesCanvas() {
     preview.style.top    = `${zonesState.drawing.preview.y * 100}%`;
     preview.style.width  = `${zonesState.drawing.preview.width * 100}%`;
     preview.style.height = `${zonesState.drawing.preview.height * 100}%`;
-    preview.innerHTML = `<div class="zone-title">New Zone</div>`;
+    preview.innerHTML = `<div class="zone-title">${Khan.t("screens.zone_default_name", "New Zone")}</div>`;
     canvas.appendChild(preview);
   }
 }
@@ -800,7 +800,7 @@ async function openScreenAccessEditor(screenId) {
   const panel     = document.getElementById("screen-access-panel");
   panel.classList.remove("hidden");
   const ownerSelect = document.getElementById("screen-owner-select");
-  ownerSelect.innerHTML = `<option value="">Unassigned</option>`;
+  ownerSelect.innerHTML = `<option value="">${Khan.t("screens.access_unassigned_option", "Unassigned")}</option>`;
   state.users.forEach((user) => {
     const option = document.createElement("option");
     option.value = user.id;
@@ -1124,7 +1124,7 @@ mediaForm?.addEventListener("drop", async (e) => {
     });
     if (res.ok) uploaded++;
   }
-  toast(`${uploaded} file(s) uploaded.`, "success");
+  toast(Khan.t("toast.files_uploaded_n", "{n} file(s) uploaded.").replace("{n}", uploaded), "success");
   await loadMedia();
 });
 
@@ -1196,7 +1196,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
       await bootData();
     });
   } catch (err) {
-    toast(err.message || "Login failed.", "error");
+    toast(err.message || Khan.t("error.login_failed", "Login failed."), "error");
   }
 });
 
@@ -1279,7 +1279,7 @@ document.getElementById("signup-request-form").addEventListener("submit", async 
       toast(Khan.t("toast.code_sent"), "success");
     });
   } catch (err) {
-    toast(err.message || "Couldn't send code.", "error");
+    toast(err.message || Khan.t("error.code_send_failed", "Couldn't send code."), "error");
   }
 });
 
@@ -1351,7 +1351,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
       setAuth(data.token, data.user);
       showDashboard();
       await bootData();
-      toast(`Welcome to Khanshoof, ${signupState.business_name}! Your 5-day trial is active.`, "success", 6000);
+      toast(Khan.t("toast.signup_welcome", "Welcome to Khanshoof, {name}! Your 5-day trial is active.").replace("{name}", signupState.business_name), "success", 6000);
       signupState.email = "";
       signupState.business_name = "";
       signupState.verification_token = "";
