@@ -245,3 +245,86 @@ def test_login_still_works_for_existing_user_with_legacy_password(client, signed
         "password": "Khanshoof2026Test",
     })
     assert r.status_code == 200, r.text
+
+
+# ── Account lockout (Phase 2.5c) ──────────────────────────────────────
+
+
+def _try_login(client, username, password, expect_status=None):
+    r = client.post("/auth/login", json={"username": username, "password": password})
+    if expect_status is not None:
+        assert r.status_code == expect_status, f"expected {expect_status}, got {r.status_code}: {r.text}"
+    return r
+
+
+def test_lockout_after_threshold_failures(client, signed_up_org):
+    username = signed_up_org["user"]["username"]
+    for _ in range(5):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    r = _try_login(client, username, "WrongPass-9999")
+    assert r.status_code == 429
+    body = r.json()
+    assert body["detail"]["code"] == "account_locked"
+    assert isinstance(body["detail"]["retry_after_seconds"], int)
+    assert body["detail"]["retry_after_seconds"] > 0
+
+
+def test_lockout_blocks_even_correct_password(client, signed_up_org):
+    """Once locked, even the correct password yields 429 until window expires."""
+    username = signed_up_org["user"]["username"]
+    for _ in range(5):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    r = _try_login(client, username, "Khanshoof2026Test")
+    assert r.status_code == 429
+    assert r.json()["detail"]["code"] == "account_locked"
+
+
+def test_success_resets_lockout_counter(client, signed_up_org):
+    username = signed_up_org["user"]["username"]
+    # 4 fails (one short of threshold)
+    for _ in range(4):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    # 1 success — anchors the window
+    _try_login(client, username, "Khanshoof2026Test", expect_status=200)
+    # 4 more fails should be allowed again (counter reset by success)
+    for _ in range(4):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    # The 5th fail still works (counter is post-success, not yet at threshold)
+    r = _try_login(client, username, "WrongPass-9999")
+    assert r.status_code == 401  # not yet 429
+
+
+def test_lockout_does_not_leak_user_existence(client, signed_up_org):
+    """Lockout response for unknown username is identical to known-locked."""
+    real_user = signed_up_org["user"]["username"]
+    for _ in range(5):
+        _try_login(client, real_user, "WrongPass-9999", expect_status=401)
+    real_locked = _try_login(client, real_user, "WrongPass-9999")
+    assert real_locked.status_code == 429
+
+    fake_user = "nonexistent-" + real_user
+    for _ in range(5):
+        _try_login(client, fake_user, "WrongPass-9999", expect_status=401)
+    fake_locked = _try_login(client, fake_user, "WrongPass-9999")
+    assert fake_locked.status_code == 429
+    assert fake_locked.json()["detail"]["code"] == real_locked.json()["detail"]["code"]
+
+
+def test_login_attempts_cleanup_purges_old_rows(client, signed_up_org):
+    """Old login_attempts rows (>30 days) get cleaned up by cleanup_sessions."""
+    from db import execute, query_one
+    from main import cleanup_sessions
+    execute(
+        "INSERT INTO login_attempts (username, attempted_at, success, ip) "
+        "VALUES (?, now() - interval '60 days', false, '1.2.3.4')",
+        (signed_up_org["user"]["username"],),
+    )
+    row = query_one(
+        "SELECT id FROM login_attempts WHERE ip = '1.2.3.4'",
+    )
+    assert row is not None
+    cleanup_sessions()
+    row_after = query_one(
+        "SELECT id FROM login_attempts WHERE ip = '1.2.3.4'",
+    )
+    assert row_after is None

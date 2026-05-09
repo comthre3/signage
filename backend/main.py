@@ -208,6 +208,25 @@ def http_error(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
+def _client_ip(request) -> str | None:
+    """Best-effort client IP, honoring forwarding headers from CF/nginx."""
+    if request is None:
+        return None
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip() or None
+    cf = request.headers.get("cf-connecting-ip")
+    if cf:
+        return cf.strip() or None
+    return (request.client.host if request.client else None) or None
+
+
+def audit(request, *, action, actor=None, target_type=None, target_id=None,
+          details=None, organization_id=None) -> None:
+    """Stub — full implementation in Task 6 (audit log)."""
+    return None
+
+
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 OTP_RESEND_COOLDOWN_SECONDS = int(os.getenv("OTP_RESEND_COOLDOWN_SECONDS", "60"))
@@ -318,6 +337,10 @@ def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
     amount_usd = (amount_kwd_dec * KWD_TO_USD).quantize(Decimal("0.01"))
     return amount_kwd, amount_usd
 
+
+LOGIN_LOCKOUT_WINDOW_SECONDS  = 900   # 15 minutes
+LOGIN_LOCKOUT_THRESHOLD       = 5
+LOGIN_ATTEMPTS_RETENTION_DAYS = 30
 
 PASSWORD_MIN_LENGTH = 12
 
@@ -466,6 +489,10 @@ def serialize_wall(wall: dict, include_cells: bool = True) -> dict:
 def cleanup_sessions() -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SESSION_TTL_SECONDS)).isoformat()
     execute("DELETE FROM sessions WHERE COALESCE(last_used, created_at) < ?", (cutoff,))
+    execute(
+        "DELETE FROM login_attempts "
+        f"WHERE attempted_at < now() - interval '{LOGIN_ATTEMPTS_RETENTION_DAYS} days'"
+    )
 
 
 def cleanup_preview_tokens() -> None:
@@ -911,9 +938,75 @@ def patch_organization_me(
 @app.post("/auth/login")
 @limiter.limit("10/5minutes")
 def login(request: Request, payload: LoginRequest) -> dict:
+    ip = _client_ip(request)
+
+    # ── Lockout check ────────────────────────────────────────────────
+    last_success_row = query_one(
+        "SELECT MAX(attempted_at) AS ts FROM login_attempts "
+        "WHERE username = ? AND success = true",
+        (payload.username,),
+    )
+    last_success_ts = last_success_row["ts"] if last_success_row else None
+
+    if last_success_ts is not None:
+        failure_filter = (
+            "WHERE username = ? AND success = false "
+            "  AND attempted_at > now() - interval '%d seconds' "
+            "  AND attempted_at > ?" % LOGIN_LOCKOUT_WINDOW_SECONDS
+        )
+        failure_params = (payload.username, last_success_ts)
+    else:
+        failure_filter = (
+            "WHERE username = ? AND success = false "
+            "  AND attempted_at > now() - interval '%d seconds'"
+            % LOGIN_LOCKOUT_WINDOW_SECONDS
+        )
+        failure_params = (payload.username,)
+
+    failure_count_row = query_one(
+        f"SELECT COUNT(*) AS n FROM login_attempts {failure_filter}",
+        failure_params,
+    )
+    failure_count = int(failure_count_row["n"]) if failure_count_row else 0
+
+    if failure_count >= LOGIN_LOCKOUT_THRESHOLD:
+        oldest_row = query_one(
+            f"SELECT MIN(attempted_at) AS ts FROM login_attempts {failure_filter}",
+            failure_params,
+        )
+        oldest_ts = oldest_row["ts"] if oldest_row else None
+        retry_after = LOGIN_LOCKOUT_WINDOW_SECONDS
+        if oldest_ts is not None:
+            elapsed = (datetime.now(timezone.utc) - oldest_ts).total_seconds()
+            retry_after = max(0, int(LOGIN_LOCKOUT_WINDOW_SECONDS - elapsed))
+        audit(request, action="auth.login.failure", actor=None,
+              details={"reason": "account_locked", "username": payload.username})
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "account_locked",
+                "message": "Too many failed login attempts. Try again later.",
+                "message_key": "auth.account_locked",
+                "retry_after_seconds": int(retry_after),
+            },
+        )
+
+    # ── Verify password ──────────────────────────────────────────────
     user = query_one("SELECT * FROM users WHERE username = ?", (payload.username,))
-    if not user or not verify_password(payload.password, user["password_hash"]):
+    ok = bool(user) and verify_password(payload.password, user["password_hash"])
+
+    # Record attempt regardless of outcome
+    execute(
+        "INSERT INTO login_attempts (username, success, ip, attempted_at) "
+        "VALUES (?, ?, ?, ?)",
+        (payload.username, ok, ip, utc_now_iso()),
+    )
+
+    if not ok:
+        audit(request, action="auth.login.failure", actor=None,
+              details={"reason": "invalid_credentials", "username": payload.username})
         raise http_error(401, "invalid_credentials", "Invalid credentials")
+
     cleanup_sessions()
     token = uuid.uuid4().hex
     execute(
@@ -921,6 +1014,9 @@ def login(request: Request, payload: LoginRequest) -> dict:
         (user["id"], token, utc_now_iso(), utc_now_iso()),
     )
     org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
+    audit(request, action="auth.login.success",
+          actor={"id": user["id"], "username": user["username"],
+                 "organization_id": user["organization_id"]})
     return {
         "token": token,
         "user": {
