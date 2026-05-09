@@ -1169,6 +1169,27 @@ document.getElementById("playlist-add-item").addEventListener("click", async (e)
   });
 });
 
+function handleLockoutCountdown(btn, seconds) {
+  function fmt(remaining) {
+    const minutes = Math.ceil(remaining / 60);
+    return Khan.t(
+      "auth.account_locked",
+      "Too many failed attempts. Try again in {minutes} minutes."
+    ).replace("{minutes}", String(minutes));
+  }
+  toast(fmt(seconds), "error");
+  if (!btn) return;
+  btn.disabled = true;
+  let remaining = seconds;
+  const tick = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearInterval(tick);
+      btn.disabled = false;
+    }
+  }, 1000);
+}
+
 document.getElementById("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn      = e.target.querySelector("button[type=submit]");
@@ -1196,6 +1217,11 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
       await bootData();
     });
   } catch (err) {
+    if (err.status === 429 && err.data?.detail?.code === "account_locked") {
+      const seconds = Math.max(0, parseInt(err.data.detail.retry_after_seconds || 0, 10));
+      handleLockoutCountdown(btn, seconds);
+      return;
+    }
     toast(err.message || Khan.t("error.login_failed", "Login failed."), "error");
   }
 });

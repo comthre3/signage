@@ -11,6 +11,7 @@
   "nav.users": "المستخدمون",
   "nav.billing": "الفوترة",
 
+  "auth.account_locked": "محاولات تسجيل دخول فاشلة كثيرة. حاول مجددًا بعد {minutes} دقيقة.",
   "auth.connection": "⚙ الاتصال",
   "auth.signout": "تسجيل الخروج",
   "auth.signin_tab": "تسجيل الدخول",

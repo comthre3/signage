@@ -11,6 +11,7 @@
   "nav.users": "Users",
   "nav.billing": "Billing",
 
+  "auth.account_locked": "Too many failed attempts. Try again in {minutes} minutes.",
   "auth.connection": "⚙ Connection",
   "auth.signout": "Sign Out",
   "auth.signin_tab": "Sign In",
