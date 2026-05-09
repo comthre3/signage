@@ -174,3 +174,88 @@ def test_audit_user_delete_written(client, signed_up_org):
     row = _last_audit("user.delete")
     assert row is not None
     assert row["target_id"] == str(user_id)
+
+
+def test_audit_log_endpoint_returns_paginated_items(client, signed_up_org):
+    # Generate some audit rows by performing actions
+    for _ in range(3):
+        client.post("/auth/login", json={
+            "username": signed_up_org["user"]["username"],
+            "password": "WrongPass-9999",
+        })
+    r = client.get("/audit-log?limit=2", headers=_bearer(signed_up_org["token"]))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "items" in body
+    assert "total" in body
+    assert body["limit"] == 2
+    assert len(body["items"]) <= 2
+
+
+def test_audit_log_endpoint_filters_by_action(client, signed_up_org):
+    client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "Khanshoof2026Test",
+    })
+    r = client.get("/audit-log?action=auth.login.success",
+                   headers=_bearer(signed_up_org["token"]))
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert all(it["action"] == "auth.login.success" for it in items)
+
+
+def test_audit_log_endpoint_filters_by_actor(client, signed_up_org):
+    actor_id = signed_up_org["user"]["id"]
+    r = client.get(f"/audit-log?actor_id={actor_id}",
+                   headers=_bearer(signed_up_org["token"]))
+    assert r.status_code == 200
+    items = r.json()["items"]
+    # All returned items must be for this actor (not None)
+    for it in items:
+        assert (it.get("actor") or {}).get("id") == actor_id
+
+
+def test_audit_log_endpoint_filters_by_date(client, signed_up_org):
+    r = client.get("/audit-log?since=2030-01-01T00:00:00Z",
+                   headers=_bearer(signed_up_org["token"]))
+    assert r.status_code == 200
+    assert r.json()["items"] == []
+
+
+def test_audit_log_endpoint_forbidden_for_viewer(client, signed_up_org):
+    # Create a viewer user; log in as them.
+    import uuid
+    suffix = uuid.uuid4().hex[:8]
+    r = client.post(
+        "/users",
+        headers=_bearer(signed_up_org["token"]),
+        json={"username": f"viewer-{suffix}@example.com",
+              "password": "Khanshoof2026Pass6", "role": "viewer"},
+    )
+    assert r.status_code in (200, 201), r.text
+    r = client.post("/auth/login", json={
+        "username": f"viewer-{suffix}@example.com",
+        "password": "Khanshoof2026Pass6",
+    })
+    viewer_token = r.json()["token"]
+    r = client.get("/audit-log", headers=_bearer(viewer_token))
+    assert r.status_code == 403
+
+
+def test_audit_log_item_shape(client, signed_up_org):
+    # Generate at least one row
+    client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "Khanshoof2026Test",
+    })
+    r = client.get("/audit-log?limit=1", headers=_bearer(signed_up_org["token"]))
+    body = r.json()
+    if body["items"]:
+        it = body["items"][0]
+        assert "id" in it
+        assert "created_at" in it
+        assert "action" in it
+        assert "actor" in it
+        assert "target" in it
+        assert "ip" in it
+        assert "details" in it

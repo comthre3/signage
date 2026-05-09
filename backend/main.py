@@ -1130,6 +1130,84 @@ def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
     return rows
 
 
+@app.get("/audit-log")
+def get_audit_log(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    action: Optional[str] = None,
+    actor_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    user: dict = Depends(require_roles("admin")),
+) -> dict:
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    where = ["organization_id = ?"]
+    params: list = [org_id(user)]
+    if action:
+        where.append("action = ?")
+        params.append(action)
+    if actor_id is not None:
+        where.append("actor_user_id = ?")
+        params.append(actor_id)
+    if since:
+        where.append("created_at >= ?")
+        params.append(since)
+    if until:
+        where.append("created_at <= ?")
+        params.append(until)
+    where_sql = " AND ".join(where)
+
+    total_row = query_one(
+        f"SELECT COUNT(*) AS n FROM audit_log WHERE {where_sql}",
+        tuple(params),
+    )
+    total = int(total_row["n"]) if total_row else 0
+
+    rows = query_all(
+        f"""
+        SELECT id, organization_id, actor_user_id, actor_username, action,
+               target_type, target_id, ip, user_agent, details, created_at
+        FROM audit_log
+        WHERE {where_sql}
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        """,
+        tuple(params) + (limit, offset),
+    )
+
+    items = []
+    for r in rows:
+        details = r["details"]
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except Exception:
+                pass
+        items.append({
+            "id": r["id"],
+            "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else r["created_at"],
+            "actor": (
+                {"id": r["actor_user_id"], "username": r["actor_username"]}
+                if r["actor_user_id"] is not None or r["actor_username"]
+                else None
+            ),
+            "action": r["action"],
+            "target": (
+                {"type": r["target_type"], "id": r["target_id"]}
+                if r["target_type"] or r["target_id"]
+                else None
+            ),
+            "ip": r["ip"],
+            "user_agent": r["user_agent"],
+            "details": details,
+        })
+
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
 @app.post("/users")
 def create_user(request: Request, payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
