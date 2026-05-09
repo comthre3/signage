@@ -310,5 +310,25 @@
   "screens.resolution_2k": "2K (2560×1440)",
   "screens.resolution_4k_uhd": "4K UHD (3840×2160)",
   "screens.resolution_4k_dci": "4K DCI (4096×2160)",
-  "nav.lang_toggle_aria": "Switch language"
+  "nav.lang_toggle_aria": "Switch language",
+
+  "nav.audit_log": "Audit log",
+  "audit_log.title": "Audit log",
+  "audit_log.filter.action": "Action",
+  "audit_log.filter.actor": "Actor",
+  "audit_log.filter.since": "Since",
+  "audit_log.filter.until": "Until",
+  "audit_log.filter.all": "All",
+  "audit_log.filter.apply": "Apply",
+  "audit_log.col.when": "When",
+  "audit_log.col.who": "Who",
+  "audit_log.col.action": "Action",
+  "audit_log.col.target": "Target",
+  "audit_log.col.ip": "IP",
+  "audit_log.col.details": "Details",
+  "audit_log.pagination.newer": "← Newer",
+  "audit_log.pagination.older": "Older →",
+  "audit_log.pagination.info": "{start}–{end} of {total}",
+  "audit_log.empty": "No audit events match these filters.",
+  "audit_log.error.fetch": "Failed to load audit log."
 }

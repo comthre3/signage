@@ -310,5 +310,25 @@
   "screens.resolution_2k": "2K (2560×1440)",
   "screens.resolution_4k_uhd": "4K UHD (3840×2160)",
   "screens.resolution_4k_dci": "4K DCI (4096×2160)",
-  "nav.lang_toggle_aria": "تبديل اللغة"
+  "nav.lang_toggle_aria": "تبديل اللغة",
+
+  "nav.audit_log": "سجل التدقيق",
+  "audit_log.title": "سجل التدقيق",
+  "audit_log.filter.action": "الإجراء",
+  "audit_log.filter.actor": "المنفذ",
+  "audit_log.filter.since": "من",
+  "audit_log.filter.until": "إلى",
+  "audit_log.filter.all": "الكل",
+  "audit_log.filter.apply": "تطبيق",
+  "audit_log.col.when": "متى",
+  "audit_log.col.who": "من",
+  "audit_log.col.action": "الإجراء",
+  "audit_log.col.target": "الهدف",
+  "audit_log.col.ip": "عنوان IP",
+  "audit_log.col.details": "التفاصيل",
+  "audit_log.pagination.newer": "← الأحدث",
+  "audit_log.pagination.older": "الأقدم →",
+  "audit_log.pagination.info": "{start}–{end} من {total}",
+  "audit_log.empty": "لا توجد أحداث تطابق المرشحات.",
+  "audit_log.error.fetch": "تعذّر تحميل سجل التدقيق."
 }
