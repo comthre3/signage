@@ -84,6 +84,7 @@
             Email verified. Set a password to finish creating your account.
           </div>
           <input type="password" id="signup-new-password"     placeholder="Password (min 8, letters + numbers)" data-i18n-placeholder="auth.new_password" required autocomplete="new-password" minlength="8" />
+          <small class="password-hint" data-i18n="password.strength_hint">Use at least 12 characters with upper case, lower case, and a number.</small>
           <input type="password" id="signup-confirm-password" placeholder="Confirm password"                    data-i18n-placeholder="auth.confirm_password" required autocomplete="new-password" minlength="8" />
           <button type="submit" data-i18n="auth.create_account">Create Account</button>
           <div class="helper-text" data-i18n="auth.starter_trial_note">
@@ -358,6 +359,7 @@
           <form id="user-form">
             <input type="text"     id="user-username" placeholder="Username" data-i18n-placeholder="users.username_placeholder" required dir="auto" />
             <input type="password" id="user-password" placeholder="Password" data-i18n-placeholder="users.password_placeholder" required />
+            <small class="password-hint" data-i18n="password.strength_hint">Use at least 12 characters with upper case, lower case, and a number.</small>
             <select id="user-role">
               <option value="viewer" data-i18n="users.role_viewer">Viewer</option>
               <option value="editor" data-i18n="users.role_editor">Editor</option>

@@ -2263,3 +2263,10 @@ code, kbd, samp, pre,
   padding: 12px 18px;
   border-top: 1px solid var(--border, #e9ddc6);
 }
+
+.password-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted, #8b6f5e);
+}
