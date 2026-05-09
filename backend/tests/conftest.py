@@ -23,7 +23,7 @@ def unique_business() -> dict:
     return {
         "business_name": f"Test Biz {suffix}",
         "email": f"owner-{suffix}@example.com",
-        "password": "testpass1",
+        "password": "Khanshoof2026Test",
     }
 
 
