@@ -1,5 +1,6 @@
 """Tests for the audit() helper and the audit_log table writes."""
 import json
+import uuid
 from unittest.mock import patch
 
 import pytest
@@ -65,3 +66,111 @@ def test_audit_helper_handles_no_actor():
     assert row is not None
     assert row["actor_user_id"] is None
     assert row["actor_username"] is None
+
+
+# ── Per-action integration tests (Phase 2.5c §5.6) ────────────────────
+
+
+def _bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _last_audit(action):
+    return query_one(
+        "SELECT * FROM audit_log WHERE action = ? ORDER BY id DESC LIMIT 1",
+        (action,),
+    )
+
+
+def test_audit_login_success_written(client, signed_up_org):
+    r = client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "Khanshoof2026Test",
+    })
+    assert r.status_code == 200
+    row = _last_audit("auth.login.success")
+    assert row is not None
+    assert row["actor_username"] == signed_up_org["user"]["username"]
+
+
+def test_audit_login_failure_invalid_credentials(client, signed_up_org):
+    client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "WrongPass-9999",
+    })
+    row = _last_audit("auth.login.failure")
+    assert row is not None
+    details = row["details"]
+    if isinstance(details, str):
+        details = json.loads(details)
+    assert details.get("reason") == "invalid_credentials"
+
+
+def test_audit_logout_written(client, signed_up_org):
+    r = client.post("/auth/logout", headers=_bearer(signed_up_org["token"]))
+    assert r.status_code == 200, r.text
+    row = _last_audit("auth.logout")
+    assert row is not None
+    assert row["actor_user_id"] == signed_up_org["user"]["id"]
+
+
+def test_audit_password_change_written(client, signed_up_org):
+    r = client.post(
+        "/auth/change-password",
+        headers=_bearer(signed_up_org["token"]),
+        json={"current_password": "Khanshoof2026Test",
+              "new_password": "Khanshoof2026Pass2"},
+    )
+    assert r.status_code == 200, r.text
+    row = _last_audit("auth.password_change")
+    assert row is not None
+    assert row["actor_user_id"] == signed_up_org["user"]["id"]
+
+
+def test_audit_user_create_written(client, signed_up_org):
+    username = f"newuser-{uuid.uuid4().hex[:8]}@example.com"
+    r = client.post(
+        "/users",
+        headers=_bearer(signed_up_org["token"]),
+        json={"username": username,
+              "password": "Khanshoof2026Pass3",
+              "role": "editor"},
+    )
+    assert r.status_code in (200, 201), r.text
+    row = _last_audit("user.create")
+    assert row is not None
+    assert row["target_type"] == "user"
+    details = row["details"]
+    if isinstance(details, str):
+        details = json.loads(details)
+    assert details.get("username") == username
+    assert details.get("role") == "editor"
+
+
+def test_audit_user_update_written(client, signed_up_org):
+    username = f"tomod-{uuid.uuid4().hex[:8]}@example.com"
+    r = client.post("/users", headers=_bearer(signed_up_org["token"]),
+                    json={"username": username,
+                          "password": "Khanshoof2026Pass4", "role": "viewer"})
+    assert r.status_code in (200, 201), r.text
+    user_id = r.json()["id"]
+    r = client.put(f"/users/{user_id}", headers=_bearer(signed_up_org["token"]),
+                   json={"role": "editor"})
+    assert r.status_code == 200, r.text
+    row = _last_audit("user.update")
+    assert row is not None
+    assert row["target_id"] == str(user_id)
+
+
+def test_audit_user_delete_written(client, signed_up_org):
+    username = f"todel-{uuid.uuid4().hex[:8]}@example.com"
+    r = client.post("/users", headers=_bearer(signed_up_org["token"]),
+                    json={"username": username,
+                          "password": "Khanshoof2026Pass5", "role": "viewer"})
+    assert r.status_code in (200, 201), r.text
+    user_id = r.json()["id"]
+    r = client.delete(f"/users/{user_id}", headers=_bearer(signed_up_org["token"]))
+    assert r.status_code in (200, 204), r.text
+    row = _last_audit("user.delete")
+    assert row is not None
+    assert row["target_id"] == str(user_id)

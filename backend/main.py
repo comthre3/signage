@@ -1074,14 +1074,15 @@ def login(request: Request, payload: LoginRequest) -> dict:
 
 
 @app.post("/auth/logout")
-def logout(user: dict = Depends(get_current_user)) -> dict:
+def logout(request: Request, user: dict = Depends(get_current_user)) -> dict:
     execute("DELETE FROM sessions WHERE token = ?", (user["token"],))
+    audit(request, action="auth.logout", actor=user)
     return {"status": "logged_out"}
 
 
 @app.post("/auth/change-password")
 def change_password(
-    payload: ChangePasswordRequest, user: dict = Depends(get_current_user)
+    request: Request, payload: ChangePasswordRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     db_user = query_one("SELECT * FROM users WHERE id = ?", (user["id"],))
     if not db_user or not verify_password(payload.current_password, db_user["password_hash"]):
@@ -1092,6 +1093,7 @@ def change_password(
         (hash_password(payload.new_password), user["id"]),
     )
     execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+    audit(request, action="auth.password_change", actor=user)
     return {"status": "password_changed"}
 
 
@@ -1129,7 +1131,7 @@ def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
 
 
 @app.post("/users")
-def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
+def create_user(request: Request, payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
         raise http_error(400, "username_taken", "Username already exists")
     if payload.role not in ROLE_LEVELS:
@@ -1152,11 +1154,14 @@ def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin")
     )
     created["is_admin"] = bool(created["is_admin"])
     created["role"] = created.get("role") or ("admin" if created["is_admin"] else "viewer")
+    audit(request, action="user.create", actor=user,
+          target_type="user", target_id=created["id"],
+          details={"username": created["username"], "role": created["role"]})
     return created
 
 
 @app.put("/users/{user_id}")
-def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
+def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
     target = query_one(
         "SELECT * FROM users WHERE id = ? AND organization_id = ?",
         (user_id, org_id(user)),
@@ -1182,11 +1187,19 @@ def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_
     )
     updated["is_admin"] = bool(updated["is_admin"])
     updated["role"] = updated.get("role") or ("admin" if updated["is_admin"] else "viewer")
+    after_role = payload.role if payload.role is not None else (target.get("role") if target else None)
+    audit(request, action="user.update", actor=user,
+          target_type="user", target_id=user_id,
+          details={
+              "before": {"role": target.get("role") if target else None},
+              "after":  {"role": after_role},
+              "password_changed": bool(payload.password),
+          })
     return updated
 
 
 @app.delete("/users/{user_id}")
-def delete_user(user_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_user(request: Request, user_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
     target = query_one(
         "SELECT * FROM users WHERE id = ? AND organization_id = ?",
         (user_id, org_id(user)),
@@ -1195,6 +1208,9 @@ def delete_user(user_id: int, user: dict = Depends(require_roles("admin"))) -> d
         raise HTTPException(status_code=404, detail="User not found")
     execute("DELETE FROM users WHERE id = ?", (user_id,))
     execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    audit(request, action="user.delete", actor=user,
+          target_type="user", target_id=user_id,
+          details={"username": (target or {}).get("username")})
     return {"status": "deleted"}
 
 
@@ -1377,7 +1393,7 @@ def update_screen(
 
 
 @app.delete("/screens/{screen_id}")
-def delete_screen(screen_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_screen(request: Request, screen_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
         (screen_id, org_id(user)),
@@ -1385,6 +1401,9 @@ def delete_screen(screen_id: int, user: dict = Depends(require_roles("admin"))) 
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     execute("DELETE FROM screens WHERE id = ?", (screen_id,))
+    audit(request, action="screen.unpair", actor=user,
+          target_type="screen", target_id=screen_id,
+          details={"screen_name": (screen or {}).get("name")})
     return {"status": "deleted"}
 
 
@@ -1873,7 +1892,7 @@ def claim_pair_code(
 
 
 @app.post("/screens/pair")
-def pair_screen(payload: PairRequest) -> dict:
+def pair_screen(request: Request, payload: PairRequest) -> dict:
     screen = query_one("SELECT * FROM screens WHERE pair_code = ?", (payload.pair_code,))
     if not screen:
         raise HTTPException(status_code=404, detail="Pairing code not found")
@@ -1884,6 +1903,9 @@ def pair_screen(payload: PairRequest) -> dict:
     response = sanitize_screen(screen)
     response["token"] = screen["token"]
     response["is_online"] = True
+    audit(request, action="screen.pair", actor=None,
+          target_type="screen", target_id=screen["id"],
+          details={"screen_name": screen.get("name"), "site_id": screen.get("site_id")})
     return response
 
 
@@ -1929,7 +1951,7 @@ def _validate_spanned_fields(payload: WallCreate) -> None:
 
 
 @app.post("/walls", status_code=201)
-def create_wall(payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def create_wall(request: Request, payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
     if payload.mode == "spanned":
         _validate_spanned_fields(payload)
     elif payload.mode == "mirrored":
@@ -1980,6 +2002,10 @@ def create_wall(payload: WallCreate, user: dict = Depends(require_roles("admin",
                 (wall_id, r, c, now),
             )
     wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    audit(request, action="wall.create", actor=user,
+          target_type="wall", target_id=wall_id,
+          details={"name": payload.name, "mode": payload.mode,
+                   "rows": payload.rows, "cols": payload.cols})
     return serialize_wall(wall)
 
 
@@ -2071,12 +2097,15 @@ def patch_wall_cell(wall_id: int, payload: WallCellUpdate,
 
 
 @app.delete("/walls/{wall_id}", status_code=204)
-def delete_wall(wall_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> None:
+def delete_wall(request: Request, wall_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> None:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
                      (wall_id, org_id(user)))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall not found")
     execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+    audit(request, action="wall.delete", actor=user,
+          target_type="wall", target_id=wall_id,
+          details={"name": (wall or {}).get("name")})
     return None
 
 
@@ -2774,6 +2803,8 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
             """,
             (body.result, body.tranid, body.ref, body.paymentID, trackid),
         )
+        old_plan_row = query_one("SELECT plan FROM organizations WHERE id = ?", (row["organization_id"],))
+        old_plan = old_plan_row["plan"] if old_plan_row else None
         execute(
             """
             UPDATE organizations
@@ -2786,6 +2817,10 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
             """,
             (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], term * TERM_DAYS, row["organization_id"]),
         )
+        audit(request, action="billing.plan_change",
+              actor=None, organization_id=row["organization_id"],
+              target_type="organization", target_id=row["organization_id"],
+              details={"from_plan": old_plan, "to_plan": row["tier"], "term_months": term})
     else:
         execute(
             """
