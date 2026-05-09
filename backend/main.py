@@ -221,10 +221,45 @@ def _client_ip(request) -> str | None:
     return (request.client.host if request.client else None) or None
 
 
-def audit(request, *, action, actor=None, target_type=None, target_id=None,
-          details=None, organization_id=None) -> None:
-    """Stub — full implementation in Task 6 (audit log)."""
-    return None
+def audit(
+    request,
+    *,
+    action: str,
+    actor: dict | None = None,
+    target_type: str | None = None,
+    target_id=None,
+    details: dict | None = None,
+    organization_id: int | None = None,
+) -> None:
+    """Best-effort audit-log write. Never raises — only logs warnings."""
+    try:
+        ip = _client_ip(request) if request is not None else None
+        ua = (request.headers.get("user-agent") if request is not None else None) or None
+        org_id = organization_id
+        if org_id is None and actor:
+            org_id = actor.get("organization_id")
+        execute(
+            """
+            INSERT INTO audit_log
+              (organization_id, actor_user_id, actor_username, action,
+               target_type, target_id, ip, user_agent, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                org_id,
+                actor.get("id") if actor else None,
+                actor.get("username") if actor else None,
+                action,
+                target_type,
+                str(target_id) if target_id is not None else None,
+                ip,
+                ua,
+                json.dumps(details) if details is not None else None,
+                utc_now_iso(),
+            ),
+        )
+    except Exception as exc:
+        logger.warning("audit_failed action=%s err=%s", action, exc)
 
 
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
