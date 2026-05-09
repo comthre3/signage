@@ -16,7 +16,13 @@
 ## Working Conventions (read before starting any task)
 
 1. Each task ends with a commit. Subject prefix `feat(sec):` or `test(sec):` or `fix(sec):`.
-2. Backend tests run via `docker-compose exec backend pytest -xvs <path>`. The container needs to be running and built fresh (`docker-compose build backend && docker-compose up -d backend`).
+2. Backend tests run via:
+   ```bash
+   docker-compose exec -T -e DEV_MODE=1 -e RATE_LIMITS_ENABLED=0 \
+     -e NIUPAY_CALLBACK_SECRET=test_q -e BILLING_WEBHOOK_SECRET=test_h \
+     backend pytest -xvs <path>
+   ```
+   These four env vars are required: `DEV_MODE=1` enables `dev_otp` in signup responses (the `signed_up_org` fixture depends on this); `RATE_LIMITS_ENABLED=0` lets the suite hammer `/auth/login` without hitting the slowapi 10/5min cap; the two billing secrets satisfy webhook auth in test setup. Without them, the suite drops to ~110 passing with the rest erroring on missing fixtures. The container itself must be built fresh after backend code changes (`docker-compose build backend && docker-compose up -d --force-recreate backend`); restarting alone (`docker-compose restart backend`) only picks up changes if the source is mounted (it is, but a restart still helps when adding new modules).
 3. The `db.py` query helpers (`execute`, `query_one`, `query_all`) use `?` placeholders that get translated to `%s` for psycopg. Always use `?` in SQL.
 4. Errors thrown by endpoints use `raise http_error(status, code, message)`, not `raise HTTPException(...)`. The frontend localizes via `code` (i.e. `message_key`).
 5. Tests use the `signed_up_org` fixture (via `conftest.py`). It signs up, verifies OTP, completes signup, returns `{token, org, user}`. Several tests depend on this fixture working — Task 1 ensures it still works under the new policy.
