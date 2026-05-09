@@ -155,3 +155,93 @@ def test_audit_log_table_exists():
         ("audit_log", "action"),
     )
     assert row is not None
+
+
+# ── Password policy (Phase 2.5c) ──────────────────────────────────────
+from unittest.mock import patch
+
+
+def _signup_through_otp(client, business):
+    """Helper: signup → verify OTP → returns verification_token."""
+    r = client.post("/auth/signup/request",
+                    json={"business_name": business["business_name"],
+                          "email": business["email"]})
+    assert r.status_code == 200, r.text
+    otp = r.json()["dev_otp"]
+    r = client.post("/auth/signup/verify",
+                    json={"email": business["email"], "otp": otp})
+    assert r.status_code == 200, r.text
+    return r.json()["verification_token"]
+
+
+def test_signup_rejects_password_too_short(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "Aa1aaaaaaa"})  # 10 chars
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_too_short"
+
+
+def test_signup_rejects_password_no_lowercase(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "ABCDEFGH1234"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_no_lowercase"
+
+
+def test_signup_rejects_password_no_uppercase(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "abcdefgh1234"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_no_uppercase"
+
+
+def test_signup_rejects_password_no_digit(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "Abcdefghijkl"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_no_number"
+
+
+def test_signup_rejects_breached_password(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    pw = "AbcDefGhi123"
+    import hashlib
+    suffix = hashlib.sha1(pw.encode()).hexdigest().upper()[5:]
+    fake_body = f"{suffix}:99\n"
+    fake = patch("hibp.requests.get").start()
+    fake.return_value.text = fake_body
+    fake.return_value.raise_for_status = lambda: None
+    try:
+        r = client.post("/auth/signup/complete",
+                        json={"verification_token": vt, "password": pw})
+    finally:
+        patch.stopall()
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_breached"
+
+
+def test_signup_accepts_compliant_password(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    fake = patch("hibp.requests.get").start()
+    fake.return_value.text = ""
+    fake.return_value.raise_for_status = lambda: None
+    try:
+        r = client.post("/auth/signup/complete",
+                        json={"verification_token": vt, "password": "Khanshoof2026Pass"})
+    finally:
+        patch.stopall()
+    assert r.status_code == 200, r.text
+
+
+def test_login_still_works_for_existing_user_with_legacy_password(client, signed_up_org):
+    # signed_up_org's fixture password is policy-compliant; the test
+    # verifies that AUTH on existing accounts does NOT re-run validate_password.
+    r = client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "Khanshoof2026Test",
+    })
+    assert r.status_code == 200, r.text

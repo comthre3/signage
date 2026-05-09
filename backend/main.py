@@ -24,6 +24,7 @@ from slowapi.util import get_remote_address
 
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
+from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
 from walls import attach_walls
 
@@ -318,13 +319,35 @@ def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
     return amount_kwd, amount_usd
 
 
+PASSWORD_MIN_LENGTH = 12
+
+
 def validate_password(password: str) -> None:
-    if len(password) < 8:
-        raise http_error(400, "password_too_short", "Password must be at least 8 characters")
-    if not re.search(r"[A-Za-z]", password):
-        raise http_error(400, "password_no_letter", "Password must include a letter")
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise http_error(
+            400, "password_too_short",
+            f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
+        )
+    if not re.search(r"[a-z]", password):
+        raise http_error(
+            400, "password_no_lowercase",
+            "Password must include a lowercase letter",
+        )
+    if not re.search(r"[A-Z]", password):
+        raise http_error(
+            400, "password_no_uppercase",
+            "Password must include an uppercase letter",
+        )
     if not re.search(r"\d", password):
-        raise http_error(400, "password_no_number", "Password must include a number")
+        raise http_error(
+            400, "password_no_number",
+            "Password must include a number",
+        )
+    if check_hibp_breach(password):
+        raise http_error(
+            400, "password_breached",
+            "This password has appeared in known data breaches. Choose a different one.",
+        )
 
 
 def is_online(last_seen: Optional[str]) -> bool:
