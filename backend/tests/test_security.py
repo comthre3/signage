@@ -133,3 +133,25 @@ def test_dev_otp_blocked_with_cf_connecting_ip(client: TestClient, unique_busine
 # ── login rate limit ─────────────────────────────────────────────────
 # Note: requires RATE_LIMITS_ENABLED=1 to actually trigger; covered live
 # rather than here so the rest of the suite can run with limits off.
+
+
+# ── New tables (Phase 2.5c) ───────────────────────────────────────────
+
+def test_login_attempts_table_exists():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("login_attempts", "username"),
+    )
+    assert row is not None
+
+
+def test_audit_log_table_exists():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("audit_log", "action"),
+    )
+    assert row is not None
