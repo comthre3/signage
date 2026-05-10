@@ -73,6 +73,7 @@ function clearZonePlayback() {
 }
 
 function showPairingView() {
+  ConnectionStatus.hide();
   contentEl.classList.add("hidden");
   zonesEl.classList.add("hidden");
   pairingEl.classList.remove("hidden");
@@ -80,6 +81,8 @@ function showPairingView() {
 }
 
 function hidePairingView() {
+  ConnectionStatus.show();
+  ConnectionStatus.start();
   pairingEl.classList.add("hidden");
   contentEl.classList.remove("hidden");
   statusEl.style.display = "";
@@ -291,6 +294,8 @@ function startZonePlayback(zoneIndex, zone, container) {
 function renderZonesLayout(zones) {
   zonesEl.innerHTML = "";
   zonesEl.classList.remove("hidden");
+  ConnectionStatus.show();
+  ConnectionStatus.start();
   contentEl.classList.add("hidden");
   clearZonePlayback();
   zones.forEach((zone, index) => {
@@ -379,6 +384,7 @@ async function fetchContent() {
     return renderContentData(data);
   }
   const data = await res.json();
+  ConnectionStatus.markFrame();
   localStorage.setItem(getCacheKey("content"), JSON.stringify(data));
   prefetchPlaylistMedia(data.items);   // fire and forget
   return renderContentData(data);
@@ -416,6 +422,7 @@ async function fetchLayout() {
     return cached ? JSON.parse(cached) : null;
   }
   const data = await res.json();
+  ConnectionStatus.markFrame();
   localStorage.setItem(getCacheKey("layout"), JSON.stringify(data));
   const zoneItems = ((data && data.zones) || []).flatMap(z => z.items || []);
   prefetchPlaylistMedia(zoneItems);   // fire and forget
@@ -574,15 +581,19 @@ function openWallSocket() {
   wallSocket = new WebSocket(url);
 
   wallSocket.addEventListener("open", () => {
+    ConnectionStatus.setWs("open");
+    ConnectionStatus.markFrame();
     wallReconnectAttempts = 0;
   });
   wallSocket.addEventListener("message", (ev) => {
+    ConnectionStatus.markFrame();
     let frame;
     try { frame = JSON.parse(ev.data); } catch (_) { return; }
     onWallFrame(frame);
   });
   wallSocket.addEventListener("close", () => {
     setStatus(Khan.t("wall.reconnecting", "Reconnecting to wall…"));
+    ConnectionStatus.setWs("closed");
     const delay = WALL_RECONNECT_BACKOFF_MS[
       Math.min(wallReconnectAttempts, WALL_RECONNECT_BACKOFF_MS.length - 1)
     ];
@@ -793,3 +804,39 @@ if (langToggle) {
     Khan.applyTranslations();
   });
 }
+
+// ── Connection indicator (Phase 2.5d) ─────────────────────────────────
+const ConnectionStatus = (() => {
+  let lastFrameAt = 0;     // Date.now() of last successful WS frame OR API success
+  let wsState = "closed";  // "open" | "connecting" | "closed"
+  let timer = null;
+  const dot = () => document.getElementById("connection-indicator");
+
+  function markFrame() { lastFrameAt = Date.now(); }
+  function setWs(s)    { wsState = s; }
+
+  function compute() {
+    const ageMs = Date.now() - lastFrameAt;
+    if (wsState === "open" && ageMs < 30_000)     return "green";
+    if (wsState === "open" && ageMs < 5 * 60_000) return "amber";
+    if (wsState === "connecting")                 return "amber";
+    if (ageMs > 30_000)                           return "red";
+    return "amber";
+  }
+
+  function render() {
+    const el = dot(); if (!el) return;
+    el.classList.remove("conn-green", "conn-amber", "conn-red");
+    el.classList.add(`conn-${compute()}`);
+  }
+
+  function show() { dot()?.classList.remove("hidden"); render(); }
+  function hide() { dot()?.classList.add("hidden"); }
+
+  function start() {
+    if (timer) return;
+    timer = setInterval(render, 5_000);
+  }
+
+  return { show, hide, markFrame, setWs, start };
+})();
