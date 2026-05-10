@@ -1,5 +1,22 @@
-const CACHE_NAME = "signage-player-v1";
-const ASSETS = ["/", "/index.html", "/player.js", "/styles.css", "/config.js"];
+const PLAYER_VERSION = "__PLAYER_VERSION__";
+const CACHE_NAME = `signage-player-${PLAYER_VERSION}`;
+const ASSETS = [
+  "/",
+  "/index.html",
+  "/player.js",
+  "/styles.css",
+  "/config.js",
+  "/i18n.js",
+  "/i18n/en.json",
+  "/i18n/ar.json",
+  "/vendor/qrcode.js",
+  "/assets/faces/v1_smile.png",
+  "/assets/faces/v1_wink.png",
+  "/assets/faces/v1_kawaii.png",
+  "/assets/faces/v1_heart.png",
+  "/assets/faces/v1_star.png",
+  "/assets/faces/v1_big.png",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
