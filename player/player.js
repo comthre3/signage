@@ -343,6 +343,23 @@ async function handleAuthFailure() {
   await startPairingFlow();
 }
 
+function prefetchPlaylistMedia(items) {
+  // Sequential, low-priority. Fire-and-forget — caller does NOT await.
+  // Each fetch is no-cors so the cross-origin /uploads/ response is opaque
+  // (good enough for the SW to cache and good enough for <img>/<video> to render).
+  return (async () => {
+    for (const item of items || []) {
+      const url = item && item.url;
+      if (!url) continue;
+      try {
+        await fetch(url, { mode: "no-cors", cache: "no-store" });
+      } catch (_) {
+        /* offline or 404 — swallow */
+      }
+    }
+  })();
+}
+
 async function fetchContent() {
   if (!screenToken && !previewToken) return;
   const endpoint = previewToken
@@ -363,6 +380,7 @@ async function fetchContent() {
   }
   const data = await res.json();
   localStorage.setItem(getCacheKey("content"), JSON.stringify(data));
+  prefetchPlaylistMedia(data.items);   // fire and forget
   return renderContentData(data);
 }
 
@@ -399,6 +417,8 @@ async function fetchLayout() {
   }
   const data = await res.json();
   localStorage.setItem(getCacheKey("layout"), JSON.stringify(data));
+  const zoneItems = ((data && data.zones) || []).flatMap(z => z.items || []);
+  prefetchPlaylistMedia(zoneItems);   // fire and forget
   return data;
 }
 
