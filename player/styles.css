@@ -305,3 +305,20 @@ code, kbd, samp, pre,
 .player-lang-toggle:hover {
   background: rgba(0, 0, 0, 0.7);
 }
+
+/* Phase 2.5d — connection indicator */
+.conn-dot {
+  position: fixed;
+  inset-block-start: 12px;
+  inset-inline-end: 12px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  z-index: 5;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25);
+  transition: background 200ms ease;
+}
+.conn-green { background: #5fc26b; }
+.conn-amber { background: #d8a23a; }
+.conn-red   { background: #c84a4a; }
+.conn-dot.hidden { display: none; }

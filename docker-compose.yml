@@ -54,7 +54,10 @@ services:
       retries: 3
 
   player:
-    build: ./player
+    build:
+      context: ./player
+      args:
+        PLAYER_VERSION: ${PLAYER_VERSION:-dev}
     ports:
       - "3001:80"
     depends_on:
