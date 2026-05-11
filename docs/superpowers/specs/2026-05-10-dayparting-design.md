@@ -22,7 +22,7 @@ Multi-location chains can define a named, reusable Schedule (e.g., "Standard Day
 
 1. **Granularity:** time-of-day + day-of-week. No date ranges, no per-day exceptions in v1.
 2. **Timezone:** per-site (`sites.timezone`, default `Asia/Kuwait`). IANA tz name.
-3. **Resolution:** server-side + 60s WS-push tick.
+3. **Resolution:** server-side, evaluated lazily at each `/screens/{token}/content` request. Player's existing 15s polling loop picks up boundary crossings with at-most 15s lag. No tick task, no WS push (see §7 — the codebase has no per-screen WS broadcast).
 4. **Fallback:** `screens.playlist_id` (existing default) when no rule matches.
 5. **Schedule model:** reusable `schedules` table + `schedule_rules`, attached via `screens.schedule_id`.
 6. **Overlap policy:** rules within the same schedule cannot overlap on any (day, time) combo. 422 at create/update.
@@ -155,43 +155,17 @@ def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
 
 Replace `screen.get("playlist_id")` with `resolve_active_playlist(screen)`. Everything downstream (querying playlist_items, building URLs, returning JSON) is unchanged.
 
-## 7. Component C — Boundary Tick
+## 7. Component C — Boundary Propagation (revised: pull-based)
 
-Single asyncio task started at app startup. Runs forever.
+**Discovery during plan writing:** the codebase has no per-screen WS broadcast helper. WebSocket infrastructure exists only for **wall-cell screens** (`backend/walls.py`). Standalone (non-wall) screens — the bulk of deployed players — already use a 15-second polling loop in `player.js::startRefreshLoop()` that calls `fetchContent` / `fetchLayout`.
 
-```python
-SCHEDULE_TICK_SECONDS = 60
+That polling loop is enough. Once the resolver lives in `build_screen_payload()`, every 15s poll automatically reflects the current scheduled playlist. Worst-case lag at a boundary is 15s — actually better than the 60s tick originally specified, and zero new server-side code.
 
-async def _schedule_boundary_tick():
-    last_seen: dict[int, Optional[int]] = {}
-    while True:
-        await asyncio.sleep(SCHEDULE_TICK_SECONDS)
-        try:
-            screens = query_all(
-                "SELECT id, organization_id, schedule_id, playlist_id, site_id "
-                "FROM screens WHERE schedule_id IS NOT NULL"
-            )
-            for s in screens:
-                current = resolve_active_playlist(s)
-                if last_seen.get(s["id"], "uninit") != current:
-                    last_seen[s["id"]] = current
-                    await broadcast_to_screen(s["id"], {"type": "playlist_change"})
-        except Exception as exc:
-            logger.warning("schedule_tick_failed: %s", exc)
+**Wall-cell screens:** out of scope for v1 dayparting. Walls have their own playlist model (`walls.canvas_playlist_id`, `wall.mirrored_playlist_id`) distinct from `screens.playlist_id`. A future phase can extend dayparting to walls if needed.
 
+**No asyncio tick task. No new broadcast helper.** All scheduling correctness comes from the resolver running at `/screens/{token}/content` time, plus the existing 15s player poll.
 
-@app.on_event("startup")
-async def _start_schedule_tick():
-    asyncio.create_task(_schedule_boundary_tick())
-```
-
-- Only walks scheduled screens — avoids work for non-scheduled.
-- `broadcast_to_screen` already exists; reusing the existing channel means no player changes.
-- `"uninit"` sentinel ensures the first tick after startup doesn't push a spurious refresh.
-- Errors are caught + logged; the task can never crash the app.
-- 60s lag at boundaries; tunable.
-
-**Multi-replica caveat:** if we ever run more than one backend replica, both run the tick → duplicate WS frames → player re-fetches twice. Wasted bandwidth, no correctness issue. Future fix: leader-elect or external scheduler. YAGNI today.
+**Multi-replica:** unaffected by this design — the resolver is stateless.
 
 ## 8. Component D — Backend CRUD
 
@@ -352,7 +326,7 @@ Listed in PR test plan body:
 | File | Change |
 |---|---|
 | `backend/db.py` | Add 2 tables + 2 indices + 2 ALTER TABLEs in `init_db()` |
-| `backend/main.py` | `_site_timezone`, `_time_in_window`, `resolve_active_playlist`, replace lookup in `build_screen_payload`, 6 schedule/rule endpoints, extend `PUT /sites` and `PUT /screens`, asyncio tick task |
+| `backend/main.py` | `_site_timezone`, `_time_in_window`, `resolve_active_playlist`, replace lookup in `build_screen_payload`, 6 schedule/rule endpoints, extend `PUT /sites` and `PUT /screens` |
 | `backend/tests/test_schedules.py` | NEW — ~25 tests |
 | `frontend/index.html` | `nav.schedules` button, `<section id="schedules">` block with list + editor views, schedule `<select>` on screen edit form, timezone `<select>` on site edit form |
 | `frontend/app.js` | `Schedules` IIFE (~250 lines), `TZ_OPTIONS` constant, wire `showSection("schedules") → Schedules.show()`, schedule picker handler in screen-edit, timezone handler in site-edit |
@@ -363,14 +337,13 @@ Listed in PR test plan body:
 
 | Failure | Behavior |
 |---|---|
-| Boundary tick task crashes | `try/except` in the loop swallows + logs warning. Task continues. App stays up. |
 | Site timezone string is invalid | `_site_timezone` falls back to `Asia/Kuwait`. Logged warning. No screen breaks. |
 | Schedule has zero rules | Resolutions all fall back to `screens.playlist_id`. Equivalent to no schedule. |
 | Rule references a deleted playlist | `ON DELETE CASCADE` removes the rule with the playlist. Resolver skips to fallback. |
 | Resolver runs at exact rule boundary | `start <= now < end` semantics. A rule ending at 11:00 doesn't match 11:00:00; the next rule starting at 11:00 does. No double-match, no gap. |
-| Backend restart mid-day | `last_seen` dict re-primes from current state; first post-restart tick pushes nothing. Player doesn't get a spurious refresh. |
-| Two backend replicas | Both push duplicate WS frames; player re-fetches twice (idempotent). Wasted bandwidth, no correctness issue. |
-| Player offline at boundary | When player reconnects, it re-fetches via `fetchContent`; backend resolver returns the now-active playlist. No special handling needed. |
+| Backend restart mid-day | Resolver is stateless — next `/content` request picks up the active rule correctly. |
+| Player offline at boundary | When player reconnects, it re-fetches via `fetchContent`; resolver returns the now-active playlist. No special handling needed. |
+| Wall-cell screens | Out of scope for v1; walls use their own playlist model. |
 
 ## 13. Migration / Rollout
 
