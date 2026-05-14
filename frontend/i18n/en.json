@@ -338,5 +338,8 @@
   "schedules.error.save": "Failed to save schedule.",
   "schedules.error.delete": "Failed to delete.",
   "toast.schedule_saved": "Schedule saved.",
-  "toast.schedule_deleted": "Schedule deleted."
+  "toast.schedule_deleted": "Schedule deleted.",
+  "site.field.timezone": "Timezone",
+  "screen.field.schedule": "Schedule",
+  "screen.schedule.none": "None — use default playlist"
 }

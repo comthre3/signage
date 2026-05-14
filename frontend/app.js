@@ -24,6 +24,26 @@ const AUTH_STORAGE_KEY = "signage_auth_token";
 let authToken   = localStorage.getItem(AUTH_STORAGE_KEY);
 let currentUser = null;
 
+/* ── Timezone helpers ─────────────────────────────────────────── */
+const TZ_OPTIONS = [
+  "Asia/Kuwait", "Asia/Riyadh", "Asia/Dubai", "Asia/Qatar",
+  "Asia/Bahrain", "Asia/Muscat", "Asia/Baghdad",
+  "Africa/Cairo", "Asia/Amman", "Asia/Beirut",
+  "UTC",
+];
+
+function populateTimezoneSelect(selectEl, currentValue) {
+  if (!selectEl) return;
+  selectEl.innerHTML = "";
+  TZ_OPTIONS.forEach(tz => {
+    const opt = document.createElement("option");
+    opt.value = tz;
+    opt.textContent = tz;
+    if (tz === currentValue) opt.selected = true;
+    selectEl.appendChild(opt);
+  });
+}
+
 /* ── Toast ───────────────────────────────────────────────────── */
 function toast(message, type = "info", duration = 3500) {
   const container = document.getElementById("toast-container");
@@ -106,7 +126,7 @@ function withLoading(btn, fn) {
 
 /* ── State ───────────────────────────────────────────────────── */
 const state = {
-  sites: [], screens: [], playlists: [], media: [], users: [], groups: [],
+  sites: [], screens: [], playlists: [], schedules: [], media: [], users: [], groups: [],
 };
 
 const zonesState = {
@@ -264,6 +284,15 @@ async function loadPlaylists() {
   renderPlaylists();
   renderPlaylistOptions();
   renderPlaylistSelect();
+}
+
+async function loadSchedules() {
+  try {
+    const body = await api("/schedules");
+    state.schedules = body.items || body || [];
+  } catch (_) {
+    state.schedules = [];
+  }
 }
 
 async function loadMedia() {
@@ -546,6 +575,11 @@ function renderScreens() {
       ...state.playlists.map((p) => `<option value="${p.id}">${escHtml(p.name)}</option>`),
     ].join("");
 
+    const scheduleOptions = [
+      `<option value="">${escHtml(Khan.t("screen.schedule.none", "None — use default playlist"))}</option>`,
+      ...(state.schedules || []).map((s) => `<option value="${s.id}">${escHtml(s.name)}</option>`),
+    ].join("");
+
     card.innerHTML = `
       <h3>${escHtml(screen.name)}</h3>
       <div class="card-meta">
@@ -559,6 +593,7 @@ function renderScreens() {
       <div><a href="${escAttr(playerUrl)}" target="_blank" rel="noreferrer">Player URL ↗</a></div>
       <div class="card-actions">
         <select data-playlist-select="${screen.id}">${playlistOptions}</select>
+        <select data-schedule-select="${screen.id}">${scheduleOptions}</select>
         <button class="save-btn"    data-save-screen="${screen.id}">Save</button>
         <button class="save-btn"    data-zones-screen="${screen.id}">Zones</button>
         <button class="access-btn"  data-access-screen="${screen.id}">Access</button>
@@ -570,10 +605,17 @@ function renderScreens() {
     const select = card.querySelector(`[data-playlist-select="${screen.id}"]`);
     select.value = screen.playlist_id || "";
 
+    const scheduleSel = card.querySelector(`[data-schedule-select="${screen.id}"]`);
+    if (scheduleSel) scheduleSel.value = screen.schedule_id || "";
+
     card.querySelector(`[data-save-screen="${screen.id}"]`).addEventListener("click", async (e) => {
       await withLoading(e.currentTarget, async () => {
         const playlistId = select.value ? Number(select.value) : null;
-        await api(`/screens/${screen.id}`, { method: "PUT", body: JSON.stringify({ playlist_id: playlistId }) });
+        const scheduleId = scheduleSel?.value ? Number(scheduleSel.value) : null;
+        await api(`/screens/${screen.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ playlist_id: playlistId, schedule_id: scheduleId }),
+        });
         toast(Khan.t("toast.screen_saved"), "success");
         await loadScreens();
       });
@@ -1040,9 +1082,16 @@ document.getElementById("site-form").addEventListener("submit", async (e) => {
   const btn  = e.target.querySelector("button[type=submit]");
   const name = document.getElementById("site-name").value.trim();
   const slug = document.getElementById("site-slug").value.trim();
+  const tz   = document.getElementById("site-timezone-select")?.value || "Asia/Kuwait";
   await withLoading(btn, async () => {
-    await api("/sites", { method: "POST", body: JSON.stringify({ name, slug: slug || null }) });
+    const created = await api("/sites", { method: "POST", body: JSON.stringify({ name, slug: slug || null }) });
+    if (tz !== "Asia/Kuwait" && created && created.id) {
+      try {
+        await api(`/sites/${created.id}`, { method: "PUT", body: JSON.stringify({ timezone: tz }) });
+      } catch (_) { /* swallow — site already exists with default tz */ }
+    }
     e.target.reset();
+    populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
     toast(Khan.t("toast.site_created"), "success");
     await loadSites();
   });
@@ -1434,7 +1483,8 @@ connectionReset?.addEventListener("click", () => {
 
 /* ── Boot ────────────────────────────────────────────────────── */
 async function bootData() {
-  await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadMedia(), loadUsers()]);
+  populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
+  await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadSchedules(), loadMedia(), loadUsers()]);
   await loadScreens();
   showSection("sites");
 }

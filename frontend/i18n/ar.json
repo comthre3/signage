@@ -338,5 +338,8 @@
   "schedules.error.save": "تعذّر حفظ الجدول.",
   "schedules.error.delete": "تعذّر الحذف.",
   "toast.schedule_saved": "تم حفظ الجدول.",
-  "toast.schedule_deleted": "تم حذف الجدول."
+  "toast.schedule_deleted": "تم حذف الجدول.",
+  "site.field.timezone": "المنطقة الزمنية",
+  "screen.field.schedule": "الجدول",
+  "screen.schedule.none": "بدون — استخدم قائمة التشغيل الافتراضية"
 }
