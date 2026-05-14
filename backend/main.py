@@ -1611,8 +1611,9 @@ def resolve_active_playlist(screen: dict) -> Optional[int]:
 def build_screen_payload(screen: dict) -> dict:
     playlist = None
     items = []
-    if screen.get("playlist_id"):
-        playlist = query_one("SELECT * FROM playlists WHERE id = ?", (screen["playlist_id"],))
+    active_playlist_id = resolve_active_playlist(screen)
+    if active_playlist_id:
+        playlist = query_one("SELECT * FROM playlists WHERE id = ?", (active_playlist_id,))
         items = query_all(
             """
             SELECT playlist_items.id, playlist_items.duration_seconds,
@@ -1623,7 +1624,7 @@ def build_screen_payload(screen: dict) -> dict:
             WHERE playlist_items.playlist_id = ?
             ORDER BY playlist_items.position ASC
             """,
-            (screen["playlist_id"],),
+            (active_playlist_id,),
         )
         for item in items:
             if item.get("mime_type") == "text/url":
