@@ -90,7 +90,7 @@ def _login_as_signed_up_org(client) -> dict:
     vt = r.json()["verification_token"]
     r = client.post(
         "/auth/signup/complete",
-        json={"verification_token": vt, "password": "testpass1"},
+        json={"verification_token": vt, "password": "Testpass2026x"},
     )
     session = r.json()
     auth = {"Authorization": f"Bearer {session['token']}"}

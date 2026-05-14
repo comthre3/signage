@@ -24,6 +24,7 @@ from slowapi.util import get_remote_address
 
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
+from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
 from walls import attach_walls
 
@@ -207,6 +208,60 @@ def http_error(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
+def _client_ip(request) -> str | None:
+    """Best-effort client IP, honoring forwarding headers from CF/nginx."""
+    if request is None:
+        return None
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip() or None
+    cf = request.headers.get("cf-connecting-ip")
+    if cf:
+        return cf.strip() or None
+    return (request.client.host if request.client else None) or None
+
+
+def audit(
+    request,
+    *,
+    action: str,
+    actor: dict | None = None,
+    target_type: str | None = None,
+    target_id=None,
+    details: dict | None = None,
+    organization_id: int | None = None,
+) -> None:
+    """Best-effort audit-log write. Never raises — only logs warnings."""
+    try:
+        ip = _client_ip(request) if request is not None else None
+        ua = (request.headers.get("user-agent") if request is not None else None) or None
+        org_id = organization_id
+        if org_id is None and actor:
+            org_id = actor.get("organization_id")
+        execute(
+            """
+            INSERT INTO audit_log
+              (organization_id, actor_user_id, actor_username, action,
+               target_type, target_id, ip, user_agent, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                org_id,
+                actor.get("id") if actor else None,
+                actor.get("username") if actor else None,
+                action,
+                target_type,
+                str(target_id) if target_id is not None else None,
+                ip,
+                ua,
+                json.dumps(details) if details is not None else None,
+                utc_now_iso(),
+            ),
+        )
+    except Exception as exc:
+        logger.warning("audit_failed action=%s err=%s", action, exc)
+
+
 OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", "600"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 OTP_RESEND_COOLDOWN_SECONDS = int(os.getenv("OTP_RESEND_COOLDOWN_SECONDS", "60"))
@@ -318,13 +373,39 @@ def _compute_amounts(tier: str, term_months: int) -> tuple[int, Decimal]:
     return amount_kwd, amount_usd
 
 
+LOGIN_LOCKOUT_WINDOW_SECONDS  = 900   # 15 minutes
+LOGIN_LOCKOUT_THRESHOLD       = 5
+LOGIN_ATTEMPTS_RETENTION_DAYS = 30
+
+PASSWORD_MIN_LENGTH = 12
+
+
 def validate_password(password: str) -> None:
-    if len(password) < 8:
-        raise http_error(400, "password_too_short", "Password must be at least 8 characters")
-    if not re.search(r"[A-Za-z]", password):
-        raise http_error(400, "password_no_letter", "Password must include a letter")
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise http_error(
+            400, "password_too_short",
+            f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
+        )
+    if not re.search(r"[a-z]", password):
+        raise http_error(
+            400, "password_no_lowercase",
+            "Password must include a lowercase letter",
+        )
+    if not re.search(r"[A-Z]", password):
+        raise http_error(
+            400, "password_no_uppercase",
+            "Password must include an uppercase letter",
+        )
     if not re.search(r"\d", password):
-        raise http_error(400, "password_no_number", "Password must include a number")
+        raise http_error(
+            400, "password_no_number",
+            "Password must include a number",
+        )
+    if check_hibp_breach(password):
+        raise http_error(
+            400, "password_breached",
+            "This password has appeared in known data breaches. Choose a different one.",
+        )
 
 
 def is_online(last_seen: Optional[str]) -> bool:
@@ -443,6 +524,10 @@ def serialize_wall(wall: dict, include_cells: bool = True) -> dict:
 def cleanup_sessions() -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SESSION_TTL_SECONDS)).isoformat()
     execute("DELETE FROM sessions WHERE COALESCE(last_used, created_at) < ?", (cutoff,))
+    execute(
+        "DELETE FROM login_attempts "
+        f"WHERE attempted_at < now() - interval '{LOGIN_ATTEMPTS_RETENTION_DAYS} days'"
+    )
 
 
 def cleanup_preview_tokens() -> None:
@@ -888,9 +973,75 @@ def patch_organization_me(
 @app.post("/auth/login")
 @limiter.limit("10/5minutes")
 def login(request: Request, payload: LoginRequest) -> dict:
+    ip = _client_ip(request)
+
+    # ── Lockout check ────────────────────────────────────────────────
+    last_success_row = query_one(
+        "SELECT MAX(attempted_at) AS ts FROM login_attempts "
+        "WHERE username = ? AND success = true",
+        (payload.username,),
+    )
+    last_success_ts = last_success_row["ts"] if last_success_row else None
+
+    if last_success_ts is not None:
+        failure_filter = (
+            "WHERE username = ? AND success = false "
+            "  AND attempted_at > now() - interval '%d seconds' "
+            "  AND attempted_at > ?" % LOGIN_LOCKOUT_WINDOW_SECONDS
+        )
+        failure_params = (payload.username, last_success_ts)
+    else:
+        failure_filter = (
+            "WHERE username = ? AND success = false "
+            "  AND attempted_at > now() - interval '%d seconds'"
+            % LOGIN_LOCKOUT_WINDOW_SECONDS
+        )
+        failure_params = (payload.username,)
+
+    failure_count_row = query_one(
+        f"SELECT COUNT(*) AS n FROM login_attempts {failure_filter}",
+        failure_params,
+    )
+    failure_count = int(failure_count_row["n"]) if failure_count_row else 0
+
+    if failure_count >= LOGIN_LOCKOUT_THRESHOLD:
+        oldest_row = query_one(
+            f"SELECT MIN(attempted_at) AS ts FROM login_attempts {failure_filter}",
+            failure_params,
+        )
+        oldest_ts = oldest_row["ts"] if oldest_row else None
+        retry_after = LOGIN_LOCKOUT_WINDOW_SECONDS
+        if oldest_ts is not None:
+            elapsed = (datetime.now(timezone.utc) - oldest_ts).total_seconds()
+            retry_after = max(0, int(LOGIN_LOCKOUT_WINDOW_SECONDS - elapsed))
+        audit(request, action="auth.login.failure", actor=None,
+              details={"reason": "account_locked", "username": payload.username})
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "account_locked",
+                "message": "Too many failed login attempts. Try again later.",
+                "message_key": "auth.account_locked",
+                "retry_after_seconds": int(retry_after),
+            },
+        )
+
+    # ── Verify password ──────────────────────────────────────────────
     user = query_one("SELECT * FROM users WHERE username = ?", (payload.username,))
-    if not user or not verify_password(payload.password, user["password_hash"]):
+    ok = bool(user) and verify_password(payload.password, user["password_hash"])
+
+    # Record attempt regardless of outcome
+    execute(
+        "INSERT INTO login_attempts (username, success, ip, attempted_at) "
+        "VALUES (?, ?, ?, ?)",
+        (payload.username, ok, ip, utc_now_iso()),
+    )
+
+    if not ok:
+        audit(request, action="auth.login.failure", actor=None,
+              details={"reason": "invalid_credentials", "username": payload.username})
         raise http_error(401, "invalid_credentials", "Invalid credentials")
+
     cleanup_sessions()
     token = uuid.uuid4().hex
     execute(
@@ -898,6 +1049,9 @@ def login(request: Request, payload: LoginRequest) -> dict:
         (user["id"], token, utc_now_iso(), utc_now_iso()),
     )
     org = query_one("SELECT * FROM organizations WHERE id = ?", (user["organization_id"],))
+    audit(request, action="auth.login.success",
+          actor={"id": user["id"], "username": user["username"],
+                 "organization_id": user["organization_id"]})
     return {
         "token": token,
         "user": {
@@ -920,14 +1074,15 @@ def login(request: Request, payload: LoginRequest) -> dict:
 
 
 @app.post("/auth/logout")
-def logout(user: dict = Depends(get_current_user)) -> dict:
+def logout(request: Request, user: dict = Depends(get_current_user)) -> dict:
     execute("DELETE FROM sessions WHERE token = ?", (user["token"],))
+    audit(request, action="auth.logout", actor=user)
     return {"status": "logged_out"}
 
 
 @app.post("/auth/change-password")
 def change_password(
-    payload: ChangePasswordRequest, user: dict = Depends(get_current_user)
+    request: Request, payload: ChangePasswordRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     db_user = query_one("SELECT * FROM users WHERE id = ?", (user["id"],))
     if not db_user or not verify_password(payload.current_password, db_user["password_hash"]):
@@ -938,6 +1093,7 @@ def change_password(
         (hash_password(payload.new_password), user["id"]),
     )
     execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+    audit(request, action="auth.password_change", actor=user)
     return {"status": "password_changed"}
 
 
@@ -974,8 +1130,86 @@ def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
     return rows
 
 
+@app.get("/audit-log")
+def get_audit_log(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    action: Optional[str] = None,
+    actor_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    user: dict = Depends(require_roles("admin")),
+) -> dict:
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    where = ["organization_id = ?"]
+    params: list = [org_id(user)]
+    if action:
+        where.append("action = ?")
+        params.append(action)
+    if actor_id is not None:
+        where.append("actor_user_id = ?")
+        params.append(actor_id)
+    if since:
+        where.append("created_at >= ?")
+        params.append(since)
+    if until:
+        where.append("created_at <= ?")
+        params.append(until)
+    where_sql = " AND ".join(where)
+
+    total_row = query_one(
+        f"SELECT COUNT(*) AS n FROM audit_log WHERE {where_sql}",
+        tuple(params),
+    )
+    total = int(total_row["n"]) if total_row else 0
+
+    rows = query_all(
+        f"""
+        SELECT id, organization_id, actor_user_id, actor_username, action,
+               target_type, target_id, ip, user_agent, details, created_at
+        FROM audit_log
+        WHERE {where_sql}
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        """,
+        tuple(params) + (limit, offset),
+    )
+
+    items = []
+    for r in rows:
+        details = r["details"]
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except Exception:
+                pass
+        items.append({
+            "id": r["id"],
+            "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else r["created_at"],
+            "actor": (
+                {"id": r["actor_user_id"], "username": r["actor_username"]}
+                if r["actor_user_id"] is not None or r["actor_username"]
+                else None
+            ),
+            "action": r["action"],
+            "target": (
+                {"type": r["target_type"], "id": r["target_id"]}
+                if r["target_type"] or r["target_id"]
+                else None
+            ),
+            "ip": r["ip"],
+            "user_agent": r["user_agent"],
+            "details": details,
+        })
+
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
 @app.post("/users")
-def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
+def create_user(request: Request, payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
         raise http_error(400, "username_taken", "Username already exists")
     if payload.role not in ROLE_LEVELS:
@@ -998,11 +1232,14 @@ def create_user(payload: UserCreate, user: dict = Depends(require_roles("admin")
     )
     created["is_admin"] = bool(created["is_admin"])
     created["role"] = created.get("role") or ("admin" if created["is_admin"] else "viewer")
+    audit(request, action="user.create", actor=user,
+          target_type="user", target_id=created["id"],
+          details={"username": created["username"], "role": created["role"]})
     return created
 
 
 @app.put("/users/{user_id}")
-def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
+def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
     target = query_one(
         "SELECT * FROM users WHERE id = ? AND organization_id = ?",
         (user_id, org_id(user)),
@@ -1028,11 +1265,19 @@ def update_user(user_id: int, payload: UserUpdate, user: dict = Depends(require_
     )
     updated["is_admin"] = bool(updated["is_admin"])
     updated["role"] = updated.get("role") or ("admin" if updated["is_admin"] else "viewer")
+    after_role = payload.role if payload.role is not None else (target.get("role") if target else None)
+    audit(request, action="user.update", actor=user,
+          target_type="user", target_id=user_id,
+          details={
+              "before": {"role": target.get("role") if target else None},
+              "after":  {"role": after_role},
+              "password_changed": bool(payload.password),
+          })
     return updated
 
 
 @app.delete("/users/{user_id}")
-def delete_user(user_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_user(request: Request, user_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
     target = query_one(
         "SELECT * FROM users WHERE id = ? AND organization_id = ?",
         (user_id, org_id(user)),
@@ -1041,6 +1286,9 @@ def delete_user(user_id: int, user: dict = Depends(require_roles("admin"))) -> d
         raise HTTPException(status_code=404, detail="User not found")
     execute("DELETE FROM users WHERE id = ?", (user_id,))
     execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    audit(request, action="user.delete", actor=user,
+          target_type="user", target_id=user_id,
+          details={"username": (target or {}).get("username")})
     return {"status": "deleted"}
 
 
@@ -1223,7 +1471,7 @@ def update_screen(
 
 
 @app.delete("/screens/{screen_id}")
-def delete_screen(screen_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_screen(request: Request, screen_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
         (screen_id, org_id(user)),
@@ -1231,6 +1479,9 @@ def delete_screen(screen_id: int, user: dict = Depends(require_roles("admin"))) 
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     execute("DELETE FROM screens WHERE id = ?", (screen_id,))
+    audit(request, action="screen.unpair", actor=user,
+          target_type="screen", target_id=screen_id,
+          details={"screen_name": (screen or {}).get("name")})
     return {"status": "deleted"}
 
 
@@ -1719,7 +1970,7 @@ def claim_pair_code(
 
 
 @app.post("/screens/pair")
-def pair_screen(payload: PairRequest) -> dict:
+def pair_screen(request: Request, payload: PairRequest) -> dict:
     screen = query_one("SELECT * FROM screens WHERE pair_code = ?", (payload.pair_code,))
     if not screen:
         raise HTTPException(status_code=404, detail="Pairing code not found")
@@ -1730,6 +1981,9 @@ def pair_screen(payload: PairRequest) -> dict:
     response = sanitize_screen(screen)
     response["token"] = screen["token"]
     response["is_online"] = True
+    audit(request, action="screen.pair", actor=None,
+          target_type="screen", target_id=screen["id"],
+          details={"screen_name": screen.get("name"), "site_id": screen.get("site_id")})
     return response
 
 
@@ -1775,7 +2029,7 @@ def _validate_spanned_fields(payload: WallCreate) -> None:
 
 
 @app.post("/walls", status_code=201)
-def create_wall(payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def create_wall(request: Request, payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
     if payload.mode == "spanned":
         _validate_spanned_fields(payload)
     elif payload.mode == "mirrored":
@@ -1826,6 +2080,10 @@ def create_wall(payload: WallCreate, user: dict = Depends(require_roles("admin",
                 (wall_id, r, c, now),
             )
     wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    audit(request, action="wall.create", actor=user,
+          target_type="wall", target_id=wall_id,
+          details={"name": payload.name, "mode": payload.mode,
+                   "rows": payload.rows, "cols": payload.cols})
     return serialize_wall(wall)
 
 
@@ -1917,12 +2175,15 @@ def patch_wall_cell(wall_id: int, payload: WallCellUpdate,
 
 
 @app.delete("/walls/{wall_id}", status_code=204)
-def delete_wall(wall_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> None:
+def delete_wall(request: Request, wall_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> None:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
                      (wall_id, org_id(user)))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall not found")
     execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+    audit(request, action="wall.delete", actor=user,
+          target_type="wall", target_id=wall_id,
+          details={"name": (wall or {}).get("name")})
     return None
 
 
@@ -2620,6 +2881,8 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
             """,
             (body.result, body.tranid, body.ref, body.paymentID, trackid),
         )
+        old_plan_row = query_one("SELECT plan FROM organizations WHERE id = ?", (row["organization_id"],))
+        old_plan = old_plan_row["plan"] if old_plan_row else None
         execute(
             """
             UPDATE organizations
@@ -2632,6 +2895,10 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
             """,
             (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], term * TERM_DAYS, row["organization_id"]),
         )
+        audit(request, action="billing.plan_change",
+              actor=None, organization_id=row["organization_id"],
+              target_type="organization", target_id=row["organization_id"],
+              details={"from_plan": old_plan, "to_plan": row["tier"], "term_months": term})
     else:
         execute(
             """

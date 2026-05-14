@@ -28,6 +28,7 @@
           <button data-section="playlists" data-i18n="nav.playlists">Playlists</button>
           <button data-section="users" data-i18n="nav.users">Users</button>
           <button data-section="walls" data-i18n="nav.walls">Walls</button>
+          <button data-section="audit-log" data-i18n="nav.audit_log">Audit log</button>
           <button data-section="billing" data-i18n="nav.billing">Billing</button>
         </nav>
         <div class="auth-status">
@@ -84,6 +85,7 @@
             Email verified. Set a password to finish creating your account.
           </div>
           <input type="password" id="signup-new-password"     placeholder="Password (min 8, letters + numbers)" data-i18n-placeholder="auth.new_password" required autocomplete="new-password" minlength="8" />
+          <small class="password-hint" data-i18n="password.strength_hint">Use at least 12 characters with upper case, lower case, and a number.</small>
           <input type="password" id="signup-confirm-password" placeholder="Confirm password"                    data-i18n-placeholder="auth.confirm_password" required autocomplete="new-password" minlength="8" />
           <button type="submit" data-i18n="auth.create_account">Create Account</button>
           <div class="helper-text" data-i18n="auth.starter_trial_note">
@@ -358,6 +360,7 @@
           <form id="user-form">
             <input type="text"     id="user-username" placeholder="Username" data-i18n-placeholder="users.username_placeholder" required dir="auto" />
             <input type="password" id="user-password" placeholder="Password" data-i18n-placeholder="users.password_placeholder" required />
+            <small class="password-hint" data-i18n="password.strength_hint">Use at least 12 characters with upper case, lower case, and a number.</small>
             <select id="user-role">
               <option value="viewer" data-i18n="users.role_viewer">Viewer</option>
               <option value="editor" data-i18n="users.role_editor">Editor</option>
@@ -402,6 +405,66 @@
                 <button id="walls-pair-close" class="btn btn-primary" data-i18n="walls.pair_done">Done</button>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section id="audit-log" class="panel hidden">
+          <h2 data-i18n="audit_log.title">Audit log</h2>
+
+          <div class="audit-log-filters">
+            <label>
+              <span data-i18n="audit_log.filter.action">Action</span>
+              <select id="audit-filter-action">
+                <option value="" data-i18n="audit_log.filter.all">All</option>
+                <option value="auth.login.success">auth.login.success</option>
+                <option value="auth.login.failure">auth.login.failure</option>
+                <option value="auth.logout">auth.logout</option>
+                <option value="auth.password_change">auth.password_change</option>
+                <option value="user.create">user.create</option>
+                <option value="user.update">user.update</option>
+                <option value="user.delete">user.delete</option>
+                <option value="screen.pair">screen.pair</option>
+                <option value="screen.unpair">screen.unpair</option>
+                <option value="wall.create">wall.create</option>
+                <option value="wall.delete">wall.delete</option>
+                <option value="billing.plan_change">billing.plan_change</option>
+              </select>
+            </label>
+            <label>
+              <span data-i18n="audit_log.filter.actor">Actor</span>
+              <select id="audit-filter-actor">
+                <option value="" data-i18n="audit_log.filter.all">All</option>
+              </select>
+            </label>
+            <label>
+              <span data-i18n="audit_log.filter.since">Since</span>
+              <input type="datetime-local" id="audit-filter-since" />
+            </label>
+            <label>
+              <span data-i18n="audit_log.filter.until">Until</span>
+              <input type="datetime-local" id="audit-filter-until" />
+            </label>
+            <button id="audit-filter-apply" data-i18n="audit_log.filter.apply">Apply</button>
+          </div>
+
+          <table class="audit-log-table">
+            <thead>
+              <tr>
+                <th data-i18n="audit_log.col.when">When</th>
+                <th data-i18n="audit_log.col.who">Who</th>
+                <th data-i18n="audit_log.col.action">Action</th>
+                <th data-i18n="audit_log.col.target">Target</th>
+                <th data-i18n="audit_log.col.ip">IP</th>
+                <th data-i18n="audit_log.col.details">Details</th>
+              </tr>
+            </thead>
+            <tbody id="audit-log-tbody"></tbody>
+          </table>
+
+          <div class="audit-log-pagination">
+            <button id="audit-page-newer" data-i18n="audit_log.pagination.newer">← Newer</button>
+            <span id="audit-page-info"></span>
+            <button id="audit-page-older" data-i18n="audit_log.pagination.older">Older →</button>
           </div>
         </section>
       </div>

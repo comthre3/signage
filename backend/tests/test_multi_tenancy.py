@@ -8,7 +8,7 @@ def _bearer(token: str) -> dict:
 def _signup(client, suffix: str) -> dict:
     email = f"owner-{suffix}@example.com"
     business_name = f"Biz {suffix}"
-    password = "testpass1"
+    password = "Testpass2026x"
     r = client.post(
         "/auth/signup/request",
         json={"business_name": business_name, "email": email},

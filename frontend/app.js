@@ -142,6 +142,7 @@ function showSection(id) {
     btn.classList.toggle("nav-active", btn.dataset.section === id);
   });
   if (id === "walls") Walls.onShow();
+  if (id === "audit-log") AuditLog.show();
 }
 
 function buildPlayerUrl(base, params) {
@@ -223,16 +224,19 @@ function updateAuthUI() {
   const logoutBtn = document.getElementById("logout-btn");
   const nav       = document.querySelector("header nav");
   const usersBtn  = document.querySelector('button[data-section="users"]');
+  const auditBtn  = document.querySelector('button[data-section="audit-log"]');
   if (currentUser) {
     authUser.textContent = `${currentUser.username} · ${currentUser.role}`;
     logoutBtn.classList.remove("hidden");
     nav.classList.remove("hidden");
     if (usersBtn) usersBtn.classList.toggle("hidden", currentUser.role !== "admin");
+    if (auditBtn) auditBtn.classList.toggle("hidden", currentUser.role !== "admin");
   } else {
     authUser.textContent = "";
     logoutBtn.classList.add("hidden");
     nav.classList.add("hidden");
     if (usersBtn) usersBtn.classList.add("hidden");
+    if (auditBtn) auditBtn.classList.add("hidden");
   }
 }
 
@@ -1169,6 +1173,27 @@ document.getElementById("playlist-add-item").addEventListener("click", async (e)
   });
 });
 
+function handleLockoutCountdown(btn, seconds) {
+  function fmt(remaining) {
+    const minutes = Math.ceil(remaining / 60);
+    return Khan.t(
+      "auth.account_locked",
+      "Too many failed attempts. Try again in {minutes} minutes."
+    ).replace("{minutes}", String(minutes));
+  }
+  toast(fmt(seconds), "error");
+  if (!btn) return;
+  btn.disabled = true;
+  let remaining = seconds;
+  const tick = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearInterval(tick);
+      btn.disabled = false;
+    }
+  }, 1000);
+}
+
 document.getElementById("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn      = e.target.querySelector("button[type=submit]");
@@ -1196,6 +1221,11 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
       await bootData();
     });
   } catch (err) {
+    if (err.status === 429 && err.data?.detail?.code === "account_locked") {
+      const seconds = Math.max(0, parseInt(err.data.detail.retry_after_seconds || 0, 10));
+      handleLockoutCountdown(btn, seconds);
+      return;
+    }
     toast(err.message || Khan.t("error.login_failed", "Login failed."), "error");
   }
 });
@@ -2877,4 +2907,126 @@ const Walls = (() => {
     renderEditor,
   };
 })();
+
+// ── Audit Log (Phase 2.5c) ───────────────────────────────────────────
+const AuditLog = (() => {
+  const PAGE_SIZE = 50;
+  let offset = 0;
+  let total = 0;
+  let actorFilterPopulated = false;
+
+  async function show() {
+    if (!actorFilterPopulated) await populateActorFilter();
+    offset = 0;
+    await fetchPage();
+  }
+
+  async function populateActorFilter() {
+    const sel = document.getElementById("audit-filter-actor");
+    if (!sel) return;
+    try {
+      const users = await api("/users");
+      users.forEach(u => {
+        const opt = document.createElement("option");
+        opt.value = u.id;
+        opt.textContent = u.username;
+        sel.appendChild(opt);
+      });
+      actorFilterPopulated = true;
+    } catch (_) { /* swallow — leave dropdown with just "All" */ }
+  }
+
+  async function fetchPage() {
+    const params = new URLSearchParams();
+    params.set("limit", String(PAGE_SIZE));
+    params.set("offset", String(offset));
+    const action = document.getElementById("audit-filter-action").value;
+    const actor  = document.getElementById("audit-filter-actor").value;
+    const since  = document.getElementById("audit-filter-since").value;
+    const until  = document.getElementById("audit-filter-until").value;
+    if (action) params.set("action", action);
+    if (actor)  params.set("actor_id", actor);
+    if (since)  params.set("since", new Date(since).toISOString());
+    if (until)  params.set("until", new Date(until).toISOString());
+
+    try {
+      const body = await api(`/audit-log?${params}`);
+      total = body.total;
+      renderRows(body.items);
+      renderPagination();
+    } catch (err) {
+      toast(Khan.t("audit_log.error.fetch", "Failed to load audit log."), "error");
+    }
+  }
+
+  function renderRows(items) {
+    const tbody = document.getElementById("audit-log-tbody");
+    tbody.innerHTML = "";
+    if (!items.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.textContent = Khan.t("audit_log.empty", "No audit events match these filters.");
+      td.className = "audit-log-empty";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    items.forEach(it => {
+      const tr = document.createElement("tr");
+      tr.appendChild(_td(formatWhen(it.created_at)));
+      tr.appendChild(_td(it.actor ? it.actor.username : "—"));
+      tr.appendChild(_td(it.action));
+      tr.appendChild(_td(it.target ? `${it.target.type}#${it.target.id}` : "—"));
+      tr.appendChild(_td(it.ip || "—"));
+      tr.appendChild(_td(it.details ? JSON.stringify(it.details) : "—"));
+      tbody.appendChild(tr);
+    });
+  }
+
+  function _td(text) {
+    const td = document.createElement("td");
+    td.textContent = text;
+    return td;
+  }
+
+  function formatWhen(iso) {
+    if (!iso) return "—";
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString();
+    } catch (_) { return iso; }
+  }
+
+  function renderPagination() {
+    const info = document.getElementById("audit-page-info");
+    const start = total ? offset + 1 : 0;
+    const end   = Math.min(offset + PAGE_SIZE, total);
+    info.textContent = Khan.t(
+      "audit_log.pagination.info",
+      "{start}–{end} of {total}"
+    ).replace("{start}", start).replace("{end}", end).replace("{total}", total);
+    document.getElementById("audit-page-newer").disabled = offset === 0;
+    document.getElementById("audit-page-older").disabled = end >= total;
+  }
+
+  function init() {
+    document.getElementById("audit-filter-apply")?.addEventListener("click", () => {
+      offset = 0;
+      fetchPage();
+    });
+    document.getElementById("audit-page-newer")?.addEventListener("click", () => {
+      offset = Math.max(0, offset - PAGE_SIZE);
+      fetchPage();
+    });
+    document.getElementById("audit-page-older")?.addEventListener("click", () => {
+      offset += PAGE_SIZE;
+      fetchPage();
+    });
+  }
+
+  return { show, init };
+})();
+
+AuditLog.init();
 

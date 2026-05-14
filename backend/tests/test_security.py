@@ -133,3 +133,198 @@ def test_dev_otp_blocked_with_cf_connecting_ip(client: TestClient, unique_busine
 # ── login rate limit ─────────────────────────────────────────────────
 # Note: requires RATE_LIMITS_ENABLED=1 to actually trigger; covered live
 # rather than here so the rest of the suite can run with limits off.
+
+
+# ── New tables (Phase 2.5c) ───────────────────────────────────────────
+
+def test_login_attempts_table_exists():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("login_attempts", "username"),
+    )
+    assert row is not None
+
+
+def test_audit_log_table_exists():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("audit_log", "action"),
+    )
+    assert row is not None
+
+
+# ── Password policy (Phase 2.5c) ──────────────────────────────────────
+from unittest.mock import patch
+
+
+def _signup_through_otp(client, business):
+    """Helper: signup → verify OTP → returns verification_token."""
+    r = client.post("/auth/signup/request",
+                    json={"business_name": business["business_name"],
+                          "email": business["email"]})
+    assert r.status_code == 200, r.text
+    otp = r.json()["dev_otp"]
+    r = client.post("/auth/signup/verify",
+                    json={"email": business["email"], "otp": otp})
+    assert r.status_code == 200, r.text
+    return r.json()["verification_token"]
+
+
+def test_signup_rejects_password_too_short(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "Aa1aaaaaaa"})  # 10 chars
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_too_short"
+
+
+def test_signup_rejects_password_no_lowercase(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "ABCDEFGH1234"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_no_lowercase"
+
+
+def test_signup_rejects_password_no_uppercase(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "abcdefgh1234"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_no_uppercase"
+
+
+def test_signup_rejects_password_no_digit(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": "Abcdefghijkl"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_no_number"
+
+
+def test_signup_rejects_breached_password(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    pw = "AbcDefGhi123"
+    import hashlib
+    suffix = hashlib.sha1(pw.encode()).hexdigest().upper()[5:]
+    fake_body = f"{suffix}:99\n"
+    fake = patch("hibp.requests.get").start()
+    fake.return_value.text = fake_body
+    fake.return_value.raise_for_status = lambda: None
+    try:
+        r = client.post("/auth/signup/complete",
+                        json={"verification_token": vt, "password": pw})
+    finally:
+        patch.stopall()
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "password_breached"
+
+
+def test_signup_accepts_compliant_password(client, unique_business):
+    vt = _signup_through_otp(client, unique_business)
+    fake = patch("hibp.requests.get").start()
+    fake.return_value.text = ""
+    fake.return_value.raise_for_status = lambda: None
+    try:
+        r = client.post("/auth/signup/complete",
+                        json={"verification_token": vt, "password": "Khanshoof2026Pass"})
+    finally:
+        patch.stopall()
+    assert r.status_code == 200, r.text
+
+
+def test_login_still_works_for_existing_user_with_legacy_password(client, signed_up_org):
+    # signed_up_org's fixture password is policy-compliant; the test
+    # verifies that AUTH on existing accounts does NOT re-run validate_password.
+    r = client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "Khanshoof2026Test",
+    })
+    assert r.status_code == 200, r.text
+
+
+# ── Account lockout (Phase 2.5c) ──────────────────────────────────────
+
+
+def _try_login(client, username, password, expect_status=None):
+    r = client.post("/auth/login", json={"username": username, "password": password})
+    if expect_status is not None:
+        assert r.status_code == expect_status, f"expected {expect_status}, got {r.status_code}: {r.text}"
+    return r
+
+
+def test_lockout_after_threshold_failures(client, signed_up_org):
+    username = signed_up_org["user"]["username"]
+    for _ in range(5):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    r = _try_login(client, username, "WrongPass-9999")
+    assert r.status_code == 429
+    body = r.json()
+    assert body["detail"]["code"] == "account_locked"
+    assert isinstance(body["detail"]["retry_after_seconds"], int)
+    assert body["detail"]["retry_after_seconds"] > 0
+
+
+def test_lockout_blocks_even_correct_password(client, signed_up_org):
+    """Once locked, even the correct password yields 429 until window expires."""
+    username = signed_up_org["user"]["username"]
+    for _ in range(5):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    r = _try_login(client, username, "Khanshoof2026Test")
+    assert r.status_code == 429
+    assert r.json()["detail"]["code"] == "account_locked"
+
+
+def test_success_resets_lockout_counter(client, signed_up_org):
+    username = signed_up_org["user"]["username"]
+    # 4 fails (one short of threshold)
+    for _ in range(4):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    # 1 success — anchors the window
+    _try_login(client, username, "Khanshoof2026Test", expect_status=200)
+    # 4 more fails should be allowed again (counter reset by success)
+    for _ in range(4):
+        _try_login(client, username, "WrongPass-9999", expect_status=401)
+    # The 5th fail still works (counter is post-success, not yet at threshold)
+    r = _try_login(client, username, "WrongPass-9999")
+    assert r.status_code == 401  # not yet 429
+
+
+def test_lockout_does_not_leak_user_existence(client, signed_up_org):
+    """Lockout response for unknown username is identical to known-locked."""
+    real_user = signed_up_org["user"]["username"]
+    for _ in range(5):
+        _try_login(client, real_user, "WrongPass-9999", expect_status=401)
+    real_locked = _try_login(client, real_user, "WrongPass-9999")
+    assert real_locked.status_code == 429
+
+    fake_user = "nonexistent-" + real_user
+    for _ in range(5):
+        _try_login(client, fake_user, "WrongPass-9999", expect_status=401)
+    fake_locked = _try_login(client, fake_user, "WrongPass-9999")
+    assert fake_locked.status_code == 429
+    assert fake_locked.json()["detail"]["code"] == real_locked.json()["detail"]["code"]
+
+
+def test_login_attempts_cleanup_purges_old_rows(client, signed_up_org):
+    """Old login_attempts rows (>30 days) get cleaned up by cleanup_sessions."""
+    from db import execute, query_one
+    from main import cleanup_sessions
+    execute(
+        "INSERT INTO login_attempts (username, attempted_at, success, ip) "
+        "VALUES (?, now() - interval '60 days', false, '1.2.3.4')",
+        (signed_up_org["user"]["username"],),
+    )
+    row = query_one(
+        "SELECT id FROM login_attempts WHERE ip = '1.2.3.4'",
+    )
+    assert row is not None
+    cleanup_sessions()
+    row_after = query_one(
+        "SELECT id FROM login_attempts WHERE ip = '1.2.3.4'",
+    )
+    assert row_after is None

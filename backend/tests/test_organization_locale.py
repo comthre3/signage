@@ -33,13 +33,13 @@ def test_patch_organization_locale_requires_admin(client, signed_up_org):
     admin_token = signed_up_org["token"]
     r = client.post(
         "/users",
-        json={"username": editor_email, "password": "testpass1", "role": "editor"},
+        json={"username": editor_email, "password": "Testpass2026x", "role": "editor"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert r.status_code == 200, r.text
     r = client.post(
         "/auth/login",
-        json={"username": editor_email, "password": "testpass1"},
+        json={"username": editor_email, "password": "Testpass2026x"},
     )
     editor_token = r.json()["token"]
     resp = client.patch(
