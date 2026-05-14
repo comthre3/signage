@@ -406,3 +406,37 @@ def init_db() -> None:
             "ON payments(organization_id, tier, term_months) WHERE status='pending'"
         )
         cursor.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS niupay_payment_link TEXT NULL")
+
+        # ── Phase 2.5e: dayparting ──────────────────────────────────────
+        cursor.execute("ALTER TABLE sites ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'Asia/Kuwait'")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schedules (
+              id              SERIAL PRIMARY KEY,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              name            TEXT NOT NULL,
+              created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_schedules_org "
+            "ON schedules (organization_id)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_rules (
+              id              SERIAL PRIMARY KEY,
+              schedule_id     INTEGER NOT NULL REFERENCES schedules(id)  ON DELETE CASCADE,
+              playlist_id     INTEGER NOT NULL REFERENCES playlists(id)  ON DELETE CASCADE,
+              start_time      TIME NOT NULL,
+              end_time        TIME NOT NULL,
+              days_of_week    SMALLINT NOT NULL,
+              position        INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_schedule_rules_schedule "
+            "ON schedule_rules (schedule_id)"
+        )
+
+        cursor.execute("ALTER TABLE screens ADD COLUMN IF NOT EXISTS schedule_id INTEGER REFERENCES schedules(id) ON DELETE SET NULL")
