@@ -1551,6 +1551,63 @@ def list_screen_groups(
     return {"screen_id": screen_id, "groups": groups}
 
 
+# ── Dayparting (Phase 2.5e) ───────────────────────────────────────────
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import time as _time_type
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _time_in_window(now: _time_type, start: _time_type, end: _time_type) -> bool:
+    """True iff `now` is inside [start, end), handling wrap-midnight rules."""
+    if start <= end:
+        return start <= now < end
+    return now >= start or now < end
+
+
+def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
+    """Look up the site's IANA tz; fall back to Asia/Kuwait."""
+    if site_id is None:
+        return _KUWAIT_TZ
+    row = query_one("SELECT timezone FROM sites WHERE id = ?", (site_id,))
+    if not row or not row.get("timezone"):
+        return _KUWAIT_TZ
+    try:
+        return ZoneInfo(row["timezone"])
+    except ZoneInfoNotFoundError:
+        logger.warning("invalid_site_timezone site_id=%s tz=%s", site_id, row["timezone"])
+        return _KUWAIT_TZ
+
+
+def resolve_active_playlist(screen: dict) -> Optional[int]:
+    """Return the playlist_id that should currently play on this screen.
+
+    Resolution order:
+      1. If screen has schedule_id AND a rule matches now-in-site-tz → rule.playlist_id
+      2. Else → screen.playlist_id (may be None)
+    """
+    if not screen.get("schedule_id"):
+        return screen.get("playlist_id")
+
+    site_tz = _site_timezone(screen.get("site_id"))
+    now_local = datetime.now(site_tz)
+    weekday_bit = 1 << now_local.weekday()      # Mon=0..Sun=6
+    now_t = now_local.time()
+
+    rules = query_all(
+        "SELECT id, playlist_id, start_time, end_time, days_of_week "
+        "FROM schedule_rules WHERE schedule_id = ?",
+        (screen["schedule_id"],),
+    )
+    for rule in rules:
+        if not (rule["days_of_week"] & weekday_bit):
+            continue
+        if _time_in_window(now_t, rule["start_time"], rule["end_time"]):
+            return rule["playlist_id"]
+
+    return screen.get("playlist_id")            # fallback to default
+
+
 def build_screen_payload(screen: dict) -> dict:
     playlist = None
     items = []
