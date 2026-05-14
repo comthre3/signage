@@ -347,6 +347,49 @@ def init_db() -> None:
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_wall_pairing_codes_wall ON wall_pairing_codes(wall_id)")
 
+        # ── Phase 2.5c: security hardening ──────────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS login_attempts (
+              id            SERIAL PRIMARY KEY,
+              username      TEXT NOT NULL,
+              attempted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+              success       BOOLEAN NOT NULL,
+              ip            TEXT
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_attempts_username_ts "
+            "ON login_attempts (username, attempted_at DESC)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+              id              SERIAL PRIMARY KEY,
+              organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+              actor_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              actor_username  TEXT,
+              action          TEXT NOT NULL,
+              target_type     TEXT,
+              target_id       TEXT,
+              ip              TEXT,
+              user_agent      TEXT,
+              details         JSONB,
+              created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_org_ts "
+            "ON audit_log (organization_id, created_at DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_actor "
+            "ON audit_log (actor_user_id, created_at DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_action "
+            "ON audit_log (action, created_at DESC)"
+        )
+
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS password_hash        TEXT")
         cursor.execute("ALTER TABLE screens      ADD COLUMN IF NOT EXISTS owner_user_id        INTEGER")
         cursor.execute("ALTER TABLE users        ADD COLUMN IF NOT EXISTS role                 TEXT NOT NULL DEFAULT 'viewer'")
