@@ -26,6 +26,7 @@
           <button data-section="screens" data-i18n="nav.screens">Screens</button>
           <button data-section="media" data-i18n="nav.media">Media</button>
           <button data-section="playlists" data-i18n="nav.playlists">Playlists</button>
+          <button data-section="schedules" data-i18n="nav.schedules">Schedules</button>
           <button data-section="users" data-i18n="nav.users">Users</button>
           <button data-section="walls" data-i18n="nav.walls">Walls</button>
           <button data-section="audit-log" data-i18n="nav.audit_log">Audit log</button>
@@ -231,6 +232,7 @@
           <form id="site-form">
             <input type="text" id="site-name" placeholder="Site name" data-i18n-placeholder="sites.name_placeholder" required dir="auto" />
             <input type="text" id="site-slug" placeholder="Slug (optional)" data-i18n-placeholder="sites.slug_placeholder" dir="auto" />
+            <select id="site-timezone-select" aria-label="Timezone"></select>
             <button type="submit" data-i18n="sites.add_btn">Add Site</button>
           </form>
           <div id="sites-list" class="list"></div>
@@ -404,6 +406,42 @@
                 <button id="walls-pair-refresh" class="btn" data-i18n="walls.pair_new_code">New code</button>
                 <button id="walls-pair-close" class="btn btn-primary" data-i18n="walls.pair_done">Done</button>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="schedules" class="panel hidden">
+          <div class="panel-header">
+            <h2 data-i18n="schedules.title">Schedules</h2>
+            <button id="schedule-new-btn" class="btn" data-i18n="schedules.new">+ New schedule</button>
+          </div>
+
+          <div id="schedules-list" class="schedules-list"></div>
+
+          <div id="schedule-editor" class="schedule-editor hidden">
+            <label class="field">
+              <span data-i18n="schedules.editor.name">Name</span>
+              <input id="schedule-editor-name" type="text" maxlength="200" />
+            </label>
+
+            <h3 data-i18n="schedules.editor.rules">Rules</h3>
+            <table class="schedule-rules-table">
+              <thead>
+                <tr>
+                  <th data-i18n="schedules.editor.playlist">Playlist</th>
+                  <th data-i18n="schedules.editor.start">Start</th>
+                  <th data-i18n="schedules.editor.end">End</th>
+                  <th data-i18n="schedules.editor.days">Days</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="schedule-rules-tbody"></tbody>
+            </table>
+            <button id="schedule-add-rule-btn" class="btn" data-i18n="schedules.editor.add_rule">+ Add rule</button>
+
+            <div class="schedule-editor-actions">
+              <button id="schedule-save-btn" class="btn btn-primary" data-i18n="schedules.editor.save">Save</button>
+              <button id="schedule-cancel-btn" class="btn" data-i18n="schedules.editor.cancel">Cancel</button>
             </div>
           </div>
         </section>

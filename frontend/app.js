@@ -24,6 +24,26 @@ const AUTH_STORAGE_KEY = "signage_auth_token";
 let authToken   = localStorage.getItem(AUTH_STORAGE_KEY);
 let currentUser = null;
 
+/* ── Timezone helpers ─────────────────────────────────────────── */
+const TZ_OPTIONS = [
+  "Asia/Kuwait", "Asia/Riyadh", "Asia/Dubai", "Asia/Qatar",
+  "Asia/Bahrain", "Asia/Muscat", "Asia/Baghdad",
+  "Africa/Cairo", "Asia/Amman", "Asia/Beirut",
+  "UTC",
+];
+
+function populateTimezoneSelect(selectEl, currentValue) {
+  if (!selectEl) return;
+  selectEl.innerHTML = "";
+  TZ_OPTIONS.forEach(tz => {
+    const opt = document.createElement("option");
+    opt.value = tz;
+    opt.textContent = tz;
+    if (tz === currentValue) opt.selected = true;
+    selectEl.appendChild(opt);
+  });
+}
+
 /* ── Toast ───────────────────────────────────────────────────── */
 function toast(message, type = "info", duration = 3500) {
   const container = document.getElementById("toast-container");
@@ -106,7 +126,7 @@ function withLoading(btn, fn) {
 
 /* ── State ───────────────────────────────────────────────────── */
 const state = {
-  sites: [], screens: [], playlists: [], media: [], users: [], groups: [],
+  sites: [], screens: [], playlists: [], schedules: [], media: [], users: [], groups: [],
 };
 
 const zonesState = {
@@ -142,6 +162,7 @@ function showSection(id) {
     btn.classList.toggle("nav-active", btn.dataset.section === id);
   });
   if (id === "walls") Walls.onShow();
+  if (id === "schedules") Schedules.show();
   if (id === "audit-log") AuditLog.show();
 }
 
@@ -267,6 +288,15 @@ async function loadPlaylists() {
   renderPlaylists();
   renderPlaylistOptions();
   renderPlaylistSelect();
+}
+
+async function loadSchedules() {
+  try {
+    const body = await api("/schedules");
+    state.schedules = body.items || body || [];
+  } catch (_) {
+    state.schedules = [];
+  }
 }
 
 async function loadMedia() {
@@ -549,6 +579,11 @@ function renderScreens() {
       ...state.playlists.map((p) => `<option value="${p.id}">${escHtml(p.name)}</option>`),
     ].join("");
 
+    const scheduleOptions = [
+      `<option value="">${escHtml(Khan.t("screen.schedule.none", "None — use default playlist"))}</option>`,
+      ...(state.schedules || []).map((s) => `<option value="${s.id}">${escHtml(s.name)}</option>`),
+    ].join("");
+
     card.innerHTML = `
       <h3>${escHtml(screen.name)}</h3>
       <div class="card-meta">
@@ -562,6 +597,7 @@ function renderScreens() {
       <div><a href="${escAttr(playerUrl)}" target="_blank" rel="noreferrer">Player URL ↗</a></div>
       <div class="card-actions">
         <select data-playlist-select="${screen.id}">${playlistOptions}</select>
+        <select data-schedule-select="${screen.id}">${scheduleOptions}</select>
         <button class="save-btn"    data-save-screen="${screen.id}">Save</button>
         <button class="save-btn"    data-zones-screen="${screen.id}">Zones</button>
         <button class="access-btn"  data-access-screen="${screen.id}">Access</button>
@@ -573,10 +609,17 @@ function renderScreens() {
     const select = card.querySelector(`[data-playlist-select="${screen.id}"]`);
     select.value = screen.playlist_id || "";
 
+    const scheduleSel = card.querySelector(`[data-schedule-select="${screen.id}"]`);
+    if (scheduleSel) scheduleSel.value = screen.schedule_id || "";
+
     card.querySelector(`[data-save-screen="${screen.id}"]`).addEventListener("click", async (e) => {
       await withLoading(e.currentTarget, async () => {
         const playlistId = select.value ? Number(select.value) : null;
-        await api(`/screens/${screen.id}`, { method: "PUT", body: JSON.stringify({ playlist_id: playlistId }) });
+        const scheduleId = scheduleSel?.value ? Number(scheduleSel.value) : null;
+        await api(`/screens/${screen.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ playlist_id: playlistId, schedule_id: scheduleId }),
+        });
         toast(Khan.t("toast.screen_saved"), "success");
         await loadScreens();
       });
@@ -1043,9 +1086,16 @@ document.getElementById("site-form").addEventListener("submit", async (e) => {
   const btn  = e.target.querySelector("button[type=submit]");
   const name = document.getElementById("site-name").value.trim();
   const slug = document.getElementById("site-slug").value.trim();
+  const tz   = document.getElementById("site-timezone-select")?.value || "Asia/Kuwait";
   await withLoading(btn, async () => {
-    await api("/sites", { method: "POST", body: JSON.stringify({ name, slug: slug || null }) });
+    const created = await api("/sites", { method: "POST", body: JSON.stringify({ name, slug: slug || null }) });
+    if (tz !== "Asia/Kuwait" && created && created.id) {
+      try {
+        await api(`/sites/${created.id}`, { method: "PUT", body: JSON.stringify({ timezone: tz }) });
+      } catch (_) { /* swallow — site already exists with default tz */ }
+    }
     e.target.reset();
+    populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
     toast(Khan.t("toast.site_created"), "success");
     await loadSites();
   });
@@ -1463,7 +1513,8 @@ connectionReset?.addEventListener("click", () => {
 
 /* ── Boot ────────────────────────────────────────────────────── */
 async function bootData() {
-  await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadMedia(), loadUsers()]);
+  populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
+  await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadSchedules(), loadMedia(), loadUsers()]);
   await loadScreens();
   showSection("sites");
 }
@@ -2907,6 +2958,253 @@ const Walls = (() => {
     renderEditor,
   };
 })();
+
+// ── Schedules (Phase 2.5e) ───────────────────────────────────────────
+const Schedules = (() => {
+  let cachedPlaylists = [];
+  let currentSchedule = null;     // {id, name, rules} or null when creating new
+
+  const DOW_LABELS = ["dow.mon", "dow.tue", "dow.wed", "dow.thu", "dow.fri", "dow.sat", "dow.sun"];
+
+  async function show() {
+    document.getElementById("schedule-editor").classList.add("hidden");
+    document.getElementById("schedules-list").classList.remove("hidden");
+    await refreshList();
+  }
+
+  async function refreshList() {
+    try {
+      const body = await api("/schedules");
+      renderList(body.items);
+    } catch (err) {
+      toast(Khan.t("schedules.error.fetch", "Failed to load schedules."), "error");
+    }
+  }
+
+  function renderList(items) {
+    const container = document.getElementById("schedules-list");
+    container.innerHTML = "";
+    if (!items.length) {
+      const p = document.createElement("p");
+      p.className = "empty-state";
+      p.textContent = Khan.t("schedules.empty", "No schedules yet.");
+      container.appendChild(p);
+      return;
+    }
+    items.forEach(s => {
+      const card = document.createElement("div");
+      card.className = "schedule-card";
+      const name = document.createElement("h3");
+      name.textContent = s.name;
+      card.appendChild(name);
+      const actions = document.createElement("div");
+      actions.className = "schedule-card-actions";
+      const editBtn = document.createElement("button");
+      editBtn.className = "btn";
+      editBtn.textContent = Khan.t("schedules.editor.edit", "Edit");
+      editBtn.addEventListener("click", () => openEditor(s.id));
+      const delBtn = document.createElement("button");
+      delBtn.className = "btn btn-danger";
+      delBtn.textContent = Khan.t("schedules.editor.delete", "Delete");
+      delBtn.addEventListener("click", () => deleteSchedule(s.id, s.name));
+      actions.appendChild(editBtn);
+      actions.appendChild(delBtn);
+      card.appendChild(actions);
+      container.appendChild(card);
+    });
+  }
+
+  async function openEditor(id) {
+    if (!cachedPlaylists.length) {
+      try {
+        const pls = await api("/playlists");
+        cachedPlaylists = Array.isArray(pls) ? pls : (pls.items || []);
+      } catch (_) { cachedPlaylists = []; }
+    }
+    if (id) {
+      try {
+        currentSchedule = await api(`/schedules/${id}`);
+      } catch (err) {
+        toast(Khan.t("schedules.error.fetch", "Failed to load schedule."), "error");
+        return;
+      }
+    } else {
+      currentSchedule = { id: null, name: "", rules: [] };
+    }
+    renderEditor();
+  }
+
+  function renderEditor() {
+    document.getElementById("schedules-list").classList.add("hidden");
+    document.getElementById("schedule-editor").classList.remove("hidden");
+    document.getElementById("schedule-editor-name").value = currentSchedule.name || "";
+    renderRules();
+  }
+
+  function renderRules() {
+    const tbody = document.getElementById("schedule-rules-tbody");
+    tbody.innerHTML = "";
+    currentSchedule.rules.forEach((r, idx) => tbody.appendChild(buildRuleRow(r, idx)));
+  }
+
+  function buildRuleRow(rule, idx) {
+    const tr = document.createElement("tr");
+
+    // Playlist dropdown
+    const tdP = document.createElement("td");
+    const sel = document.createElement("select");
+    cachedPlaylists.forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      if (rule.playlist_id === p.id) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", () => { rule.playlist_id = parseInt(sel.value, 10); });
+    tdP.appendChild(sel);
+    tr.appendChild(tdP);
+
+    // Start time
+    const tdS = document.createElement("td");
+    const startIn = document.createElement("input");
+    startIn.type = "time";
+    startIn.value = rule.start_time || "11:00";
+    startIn.addEventListener("change", () => { rule.start_time = startIn.value; });
+    tdS.appendChild(startIn);
+    tr.appendChild(tdS);
+
+    // End time
+    const tdE = document.createElement("td");
+    const endIn = document.createElement("input");
+    endIn.type = "time";
+    endIn.value = rule.end_time || "14:00";
+    endIn.addEventListener("change", () => { rule.end_time = endIn.value; });
+    tdE.appendChild(endIn);
+    tr.appendChild(tdE);
+
+    // Days of week — 7 checkboxes
+    const tdD = document.createElement("td");
+    DOW_LABELS.forEach((labelKey, bit) => {
+      const lbl = document.createElement("label");
+      lbl.className = "dow-checkbox";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!(rule.days_of_week & (1 << bit));
+      cb.addEventListener("change", () => {
+        if (cb.checked) rule.days_of_week |= (1 << bit);
+        else            rule.days_of_week &= ~(1 << bit);
+      });
+      const span = document.createElement("span");
+      span.setAttribute("data-i18n", `schedules.${labelKey}`);
+      span.textContent = Khan.t(`schedules.${labelKey}`, labelKey.split(".")[1]);
+      lbl.appendChild(cb);
+      lbl.appendChild(span);
+      tdD.appendChild(lbl);
+    });
+    tr.appendChild(tdD);
+
+    // Delete button
+    const tdX = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "btn btn-icon";
+    btn.textContent = "×";
+    btn.addEventListener("click", () => {
+      currentSchedule.rules.splice(idx, 1);
+      renderRules();
+    });
+    tdX.appendChild(btn);
+    tr.appendChild(tdX);
+
+    return tr;
+  }
+
+  function addRule() {
+    if (!cachedPlaylists.length) {
+      toast(Khan.t("schedules.no_playlists", "Create a playlist first."), "error");
+      return;
+    }
+    currentSchedule.rules.push({
+      playlist_id:  cachedPlaylists[0].id,
+      start_time:   "11:00",
+      end_time:     "14:00",
+      days_of_week: 31,    // Mon-Fri
+      position:     currentSchedule.rules.length,
+    });
+    renderRules();
+  }
+
+  async function save() {
+    const nameEl = document.getElementById("schedule-editor-name");
+    const name = nameEl.value.trim();
+    if (!name) {
+      toast(Khan.t("schedules.name_required", "Schedule name is required."), "error");
+      return;
+    }
+    try {
+      let sid = currentSchedule.id;
+      if (sid == null) {
+        const created = await api("/schedules", {
+          method: "POST", body: JSON.stringify({ name }),
+        });
+        sid = created.id;
+      } else {
+        await api(`/schedules/${sid}`, {
+          method: "PUT", body: JSON.stringify({ name }),
+        });
+      }
+      await api(`/schedules/${sid}/rules`, {
+        method: "PUT",
+        body: JSON.stringify({
+          rules: currentSchedule.rules.map((r, i) => ({
+            playlist_id:  r.playlist_id,
+            start_time:   r.start_time,
+            end_time:     r.end_time,
+            days_of_week: r.days_of_week,
+            position:     i,
+          })),
+        }),
+      });
+      toast(Khan.t("toast.schedule_saved", "Schedule saved."), "success");
+      await show();
+    } catch (err) {
+      const code = err.data?.detail?.code;
+      const msg = code === "schedule.rule_overlap"
+        ? Khan.t("schedules.overlap_error", "Two rules overlap on the same day.")
+        : (err.message || Khan.t("schedules.error.save", "Failed to save schedule."));
+      toast(msg, "error");
+    }
+  }
+
+  async function deleteSchedule(id, name) {
+    const ok = await confirmDialog({
+      title:        Khan.t("schedules.delete_confirm_title", "Delete schedule?"),
+      message:      Khan.t("schedules.delete_confirm_message",
+                           "Delete schedule \"{name}\"? Screens using it will fall back to their default playlist.")
+                       .replace("{name}", name),
+      confirmLabel: Khan.t("schedules.editor.delete", "Delete"),
+      danger:       true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/schedules/${id}`, { method: "DELETE" });
+      toast(Khan.t("toast.schedule_deleted", "Schedule deleted."), "success");
+      await refreshList();
+    } catch (err) {
+      toast(err.message || Khan.t("schedules.error.delete", "Failed to delete."), "error");
+    }
+  }
+
+  function init() {
+    document.getElementById("schedule-new-btn")?.addEventListener("click", () => openEditor(null));
+    document.getElementById("schedule-add-rule-btn")?.addEventListener("click", addRule);
+    document.getElementById("schedule-save-btn")?.addEventListener("click", save);
+    document.getElementById("schedule-cancel-btn")?.addEventListener("click", () => show());
+  }
+
+  return { show, init };
+})();
+
+Schedules.init();
 
 // ── Audit Log (Phase 2.5c) ───────────────────────────────────────────
 const AuditLog = (() => {

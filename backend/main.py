@@ -541,8 +541,9 @@ class SiteCreate(BaseModel):
 
 
 class SiteUpdate(BaseModel):
-    name: Optional[str] = None
-    slug: Optional[str] = None
+    name:     Optional[str] = None
+    slug:     Optional[str] = None
+    timezone: Optional[str] = None
 
 
 class ScreenCreate(BaseModel):
@@ -555,13 +556,14 @@ class ScreenCreate(BaseModel):
 
 
 class ScreenUpdate(BaseModel):
-    name: Optional[str] = None
-    location: Optional[str] = None
-    resolution: Optional[str] = None
-    orientation: Optional[str] = None
-    site_id: Optional[int] = None
-    playlist_id: Optional[int] = None
+    name:          Optional[str] = None
+    location:      Optional[str] = None
+    resolution:    Optional[str] = None
+    orientation:   Optional[str] = None
+    site_id:       Optional[int] = None
+    playlist_id:   Optional[int] = None
     owner_user_id: Optional[int] = None
+    schedule_id:   Optional[int] = None    # new (Phase 2.5e)
 
 
 class PlaylistCreate(BaseModel):
@@ -570,6 +572,26 @@ class PlaylistCreate(BaseModel):
 
 class PlaylistUpdate(BaseModel):
     name: Optional[str] = None
+
+
+class ScheduleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+
+
+class ScheduleUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+
+
+class ScheduleRuleIn(BaseModel):
+    playlist_id:  int
+    start_time:   str = Field(..., pattern=r"^\d{2}:\d{2}(:\d{2})?$")
+    end_time:     str = Field(..., pattern=r"^\d{2}:\d{2}(:\d{2})?$")
+    days_of_week: int = Field(..., ge=1, le=127)
+    position:     int = 0
+
+
+class ScheduleRulesIn(BaseModel):
+    rules: list[ScheduleRuleIn]
 
 
 class PlaylistItemCreate(BaseModel):
@@ -1130,6 +1152,140 @@ def list_users(user: dict = Depends(require_roles("admin"))) -> list[dict]:
     return rows
 
 
+# ── Schedules (Phase 2.5e) ────────────────────────────────────────────
+
+def _schedule_row_to_dict(row: dict, rules: list[dict]) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else row["created_at"],
+        "rules": rules,
+    }
+
+
+def _rule_row_to_dict(row: dict) -> dict:
+    return {
+        "id":           row["id"],
+        "playlist_id":  row["playlist_id"],
+        "start_time":   row["start_time"].strftime("%H:%M") if hasattr(row["start_time"], "strftime") else row["start_time"],
+        "end_time":     row["end_time"].strftime("%H:%M") if hasattr(row["end_time"], "strftime") else row["end_time"],
+        "days_of_week": row["days_of_week"],
+        "position":     row["position"],
+    }
+
+
+def _load_schedule(sid: int, org: int) -> Optional[dict]:
+    row = query_one(
+        "SELECT id, name, created_at FROM schedules WHERE id = ? AND organization_id = ?",
+        (sid, org),
+    )
+    if not row:
+        return None
+    rule_rows = query_all(
+        "SELECT id, playlist_id, start_time, end_time, days_of_week, position "
+        "FROM schedule_rules WHERE schedule_id = ? "
+        "ORDER BY position ASC, id ASC",
+        (sid,),
+    )
+    return _schedule_row_to_dict(row, [_rule_row_to_dict(r) for r in rule_rows])
+
+
+@app.post("/schedules", status_code=201)
+def create_schedule(payload: ScheduleCreate,
+                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    sid = execute(
+        "INSERT INTO schedules (organization_id, name) VALUES (?, ?)",
+        (org_id(user), payload.name),
+    )
+    return _load_schedule(sid, org_id(user))
+
+
+@app.get("/schedules")
+def list_schedules(user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    rows = query_all(
+        "SELECT id, name, created_at FROM schedules WHERE organization_id = ? "
+        "ORDER BY created_at DESC",
+        (org_id(user),),
+    )
+    items = [_schedule_row_to_dict(r, []) for r in rows]
+    return {"items": items}
+
+
+@app.get("/schedules/{sid}")
+def get_schedule(sid: int,
+                 user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    sched = _load_schedule(sid, org_id(user))
+    if not sched:
+        raise http_error(404, "schedule.not_found", "Schedule not found")
+    return sched
+
+
+@app.put("/schedules/{sid}")
+def update_schedule(sid: int, payload: ScheduleUpdate,
+                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    sched = _load_schedule(sid, org_id(user))
+    if not sched:
+        raise http_error(404, "schedule.not_found", "Schedule not found")
+    if payload.name is not None:
+        execute("UPDATE schedules SET name = ? WHERE id = ?", (payload.name, sid))
+    return _load_schedule(sid, org_id(user))
+
+
+@app.delete("/schedules/{sid}", status_code=204)
+def delete_schedule(sid: int,
+                    user: dict = Depends(require_roles("admin"))) -> None:
+    sched = _load_schedule(sid, org_id(user))
+    if not sched:
+        raise http_error(404, "schedule.not_found", "Schedule not found")
+    execute("DELETE FROM schedules WHERE id = ?", (sid,))
+
+
+@app.put("/schedules/{sid}/rules")
+def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
+                           user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+    sched = _load_schedule(sid, org_id(user))
+    if not sched:
+        raise http_error(404, "schedule.not_found", "Schedule not found")
+
+    # Validate each rule
+    parsed = []
+    for r_in in payload.rules:
+        owned = query_one(
+            "SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
+            (r_in.playlist_id, org_id(user)),
+        )
+        if not owned:
+            raise http_error(404, "playlist.not_found",
+                             f"Playlist {r_in.playlist_id} not found")
+        parsed.append({
+            "playlist_id":  r_in.playlist_id,
+            "start_time":   _parse_time(r_in.start_time),
+            "end_time":     _parse_time(r_in.end_time),
+            "days_of_week": r_in.days_of_week,
+            "position":     r_in.position,
+        })
+
+    # Overlap check (across all pairs)
+    for i in range(len(parsed)):
+        for j in range(i + 1, len(parsed)):
+            if _rules_overlap(parsed[i], parsed[j]):
+                raise http_error(422, "schedule.rule_overlap",
+                                 f"Rules {i} and {j} overlap on a shared day")
+
+    # Replace-all
+    execute("DELETE FROM schedule_rules WHERE schedule_id = ?", (sid,))
+    for r in parsed:
+        execute(
+            "INSERT INTO schedule_rules "
+            "(schedule_id, playlist_id, start_time, end_time, days_of_week, position) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, r["playlist_id"], r["start_time"], r["end_time"],
+             r["days_of_week"], r["position"]),
+        )
+
+    return _load_schedule(sid, org_id(user))
+
+
 @app.get("/audit-log")
 def get_audit_log(
     request: Request,
@@ -1339,9 +1495,18 @@ def update_site(
     ):
         raise HTTPException(status_code=400, detail="Slug already exists")
 
+    if payload.timezone is not None:
+        try:
+            ZoneInfo(payload.timezone)
+        except ZoneInfoNotFoundError:
+            raise http_error(422, "site.timezone_invalid",
+                             f"Unknown timezone: {payload.timezone}")
+
+    timezone = payload.timezone if payload.timezone is not None else site["timezone"]
+
     execute(
-        "UPDATE sites SET name = ?, slug = ? WHERE id = ?",
-        (name, slug, site_id),
+        "UPDATE sites SET name = ?, slug = ?, timezone = ? WHERE id = ?",
+        (name, slug, timezone, site_id),
     )
     return query_one("SELECT * FROM sites WHERE id = ?", (site_id,))
 
@@ -1441,12 +1606,24 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
 def update_screen(
     screen_id: int, payload: ScreenUpdate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
+    oid = org_id(user)
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
-        (screen_id, org_id(user)),
+        (screen_id, oid),
     )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
+
+    # Validate schedule ownership; use model_fields_set so explicit None
+    # (detach) is distinguished from "field not provided".
+    if "schedule_id" in payload.model_fields_set:
+        if payload.schedule_id is not None:
+            owned = query_one(
+                "SELECT id FROM schedules WHERE id = ? AND organization_id = ?",
+                (payload.schedule_id, oid),
+            )
+            if not owned:
+                raise http_error(404, "schedule.not_found", "Schedule not found")
 
     execute(
         """
@@ -1467,6 +1644,14 @@ def update_screen(
             screen_id,
         ),
     )
+
+    # Handle schedule_id separately (nullable detach requires model_fields_set)
+    if "schedule_id" in payload.model_fields_set:
+        execute(
+            "UPDATE screens SET schedule_id = ? WHERE id = ?",
+            (payload.schedule_id, screen_id),
+        )
+
     return sanitize_screen(query_one("SELECT * FROM screens WHERE id = ?", (screen_id,)))
 
 
@@ -1802,11 +1987,100 @@ def list_screen_groups(
     return {"screen_id": screen_id, "groups": groups}
 
 
+# ── Dayparting (Phase 2.5e) ───────────────────────────────────────────
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import time as _time_type
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _time_in_window(now: _time_type, start: _time_type, end: _time_type) -> bool:
+    """True iff `now` is inside [start, end), handling wrap-midnight rules."""
+    if start <= end:
+        return start <= now < end
+    return now >= start or now < end
+
+
+def _time_windows_overlap(s1, e1, s2, e2) -> bool:
+    """True iff the two TIME windows overlap. Both may wrap midnight."""
+    def expand(s, e):
+        if s <= e:
+            return [(s, e)]
+        return [(s, _time_type(23, 59, 59, 999999)), (_time_type(0, 0), e)]
+    for a_s, a_e in expand(s1, e1):
+        for b_s, b_e in expand(s2, e2):
+            if a_s < b_e and b_s < a_e:
+                return True
+    return False
+
+
+def _rules_overlap(a: dict, b: dict) -> bool:
+    """True iff rules a and b share at least one day AND time windows overlap."""
+    if not (a["days_of_week"] & b["days_of_week"]):
+        return False
+    return _time_windows_overlap(
+        a["start_time"], a["end_time"],
+        b["start_time"], b["end_time"],
+    )
+
+
+def _parse_time(s: str) -> _time_type:
+    """Parse HH:MM or HH:MM:SS into datetime.time."""
+    parts = s.split(":")
+    h = int(parts[0]); m = int(parts[1])
+    sec = int(parts[2]) if len(parts) > 2 else 0
+    return _time_type(h, m, sec)
+
+
+def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
+    """Look up the site's IANA tz; fall back to Asia/Kuwait."""
+    if site_id is None:
+        return _KUWAIT_TZ
+    row = query_one("SELECT timezone FROM sites WHERE id = ?", (site_id,))
+    if not row or not row.get("timezone"):
+        return _KUWAIT_TZ
+    try:
+        return ZoneInfo(row["timezone"])
+    except ZoneInfoNotFoundError:
+        logger.warning("invalid_site_timezone site_id=%s tz=%s", site_id, row["timezone"])
+        return _KUWAIT_TZ
+
+
+def resolve_active_playlist(screen: dict) -> Optional[int]:
+    """Return the playlist_id that should currently play on this screen.
+
+    Resolution order:
+      1. If screen has schedule_id AND a rule matches now-in-site-tz → rule.playlist_id
+      2. Else → screen.playlist_id (may be None)
+    """
+    if not screen.get("schedule_id"):
+        return screen.get("playlist_id")
+
+    site_tz = _site_timezone(screen.get("site_id"))
+    now_local = datetime.now(site_tz)
+    weekday_bit = 1 << now_local.weekday()      # Mon=0..Sun=6
+    now_t = now_local.time()
+
+    rules = query_all(
+        "SELECT id, playlist_id, start_time, end_time, days_of_week "
+        "FROM schedule_rules WHERE schedule_id = ?",
+        (screen["schedule_id"],),
+    )
+    for rule in rules:
+        if not (rule["days_of_week"] & weekday_bit):
+            continue
+        if _time_in_window(now_t, rule["start_time"], rule["end_time"]):
+            return rule["playlist_id"]
+
+    return screen.get("playlist_id")            # fallback to default
+
+
 def build_screen_payload(screen: dict) -> dict:
     playlist = None
     items = []
-    if screen.get("playlist_id"):
-        playlist = query_one("SELECT * FROM playlists WHERE id = ?", (screen["playlist_id"],))
+    active_playlist_id = resolve_active_playlist(screen)
+    if active_playlist_id:
+        playlist = query_one("SELECT * FROM playlists WHERE id = ?", (active_playlist_id,))
         items = query_all(
             """
             SELECT playlist_items.id, playlist_items.duration_seconds,
@@ -1817,7 +2091,7 @@ def build_screen_payload(screen: dict) -> dict:
             WHERE playlist_items.playlist_id = ?
             ORDER BY playlist_items.position ASC
             """,
-            (screen["playlist_id"],),
+            (active_playlist_id,),
         )
         for item in items:
             if item.get("mime_type") == "text/url":

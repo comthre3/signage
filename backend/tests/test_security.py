@@ -157,6 +157,48 @@ def test_audit_log_table_exists():
     assert row is not None
 
 
+# ── Dayparting schema (Phase 2.5e) ────────────────────────────────────
+
+def test_schedules_table_exists():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("schedules", "name"),
+    )
+    assert row is not None
+
+
+def test_schedule_rules_table_exists():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("schedule_rules", "days_of_week"),
+    )
+    assert row is not None
+
+
+def test_sites_has_timezone_column():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("sites", "timezone"),
+    )
+    assert row is not None
+
+
+def test_screens_has_schedule_id_column():
+    from db import query_one
+    row = query_one(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? AND column_name = ?",
+        ("screens", "schedule_id"),
+    )
+    assert row is not None
+
+
 # ── Password policy (Phase 2.5c) ──────────────────────────────────────
 from unittest.mock import patch
 
