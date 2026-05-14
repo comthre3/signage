@@ -2263,3 +2263,37 @@ code, kbd, samp, pre,
   padding: 12px 18px;
   border-top: 1px solid var(--border, #e9ddc6);
 }
+
+/* Phase 2.5e — schedules */
+.schedules-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.schedule-card {
+  background: var(--surface, #fff8f0);
+  border: 1px solid var(--border, #e9ddc6);
+  border-radius: 12px;
+  padding: 16px;
+}
+.schedule-card h3 { margin: 0 0 12px 0; }
+.schedule-card-actions { display: flex; gap: 8px; }
+
+.schedule-editor .field { display: block; margin-block: 16px; }
+.schedule-rules-table { width: 100%; border-collapse: collapse; }
+.schedule-rules-table th,
+.schedule-rules-table td { padding: 8px; vertical-align: middle; }
+.schedule-rules-table th { text-align: start; font-weight: 600; }
+.dow-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-end: 8px;
+  font-size: 12px;
+}
+.schedule-editor-actions { margin-block-start: 24px; display: flex; gap: 12px; }
+.empty-state {
+  color: var(--muted, #8b6f5e);
+  text-align: center;
+  padding: 32px;
+}
