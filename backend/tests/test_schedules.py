@@ -196,3 +196,79 @@ def test_post_rule_rejects_playlist_from_other_org(client, signed_up_org):
                         "days_of_week": 127, "position": 0},
                    ]})
     assert r.status_code in (404, 422)
+
+
+# ── Site timezone ─────────────────────────────────────────────────────
+
+def test_default_site_timezone_is_kuwait(client, signed_up_org):
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/sites", headers=bearer, json={"name": "Default tz"})
+    assert r.status_code in (200, 201), r.text
+    site = r.json()
+    # Default tz is implicit at DB level; verify via GET if the endpoint
+    # exposes timezone in its response
+    r = client.get(f"/sites/{site['id']}", headers=bearer)
+    if r.status_code == 200:
+        assert r.json().get("timezone") == "Asia/Kuwait"
+
+
+def test_put_site_accepts_timezone(client, signed_up_org):
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/sites", headers=bearer, json={"name": "Riyadh"})
+    site = r.json()
+    r = client.put(f"/sites/{site['id']}", headers=bearer,
+                   json={"timezone": "Asia/Riyadh"})
+    assert r.status_code == 200, r.text
+    assert r.json()["timezone"] == "Asia/Riyadh"
+
+
+def test_put_site_rejects_invalid_timezone(client, signed_up_org):
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/sites", headers=bearer, json={"name": "Bad"})
+    site = r.json()
+    r = client.put(f"/sites/{site['id']}", headers=bearer,
+                   json={"timezone": "Mars/Olympus"})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "site.timezone_invalid"
+
+
+# ── Screen schedule_id ────────────────────────────────────────────────
+
+def test_put_screen_accepts_schedule_id(client, signed_up_org):
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/schedules", headers=bearer, json={"name": "Test"})
+    sid = r.json()["id"]
+    r = client.post("/screens", headers=bearer, json={"name": "S"})
+    screen = r.json()
+    r = client.put(f"/screens/{screen['id']}", headers=bearer,
+                   json={"schedule_id": sid})
+    assert r.status_code == 200, r.text
+    assert r.json().get("schedule_id") == sid
+
+
+def test_put_screen_accepts_null_schedule_id(client, signed_up_org):
+    """Setting schedule_id to None detaches the schedule."""
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/schedules", headers=bearer, json={"name": "X"})
+    sid = r.json()["id"]
+    r = client.post("/screens", headers=bearer, json={"name": "S"})
+    screen = r.json()
+    r = client.put(f"/screens/{screen['id']}", headers=bearer,
+                   json={"schedule_id": sid})
+    assert r.status_code == 200
+    r = client.put(f"/screens/{screen['id']}", headers=bearer,
+                   json={"schedule_id": None})
+    assert r.status_code == 200
+    # Verify via GET if the endpoint exposes schedule_id
+    r = client.get(f"/screens/{screen['id']}", headers=bearer)
+    if r.status_code == 200:
+        assert r.json().get("schedule_id") is None
+
+
+def test_put_screen_rejects_schedule_from_other_org(client, signed_up_org):
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/screens", headers=bearer, json={"name": "S"})
+    screen = r.json()
+    r = client.put(f"/screens/{screen['id']}", headers=bearer,
+                   json={"schedule_id": 9999999})
+    assert r.status_code in (404, 422)

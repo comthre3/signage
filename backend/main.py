@@ -456,8 +456,9 @@ class SiteCreate(BaseModel):
 
 
 class SiteUpdate(BaseModel):
-    name: Optional[str] = None
-    slug: Optional[str] = None
+    name:     Optional[str] = None
+    slug:     Optional[str] = None
+    timezone: Optional[str] = None
 
 
 class ScreenCreate(BaseModel):
@@ -470,13 +471,14 @@ class ScreenCreate(BaseModel):
 
 
 class ScreenUpdate(BaseModel):
-    name: Optional[str] = None
-    location: Optional[str] = None
-    resolution: Optional[str] = None
-    orientation: Optional[str] = None
-    site_id: Optional[int] = None
-    playlist_id: Optional[int] = None
+    name:          Optional[str] = None
+    location:      Optional[str] = None
+    resolution:    Optional[str] = None
+    orientation:   Optional[str] = None
+    site_id:       Optional[int] = None
+    playlist_id:   Optional[int] = None
     owner_user_id: Optional[int] = None
+    schedule_id:   Optional[int] = None    # new (Phase 2.5e)
 
 
 class PlaylistCreate(BaseModel):
@@ -1245,9 +1247,18 @@ def update_site(
     ):
         raise HTTPException(status_code=400, detail="Slug already exists")
 
+    if payload.timezone is not None:
+        try:
+            ZoneInfo(payload.timezone)
+        except ZoneInfoNotFoundError:
+            raise http_error(422, "site.timezone_invalid",
+                             f"Unknown timezone: {payload.timezone}")
+
+    timezone = payload.timezone if payload.timezone is not None else site["timezone"]
+
     execute(
-        "UPDATE sites SET name = ?, slug = ? WHERE id = ?",
-        (name, slug, site_id),
+        "UPDATE sites SET name = ?, slug = ?, timezone = ? WHERE id = ?",
+        (name, slug, timezone, site_id),
     )
     return query_one("SELECT * FROM sites WHERE id = ?", (site_id,))
 
@@ -1347,12 +1358,24 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
 def update_screen(
     screen_id: int, payload: ScreenUpdate, user: dict = Depends(require_roles("admin", "editor"))
 ) -> dict:
+    oid = org_id(user)
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
-        (screen_id, org_id(user)),
+        (screen_id, oid),
     )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
+
+    # Validate schedule ownership; use model_fields_set so explicit None
+    # (detach) is distinguished from "field not provided".
+    if "schedule_id" in payload.model_fields_set:
+        if payload.schedule_id is not None:
+            owned = query_one(
+                "SELECT id FROM schedules WHERE id = ? AND organization_id = ?",
+                (payload.schedule_id, oid),
+            )
+            if not owned:
+                raise http_error(404, "schedule.not_found", "Schedule not found")
 
     execute(
         """
@@ -1373,6 +1396,14 @@ def update_screen(
             screen_id,
         ),
     )
+
+    # Handle schedule_id separately (nullable detach requires model_fields_set)
+    if "schedule_id" in payload.model_fields_set:
+        execute(
+            "UPDATE screens SET schedule_id = ? WHERE id = ?",
+            (payload.schedule_id, screen_id),
+        )
+
     return sanitize_screen(query_one("SELECT * FROM screens WHERE id = ?", (screen_id,)))
 
 

@@ -131,7 +131,6 @@ def test_content_endpoint_uses_resolver_with_no_schedule(client, signed_up_org):
     assert body["playlist"]["id"] == info["playlist_a"]
 
 
-@pytest.mark.skip(reason="depends on Task 4+5 — schedule CRUD + PUT /screens schedule_id")
 def test_content_endpoint_picks_scheduled_playlist(client, signed_up_org):
     """A schedule with a rule covering all hours of all days → /content
     returns the scheduled playlist, not the default. Un-skipped in Task 5."""
