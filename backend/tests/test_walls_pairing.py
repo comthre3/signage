@@ -16,8 +16,8 @@ def client():
 def make_admin(label="wt"):
     slug = label + secrets.token_hex(3)
     oid = execute(
-        "INSERT INTO organizations (name, slug, created_at) VALUES (?, ?, ?)",
-        (f"O {slug}", slug, utc_now_iso()),
+        "INSERT INTO organizations (name, slug, subscription_status, created_at) VALUES (?, ?, ?, ?)",
+        (f"O {slug}", slug, "active", utc_now_iso()),
     )
     uid = execute(
         "INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at) "

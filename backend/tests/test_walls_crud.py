@@ -109,8 +109,8 @@ def admin_token():
     from main import hash_password
     org_slug = "wt" + secrets.token_hex(3)
     org_id = execute(
-        "INSERT INTO organizations (name, slug, created_at) VALUES (?, ?, ?)",
-        (f"WallTest {org_slug}", org_slug, utc_now_iso()),
+        "INSERT INTO organizations (name, slug, subscription_status, created_at) VALUES (?, ?, ?, ?)",
+        (f"WallTest {org_slug}", org_slug, "active", utc_now_iso()),
     )
     user_id = execute(
         "INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
