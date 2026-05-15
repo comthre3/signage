@@ -2351,3 +2351,31 @@ code, kbd, samp, pre,
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Phase 2.5f — subscription banner */
+.sub-banner {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 20;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  border-block-end: 1px solid transparent;
+}
+.sub-banner-info  { background: #e6f0ff; color: #2c4d80; border-block-end-color: #c8dafa; }
+.sub-banner-warn  { background: #fdf3d6; color: #6a4a14; border-block-end-color: #f1d68a; }
+.sub-banner-error { background: #fde8e8; color: #7a1f1f; border-block-end-color: #f4b8b8; }
+.sub-banner-cta {
+  margin-inline-start: auto;
+  font-weight: 600;
+  text-decoration: underline;
+  color: inherit;
+}
+.sub-banner-dismiss {
+  background: transparent; border: 0;
+  cursor: pointer; font-size: 18px; line-height: 1;
+  color: inherit; padding: 0 4px;
+}
+.sub-banner.hidden { display: none; }

@@ -364,5 +364,16 @@
   "audit_log.pagination.older": "Older →",
   "audit_log.pagination.info": "{start}–{end} of {total}",
   "audit_log.empty": "No audit events match these filters.",
-  "audit_log.error.fetch": "Failed to load audit log."
+  "audit_log.error.fetch": "Failed to load audit log.",
+
+  "sub_banner.trialing": "Trial — {n} days left.",
+  "sub_banner.trialing_urgent": "Trial ends in {n} days.",
+  "sub_banner.trial_expired": "Trial ended — subscribe to make changes.",
+  "sub_banner.renewal_soon": "Renewal in {n} days.",
+  "sub_banner.lapsed": "Subscription expired — renew to make changes.",
+  "sub_banner.cta_subscribe": "Subscribe",
+  "sub_banner.cta_renew": "Renew",
+  "sub_banner.cta_manage": "Manage",
+  "error.subscription.trial_expired": "Your trial has ended. Subscribe to continue making changes.",
+  "error.subscription.expired": "Your subscription has expired. Renew to continue making changes."
 }
