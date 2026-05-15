@@ -364,5 +364,16 @@
   "audit_log.pagination.older": "الأقدم →",
   "audit_log.pagination.info": "{start}–{end} من {total}",
   "audit_log.empty": "لا توجد أحداث تطابق المرشحات.",
-  "audit_log.error.fetch": "تعذّر تحميل سجل التدقيق."
+  "audit_log.error.fetch": "تعذّر تحميل سجل التدقيق.",
+
+  "sub_banner.trialing": "التجربة — تبقى {n} أيام.",
+  "sub_banner.trialing_urgent": "تنتهي التجربة خلال {n} أيام.",
+  "sub_banner.trial_expired": "انتهت التجربة — اشترك لإجراء التغييرات.",
+  "sub_banner.renewal_soon": "التجديد خلال {n} أيام.",
+  "sub_banner.lapsed": "انتهى الاشتراك — جدّد لإجراء التغييرات.",
+  "sub_banner.cta_subscribe": "اشترك",
+  "sub_banner.cta_renew": "جدّد",
+  "sub_banner.cta_manage": "إدارة",
+  "error.subscription.trial_expired": "انتهت تجربتك. اشترك لمتابعة إجراء التغييرات.",
+  "error.subscription.expired": "انتهى اشتراكك. جدّد لمتابعة إجراء التغييرات."
 }

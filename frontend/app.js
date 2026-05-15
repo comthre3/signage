@@ -127,6 +127,7 @@ function withLoading(btn, fn) {
 /* ── State ───────────────────────────────────────────────────── */
 const state = {
   sites: [], screens: [], playlists: [], schedules: [], media: [], users: [], groups: [],
+  org: null,
 };
 
 const zonesState = {
@@ -221,6 +222,16 @@ async function api(path, options = {}) {
     const err = new Error(msg);
     err.status = res.status;
     err.data   = data;
+    if (data?.detail?.code?.startsWith("subscription.")) {
+      // Refresh org state so banner re-renders correctly
+      try {
+        const fresh = await fetch(`${API_BASE}/organization`, { headers });
+        if (fresh.ok) {
+          state.org = await fresh.json();
+          SubscriptionBanner.update(state.org);
+        }
+      } catch (_) { /* swallow */ }
+    }
     throw err;
   }
   return res.json();
@@ -1253,6 +1264,8 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
     await withLoading(btn, async () => {
       const data = await api("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
       setAuth(data.token, data.user);
+      state.org = data.organization;
+      SubscriptionBanner.update(state.org);
 
       const resumeRaw = sessionStorage.getItem("pair_resume");
       if (resumeRaw) {
@@ -1429,6 +1442,8 @@ document.getElementById("signup-password-form").addEventListener("submit", async
         }),
       });
       setAuth(data.token, data.user);
+      state.org = data.organization;
+      SubscriptionBanner.update(state.org);
       showDashboard();
       await bootData();
       toast(Khan.t("toast.signup_welcome", "Welcome to Khanshoof, {name}! Your 5-day trial is active.").replace("{name}", signupState.business_name), "success", 6000);
@@ -1522,7 +1537,9 @@ async function bootData() {
 async function loadOrganization() {
   try {
     const org = await api("/organization");
+    state.org = org;
     renderPlanCard(org);
+    SubscriptionBanner.update(org);
   } catch (err) {
     console.error("Failed to load organization", err);
   }
@@ -3327,4 +3344,93 @@ const AuditLog = (() => {
 })();
 
 AuditLog.init();
+
+// ── Subscription banner (Phase 2.5f) ─────────────────────────────────
+const SubscriptionBanner = (() => {
+  const DISMISS_KEY = "khan_sub_banner_dismissed_state";
+  let lastState = null;
+
+  function update(orgData) {
+    const banner = document.getElementById("subscription-banner");
+    if (!banner) return;
+
+    const subState = orgData?.state;
+    const days     = orgData?.days_remaining;
+    lastState      = subState;
+
+    // Reset dismiss memory if state has changed since last dismiss
+    const dismissedFor = sessionStorage.getItem(DISMISS_KEY);
+    if (dismissedFor && dismissedFor !== subState) {
+      sessionStorage.removeItem(DISMISS_KEY);
+    }
+    if (sessionStorage.getItem(DISMISS_KEY) === subState) {
+      banner.classList.add("hidden");
+      return;
+    }
+
+    const cfg = computeBannerConfig(subState, days);
+    if (!cfg) { banner.classList.add("hidden"); return; }
+
+    banner.classList.remove("hidden", "sub-banner-info", "sub-banner-warn", "sub-banner-error");
+    banner.classList.add(`sub-banner-${cfg.tone}`);
+    document.getElementById("subscription-banner-text").textContent = cfg.text;
+
+    const cta = document.getElementById("subscription-banner-cta");
+    cta.textContent = cfg.ctaText;
+    cta.onclick = (e) => {
+      e.preventDefault();
+      if (typeof showSection === "function") showSection("billing");
+    };
+  }
+
+  function computeBannerConfig(subState, days) {
+    switch (subState) {
+      case "trialing":
+        if (days == null) return null;
+        if (days > 3) return {
+          tone:    "info",
+          text:    Khan.t("sub_banner.trialing", "Trial — {n} days left.").replace("{n}", days),
+          ctaText: Khan.t("sub_banner.cta_subscribe", "Subscribe"),
+        };
+        return {
+          tone:    "warn",
+          text:    Khan.t("sub_banner.trialing_urgent", "Trial ends in {n} days.").replace("{n}", days),
+          ctaText: Khan.t("sub_banner.cta_subscribe", "Subscribe"),
+        };
+      case "trial_expired":
+        return {
+          tone:    "error",
+          text:    Khan.t("sub_banner.trial_expired", "Trial ended — subscribe to make changes."),
+          ctaText: Khan.t("sub_banner.cta_subscribe", "Subscribe"),
+        };
+      case "active":
+        if (days != null && days <= 7) return {
+          tone:    "warn",
+          text:    Khan.t("sub_banner.renewal_soon", "Renewal in {n} days.").replace("{n}", days),
+          ctaText: Khan.t("sub_banner.cta_manage", "Manage"),
+        };
+        return null;
+      case "lapsed":
+        return {
+          tone:    "error",
+          text:    Khan.t("sub_banner.lapsed", "Subscription expired — renew to make changes."),
+          ctaText: Khan.t("sub_banner.cta_renew", "Renew"),
+        };
+      default:
+        return null;
+    }
+  }
+
+  function init() {
+    document.getElementById("subscription-banner-dismiss")
+      ?.addEventListener("click", () => {
+        if (lastState) sessionStorage.setItem(DISMISS_KEY, lastState);
+        document.getElementById("subscription-banner").classList.add("hidden");
+      });
+  }
+
+  return { update, init };
+})();
+
+SubscriptionBanner.init();
 

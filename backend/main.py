@@ -478,6 +478,39 @@ def require_roles(*roles: str):
     return dependency
 
 
+def require_active_subscription(user: dict = Depends(get_current_user)) -> dict:
+    """Block write operations when the org's subscription is expired/lapsed.
+
+    Used as a FastAPI dependency, alongside require_roles when both are needed:
+        Depends(require_roles("admin"))         # role check
+        Depends(require_active_subscription)    # subscription check
+    Both run; both must pass.
+    """
+    org = query_one(
+        "SELECT id, subscription_status, trial_ends_at, paid_through_at "
+        "FROM organizations WHERE id = ?",
+        (org_id(user),),
+    )
+    if not org:
+        raise http_error(403, "no_organization", "No organization for user")
+
+    state = subscription_state(org)
+    if not state["can_write"]:
+        code = ("subscription.trial_expired" if state["state"] == "trial_expired"
+                else "subscription.expired")
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code":        code,
+                "message":     "Subscription required to make changes.",
+                "message_key": "error." + code,
+                "state":       state["state"],
+                "expires_at":  state["expires_at"],
+            },
+        )
+    return user
+
+
 def can_access_screen(user: dict, screen_id: int) -> bool:
     if user.get("is_admin"):
         return True
@@ -939,6 +972,9 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
     )
     execute("DELETE FROM pending_signups WHERE email = ?", (email,))
 
+    org_row = query_one("SELECT * FROM organizations WHERE id = ?", (new_org_id,))
+    sub_state = subscription_state(org_row)
+
     return {
         "token": session_token,
         "user": {
@@ -956,6 +992,11 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
             "subscription_status": "trialing",
             "trial_ends_at": trial_ends_at,
             "locale": "en",
+            # Phase 2.5f derived fields:
+            "state": sub_state["state"],
+            "can_write": sub_state["can_write"],
+            "days_remaining": sub_state["days_remaining"],
+            "expires_at": sub_state["expires_at"],
         },
     }
 
@@ -970,6 +1011,11 @@ def get_organization(user: dict = Depends(get_current_user)) -> dict:
         (org["id"],),
     )
     org["screens_used"] = int(screens_count["n"] if screens_count else 0)
+    sub_state = subscription_state(org)
+    org["state"] = sub_state["state"]
+    org["can_write"] = sub_state["can_write"]
+    org["days_remaining"] = sub_state["days_remaining"]
+    org["expires_at"] = sub_state["expires_at"]
     return org
 
 
@@ -981,6 +1027,7 @@ class OrganizationLocaleUpdate(BaseModel):
 def patch_organization_me(
     payload: OrganizationLocaleUpdate,
     user: dict = Depends(require_roles("admin")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     if payload.locale not in ("en", "ar"):
         raise http_error(400, "invalid_locale", "Locale must be 'en' or 'ar'")
@@ -1074,6 +1121,7 @@ def login(request: Request, payload: LoginRequest) -> dict:
     audit(request, action="auth.login.success",
           actor={"id": user["id"], "username": user["username"],
                  "organization_id": user["organization_id"]})
+    sub_state = subscription_state(org)
     return {
         "token": token,
         "user": {
@@ -1091,6 +1139,11 @@ def login(request: Request, payload: LoginRequest) -> dict:
             "subscription_status": org["subscription_status"],
             "trial_ends_at": org["trial_ends_at"],
             "locale": org["locale"],
+            # Phase 2.5f derived fields:
+            "state": sub_state["state"],
+            "can_write": sub_state["can_write"],
+            "days_remaining": sub_state["days_remaining"],
+            "expires_at": sub_state["expires_at"],
         },
     }
 
@@ -1192,7 +1245,8 @@ def _load_schedule(sid: int, org: int) -> Optional[dict]:
 
 @app.post("/schedules", status_code=201)
 def create_schedule(payload: ScheduleCreate,
-                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+                    user: dict = Depends(require_roles("admin", "editor")),
+                    _sub: dict = Depends(require_active_subscription)) -> dict:
     sid = execute(
         "INSERT INTO schedules (organization_id, name) VALUES (?, ?)",
         (org_id(user), payload.name),
@@ -1222,7 +1276,8 @@ def get_schedule(sid: int,
 
 @app.put("/schedules/{sid}")
 def update_schedule(sid: int, payload: ScheduleUpdate,
-                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+                    user: dict = Depends(require_roles("admin", "editor")),
+                    _sub: dict = Depends(require_active_subscription)) -> dict:
     sched = _load_schedule(sid, org_id(user))
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
@@ -1233,7 +1288,8 @@ def update_schedule(sid: int, payload: ScheduleUpdate,
 
 @app.delete("/schedules/{sid}", status_code=204)
 def delete_schedule(sid: int,
-                    user: dict = Depends(require_roles("admin"))) -> None:
+                    user: dict = Depends(require_roles("admin")),
+                    _sub: dict = Depends(require_active_subscription)) -> None:
     sched = _load_schedule(sid, org_id(user))
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
@@ -1242,7 +1298,8 @@ def delete_schedule(sid: int,
 
 @app.put("/schedules/{sid}/rules")
 def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
-                           user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+                           user: dict = Depends(require_roles("admin", "editor")),
+                           _sub: dict = Depends(require_active_subscription)) -> dict:
     sched = _load_schedule(sid, org_id(user))
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
@@ -1365,7 +1422,8 @@ def get_audit_log(
 
 
 @app.post("/users")
-def create_user(request: Request, payload: UserCreate, user: dict = Depends(require_roles("admin"))) -> dict:
+def create_user(request: Request, payload: UserCreate, user: dict = Depends(require_roles("admin")),
+                _sub: dict = Depends(require_active_subscription)) -> dict:
     if query_one("SELECT id FROM users WHERE username = ?", (payload.username,)):
         raise http_error(400, "username_taken", "Username already exists")
     if payload.role not in ROLE_LEVELS:
@@ -1395,7 +1453,8 @@ def create_user(request: Request, payload: UserCreate, user: dict = Depends(requ
 
 
 @app.put("/users/{user_id}")
-def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
+def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict = Depends(require_roles("admin")),
+                _sub: dict = Depends(require_active_subscription)) -> dict:
     target = query_one(
         "SELECT * FROM users WHERE id = ? AND organization_id = ?",
         (user_id, org_id(user)),
@@ -1433,7 +1492,8 @@ def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict 
 
 
 @app.delete("/users/{user_id}")
-def delete_user(request: Request, user_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_user(request: Request, user_id: int, user: dict = Depends(require_roles("admin")),
+                _sub: dict = Depends(require_active_subscription)) -> dict:
     target = query_one(
         "SELECT * FROM users WHERE id = ? AND organization_id = ?",
         (user_id, org_id(user)),
@@ -1457,7 +1517,8 @@ def list_sites(user: dict = Depends(get_current_user)) -> list[dict]:
 
 
 @app.post("/sites")
-def create_site(payload: SiteCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def create_site(payload: SiteCreate, user: dict = Depends(require_roles("admin", "editor")),
+                _sub: dict = Depends(require_active_subscription)) -> dict:
     oid = org_id(user)
     slug = slugify(payload.slug or payload.name)
     base_slug = slug
@@ -1477,7 +1538,8 @@ def create_site(payload: SiteCreate, user: dict = Depends(require_roles("admin",
 
 @app.put("/sites/{site_id}")
 def update_site(
-    site_id: int, payload: SiteUpdate, user: dict = Depends(require_roles("admin", "editor"))
+    site_id: int, payload: SiteUpdate, user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     oid = org_id(user)
     site = query_one(
@@ -1512,7 +1574,8 @@ def update_site(
 
 
 @app.delete("/sites/{site_id}")
-def delete_site(site_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_site(site_id: int, user: dict = Depends(require_roles("admin")),
+                _sub: dict = Depends(require_active_subscription)) -> dict:
     site = query_one(
         "SELECT * FROM sites WHERE id = ? AND organization_id = ?",
         (site_id, org_id(user)),
@@ -1558,7 +1621,8 @@ def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
 
 
 @app.post("/screens")
-def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("admin", "editor")),
+                  _sub: dict = Depends(require_active_subscription)) -> dict:
     oid = org_id(user)
     org = query_one(
         "SELECT screen_limit FROM organizations WHERE id = ?", (oid,)
@@ -1604,7 +1668,8 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
 
 @app.put("/screens/{screen_id}")
 def update_screen(
-    screen_id: int, payload: ScreenUpdate, user: dict = Depends(require_roles("admin", "editor"))
+    screen_id: int, payload: ScreenUpdate, user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     oid = org_id(user)
     screen = query_one(
@@ -1656,7 +1721,8 @@ def update_screen(
 
 
 @app.delete("/screens/{screen_id}")
-def delete_screen(request: Request, screen_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_screen(request: Request, screen_id: int, user: dict = Depends(require_roles("admin")),
+                  _sub: dict = Depends(require_active_subscription)) -> dict:
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
         (screen_id, org_id(user)),
@@ -1691,6 +1757,7 @@ def update_screen_zones(
     screen_id: int,
     payload: ScreenZonesPayload,
     user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     screen = query_one(
         "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
@@ -1788,7 +1855,8 @@ def list_zone_templates(
 
 @app.post("/zone-templates")
 def create_zone_template(
-    payload: ZoneTemplateCreate, user: dict = Depends(require_roles("admin", "editor"))
+    payload: ZoneTemplateCreate, user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     layout_json = json.dumps([zone.dict() for zone in payload.zones])
     template_id = execute(
@@ -1809,6 +1877,7 @@ def apply_zone_template(
     screen_id: int,
     payload: ZoneTemplateApply,
     user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     oid = org_id(user)
     screen = query_one(
@@ -1839,7 +1908,8 @@ def list_groups(user: dict = Depends(require_roles("admin"))) -> list[dict]:
 
 
 @app.post("/groups")
-def create_group(payload: GroupCreate, user: dict = Depends(require_roles("admin"))) -> dict:
+def create_group(payload: GroupCreate, user: dict = Depends(require_roles("admin")),
+                 _sub: dict = Depends(require_active_subscription)) -> dict:
     group_id = execute(
         "INSERT INTO groups (organization_id, name, created_at) VALUES (?, ?, ?)",
         (org_id(user), payload.name, utc_now_iso()),
@@ -1848,7 +1918,8 @@ def create_group(payload: GroupCreate, user: dict = Depends(require_roles("admin
 
 
 @app.put("/groups/{group_id}")
-def update_group(group_id: int, payload: GroupUpdate, user: dict = Depends(require_roles("admin"))) -> dict:
+def update_group(group_id: int, payload: GroupUpdate, user: dict = Depends(require_roles("admin")),
+                 _sub: dict = Depends(require_active_subscription)) -> dict:
     group = query_one(
         "SELECT id FROM groups WHERE id = ? AND organization_id = ?",
         (group_id, org_id(user)),
@@ -1860,7 +1931,8 @@ def update_group(group_id: int, payload: GroupUpdate, user: dict = Depends(requi
 
 
 @app.delete("/groups/{group_id}")
-def delete_group(group_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_group(group_id: int, user: dict = Depends(require_roles("admin")),
+                 _sub: dict = Depends(require_active_subscription)) -> dict:
     group = query_one(
         "SELECT id FROM groups WHERE id = ? AND organization_id = ?",
         (group_id, org_id(user)),
@@ -1875,7 +1947,8 @@ def delete_group(group_id: int, user: dict = Depends(require_roles("admin"))) ->
 
 @app.put("/users/{user_id}/groups")
 def update_user_groups(
-    user_id: int, payload: UserGroupsPayload, user: dict = Depends(require_roles("admin"))
+    user_id: int, payload: UserGroupsPayload, user: dict = Depends(require_roles("admin")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     oid = org_id(user)
     target = query_one(
@@ -1932,7 +2005,8 @@ def list_user_groups(
 
 @app.put("/screens/{screen_id}/groups")
 def update_screen_groups(
-    screen_id: int, payload: ScreenGroupsPayload, user: dict = Depends(require_roles("admin"))
+    screen_id: int, payload: ScreenGroupsPayload, user: dict = Depends(require_roles("admin")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     oid = org_id(user)
     screen = query_one(
@@ -1985,6 +2059,83 @@ def list_screen_groups(
         (screen_id,),
     )
     return {"screen_id": screen_id, "groups": groups}
+
+
+# ── Subscription state (Phase 2.5f) ───────────────────────────────────
+
+
+def _parse_iso(value) -> Optional[datetime]:
+    """Accept str (ISO) or already-parsed datetime; return tz-aware UTC datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def subscription_state(org: dict) -> dict:
+    """Derive subscription state from raw org columns.
+
+    Returns:
+      {
+        "state":          "trialing" | "trial_expired" | "active" | "lapsed",
+        "can_write":      bool,
+        "days_remaining": int | None,
+        "expires_at":     ISO string | None,
+      }
+
+    Convention: subscription_status='active' with paid_through_at IS NULL
+    means "no expiry" (seeded default org, admin override).
+    """
+    status = org.get("subscription_status") or "trialing"
+    now = datetime.now(timezone.utc)
+
+    def _days_until(ts) -> int:
+        """Whole days remaining, rounded up so +3d still shows 3."""
+        import math
+        return max(0, math.ceil((ts - now).total_seconds() / 86400))
+
+    if status == "trialing":
+        ts = _parse_iso(org.get("trial_ends_at"))
+        if ts and ts > now:
+            return {
+                "state":          "trialing",
+                "can_write":      True,
+                "days_remaining": _days_until(ts),
+                "expires_at":     ts.isoformat(),
+            }
+        return {
+            "state":          "trial_expired",
+            "can_write":      False,
+            "days_remaining": 0,
+            "expires_at":     ts.isoformat() if ts else None,
+        }
+
+    if status == "active":
+        ts = _parse_iso(org.get("paid_through_at"))
+        if ts is None:
+            return {"state": "active", "can_write": True,
+                    "days_remaining": None, "expires_at": None}
+        if ts > now:
+            return {
+                "state":          "active",
+                "can_write":      True,
+                "days_remaining": _days_until(ts),
+                "expires_at":     ts.isoformat(),
+            }
+        return {
+            "state":          "lapsed",
+            "can_write":      False,
+            "days_remaining": 0,
+            "expires_at":     ts.isoformat(),
+        }
+
+    return {"state": status, "can_write": True,
+            "days_remaining": None, "expires_at": None}
 
 
 # ── Dayparting (Phase 2.5e) ───────────────────────────────────────────
@@ -2205,6 +2356,7 @@ class PairClaimRequest(BaseModel):
 def claim_pair_code(
     payload: PairClaimRequest,
     user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (payload.code,))
     if not row:
@@ -2303,7 +2455,9 @@ def _validate_spanned_fields(payload: WallCreate) -> None:
 
 
 @app.post("/walls", status_code=201)
-def create_wall(request: Request, payload: WallCreate, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def create_wall(request: Request, payload: WallCreate,
+                user: dict = Depends(require_roles("admin", "editor")),
+                _sub: dict = Depends(require_active_subscription)) -> dict:
     if payload.mode == "spanned":
         _validate_spanned_fields(payload)
     elif payload.mode == "mirrored":
@@ -2381,7 +2535,8 @@ def get_wall(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
 
 @app.patch("/walls/{wall_id}")
 def patch_wall(wall_id: int, payload: WallUpdate,
-               user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+               user: dict = Depends(require_roles("admin", "editor")),
+               _sub: dict = Depends(require_active_subscription)) -> dict:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
                      (wall_id, org_id(user)))
     if not wall:
@@ -2421,7 +2576,8 @@ def patch_wall(wall_id: int, payload: WallUpdate,
 
 @app.patch("/walls/{wall_id}/cells")
 def patch_wall_cell(wall_id: int, payload: WallCellUpdate,
-                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+                    user: dict = Depends(require_roles("admin", "editor")),
+                    _sub: dict = Depends(require_active_subscription)) -> dict:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
                      (wall_id, org_id(user)))
     if not wall:
@@ -2449,7 +2605,9 @@ def patch_wall_cell(wall_id: int, payload: WallCellUpdate,
 
 
 @app.delete("/walls/{wall_id}", status_code=204)
-def delete_wall(request: Request, wall_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> None:
+def delete_wall(request: Request, wall_id: int,
+                user: dict = Depends(require_roles("admin", "editor")),
+                _sub: dict = Depends(require_active_subscription)) -> None:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
                      (wall_id, org_id(user)))
     if not wall:
@@ -2474,7 +2632,8 @@ def _generate_unique_wall_pair_code() -> str:
 
 @app.post("/walls/{wall_id}/cells/{row}/{col}/pair")
 def pair_wall_cell(wall_id: int, row: int, col: int,
-                   user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+                   user: dict = Depends(require_roles("admin", "editor")),
+                   _sub: dict = Depends(require_active_subscription)) -> dict:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
                      (wall_id, org_id(user)))
     if not wall:
@@ -2549,7 +2708,8 @@ def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
 
 @app.delete("/walls/{wall_id}/cells/{row}/{col}/pairing", status_code=204)
 def unpair_wall_cell(wall_id: int, row: int, col: int,
-                     user: dict = Depends(require_roles("admin", "editor"))) -> None:
+                     user: dict = Depends(require_roles("admin", "editor")),
+                     _sub: dict = Depends(require_active_subscription)) -> None:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
                      (wall_id, org_id(user)))
     if not wall:
@@ -2619,7 +2779,8 @@ class CanvasItemCreate(BaseModel):
 
 @app.post("/walls/{wall_id}/canvas-playlist/items", status_code=201)
 def add_canvas_item(wall_id: int, payload: CanvasItemCreate,
-                    user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+                    user: dict = Depends(require_roles("admin", "editor")),
+                    _sub: dict = Depends(require_active_subscription)) -> dict:
     wall = _load_spanned_wall_or_404(wall_id, org_id(user))
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
@@ -2654,7 +2815,8 @@ class CanvasItemUpdate(BaseModel):
 
 @app.patch("/walls/{wall_id}/canvas-playlist/items/{item_id}")
 def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
-                      user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+                      user: dict = Depends(require_roles("admin", "editor")),
+                      _sub: dict = Depends(require_active_subscription)) -> dict:
     wall = _load_spanned_wall_or_404(wall_id, org_id(user))
     item = query_one(
         "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
@@ -2672,7 +2834,8 @@ def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
 
 @app.delete("/walls/{wall_id}/canvas-playlist/items/{item_id}", status_code=204)
 def delete_canvas_item(wall_id: int, item_id: int,
-                       user: dict = Depends(require_roles("admin", "editor"))) -> None:
+                       user: dict = Depends(require_roles("admin", "editor")),
+                       _sub: dict = Depends(require_active_subscription)) -> None:
     wall = _load_spanned_wall_or_404(wall_id, org_id(user))
     execute(
         "DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?",
@@ -2704,7 +2867,8 @@ def _ensure_pdf_rasterized(media: dict, wall: dict) -> None:
 
 @app.post("/screens/{screen_id}/preview-token")
 def create_preview_token(
-    screen_id: int, user: dict = Depends(require_roles("admin", "editor"))
+    screen_id: int, user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
@@ -2755,7 +2919,9 @@ def list_playlists(user: dict = Depends(get_current_user)) -> list[dict]:
 
 @app.post("/playlists")
 def create_playlist(
-    payload: PlaylistCreate, user: dict = Depends(require_roles("admin", "editor"))
+    payload: PlaylistCreate,
+    user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist_id = execute(
         "INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
@@ -2797,6 +2963,7 @@ def update_playlist(
     playlist_id: int,
     payload: PlaylistUpdate,
     user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
@@ -2812,7 +2979,8 @@ def update_playlist(
 
 
 @app.delete("/playlists/{playlist_id}")
-def delete_playlist(playlist_id: int, user: dict = Depends(require_roles("admin"))) -> dict:
+def delete_playlist(playlist_id: int, user: dict = Depends(require_roles("admin")),
+                    _sub: dict = Depends(require_active_subscription)) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
         (playlist_id, org_id(user)),
@@ -2846,7 +3014,8 @@ def _default_duration_seconds(media: dict) -> int:
 
 @app.post("/playlists/{playlist_id}/items")
 def add_playlist_item(
-    playlist_id: int, payload: PlaylistItemCreate, user: dict = Depends(require_roles("admin", "editor"))
+    playlist_id: int, payload: PlaylistItemCreate, user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     oid = org_id(user)
     playlist = query_one(
@@ -2887,7 +3056,8 @@ def add_playlist_item(
 
 @app.delete("/playlists/{playlist_id}/items/{item_id}")
 def delete_playlist_item(
-    playlist_id: int, item_id: int, user: dict = Depends(require_roles("admin", "editor"))
+    playlist_id: int, item_id: int, user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist = query_one(
         "SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
@@ -2924,6 +3094,7 @@ async def upload_media(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     contents = await file.read()
     if not contents:
@@ -2961,7 +3132,8 @@ async def upload_media(
 
 @app.post("/media/url")
 def create_media_url(
-    payload: MediaUrlCreate, user: dict = Depends(require_roles("admin", "editor"))
+    payload: MediaUrlCreate, user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     url = payload.url.strip()
     if not re.match(r"^https?://", url):
@@ -2979,7 +3151,8 @@ def create_media_url(
 
 
 @app.delete("/media/{media_id}")
-def delete_media(media_id: int, user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def delete_media(media_id: int, user: dict = Depends(require_roles("admin", "editor")),
+                 _sub: dict = Depends(require_active_subscription)) -> dict:
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
         (media_id, org_id(user)),
