@@ -66,3 +66,47 @@ def test_claim_returns_true_for_different_type_same_expires(client):
     ts = datetime(2099, 4, 1, tzinfo=timezone.utc)
     assert _claim_reminder(org_id, "trial_3day", ts) is True
     assert _claim_reminder(org_id, "trial_0day", ts) is True
+
+
+# ── Email templates ───────────────────────────────────────────────────
+import pytest
+
+
+def _fake_org(locale="en", name="Test Cafe"):
+    return {"id": 1, "name": name, "locale": locale}
+
+
+def test_trial_3day_en_subject():
+    from main import _reminder_template
+    subject, _html, _text = _reminder_template("trial_3day", _fake_org("en"), "en")
+    assert "3 days" in subject.lower() or "trial" in subject.lower()
+
+
+def test_trial_3day_ar_subject():
+    from main import _reminder_template
+    subject, _html, _text = _reminder_template("trial_3day", _fake_org("ar"), "ar")
+    assert "تجربة" in subject or "أيام" in subject
+
+
+def test_trial_0day_en_uses_past_tense():
+    from main import _reminder_template
+    subject, _html, text = _reminder_template("trial_0day", _fake_org("en"), "en")
+    assert "ended" in subject.lower() or "ended" in text.lower()
+
+
+def test_renewal_7day_en_includes_billing_link():
+    from main import _reminder_template
+    _subject, html, text = _reminder_template("renewal_7day", _fake_org("en"), "en")
+    assert "billing" in html or "billing" in text
+
+
+def test_renewal_7day_ar_includes_billing_link():
+    from main import _reminder_template
+    _subject, html, text = _reminder_template("renewal_7day", _fake_org("ar"), "ar")
+    assert "billing" in html or "billing" in text
+
+
+def test_unknown_reminder_type_raises():
+    from main import _reminder_template
+    with pytest.raises(ValueError):
+        _reminder_template("not_a_type", _fake_org("en"), "en")
