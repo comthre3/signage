@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -2136,6 +2137,266 @@ def subscription_state(org: dict) -> dict:
 
     return {"state": status, "can_write": True,
             "days_remaining": None, "expires_at": None}
+
+
+# ── Subscription reminders (Phase 2.5g) ───────────────────────────────
+
+
+def _claim_reminder(org_id: int, reminder_type: str, expires_at: datetime) -> bool:
+    """Try to claim the right to send this reminder. Returns True iff newly claimed.
+
+    Race-safe across replicas via UNIQUE(org, type, expires_at) + ON CONFLICT.
+    A `True` return means "this caller got the row in; you may send." A `False`
+    means "someone else already sent this; skip."
+    """
+    row = query_one(
+        """
+        INSERT INTO subscription_reminders (organization_id, reminder_type, expires_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (organization_id, reminder_type, expires_at) DO NOTHING
+        RETURNING id
+        """,
+        (org_id, reminder_type, expires_at),
+    )
+    return row is not None
+
+
+def _reminder_template(reminder_type: str, org: dict, locale: str) -> tuple[str, str, str]:
+    """Return (subject, html, text) for the given reminder + locale."""
+    is_ar = locale == "ar"
+    biz   = org.get("name") or ("شاشاتك" if is_ar else "your business")
+    base  = os.getenv("APP_URL", "https://app.khanshoof.com").rstrip("/")
+    cta   = f"{base}/?section=billing"
+    if reminder_type == "trial_3day":
+        return _tpl_trial_3day(biz, cta, is_ar)
+    if reminder_type == "trial_0day":
+        return _tpl_trial_0day(biz, cta, is_ar)
+    if reminder_type == "renewal_7day":
+        return _tpl_renewal_7day(biz, cta, is_ar)
+    raise ValueError(f"Unknown reminder_type: {reminder_type}")
+
+
+def _tpl_trial_3day(biz: str, cta: str, is_ar: bool) -> tuple[str, str, str]:
+    if is_ar:
+        subject = "تنتهي تجربتك خلال ٣ أيام"
+        text = (
+            f"مرحبًا {biz}،\n\n"
+            f"تنتهي تجربة Khanshoof المجانية خلال ٣ أيام. "
+            f"للاستمرار في تعديل المحتوى، اشترك من هنا:\n{cta}\n\n"
+            f"الشاشات ستستمر في تشغيل المحتوى المخزّن لديها.\n\n"
+            f"— فريق Khanshoof"
+        )
+        html = (
+            f"<p>مرحبًا {biz}،</p>"
+            f"<p>تنتهي تجربة Khanshoof المجانية خلال ٣ أيام. "
+            f"للاستمرار في تعديل المحتوى، <a href=\"{cta}\">اشترك من هنا</a>.</p>"
+            f"<p>الشاشات ستستمر في تشغيل المحتوى المخزّن لديها.</p>"
+            f"<p>— فريق Khanshoof</p>"
+        )
+    else:
+        subject = "Your trial ends in 3 days"
+        text = (
+            f"Hi {biz},\n\n"
+            f"Your Khanshoof trial ends in 3 days. "
+            f"To keep editing content past then, subscribe here:\n{cta}\n\n"
+            f"Your screens will keep playing their current content.\n\n"
+            f"— The Khanshoof team"
+        )
+        html = (
+            f"<p>Hi {biz},</p>"
+            f"<p>Your Khanshoof trial ends in 3 days. "
+            f"To keep editing content past then, <a href=\"{cta}\">subscribe here</a>.</p>"
+            f"<p>Your screens will keep playing their current content.</p>"
+            f"<p>— The Khanshoof team</p>"
+        )
+    return subject, html, text
+
+
+def _tpl_trial_0day(biz: str, cta: str, is_ar: bool) -> tuple[str, str, str]:
+    if is_ar:
+        subject = "انتهت تجربتك"
+        text = (
+            f"مرحبًا {biz}،\n\n"
+            f"انتهت تجربة Khanshoof المجانية. "
+            f"لمتابعة إجراء التغييرات على المحتوى، اشترك من هنا:\n{cta}\n\n"
+            f"الشاشات ستستمر في تشغيل المحتوى الحالي بلا انقطاع.\n\n"
+            f"— فريق Khanshoof"
+        )
+        html = (
+            f"<p>مرحبًا {biz}،</p>"
+            f"<p>انتهت تجربة Khanshoof المجانية. "
+            f"لمتابعة إجراء التغييرات على المحتوى، <a href=\"{cta}\">اشترك من هنا</a>.</p>"
+            f"<p>الشاشات ستستمر في تشغيل المحتوى الحالي بلا انقطاع.</p>"
+            f"<p>— فريق Khanshoof</p>"
+        )
+    else:
+        subject = "Your trial has ended"
+        text = (
+            f"Hi {biz},\n\n"
+            f"Your Khanshoof trial has ended. "
+            f"To resume making changes to your content, subscribe here:\n{cta}\n\n"
+            f"Your screens are still playing their current content with no interruption.\n\n"
+            f"— The Khanshoof team"
+        )
+        html = (
+            f"<p>Hi {biz},</p>"
+            f"<p>Your Khanshoof trial has ended. "
+            f"To resume making changes to your content, <a href=\"{cta}\">subscribe here</a>.</p>"
+            f"<p>Your screens are still playing their current content with no interruption.</p>"
+            f"<p>— The Khanshoof team</p>"
+        )
+    return subject, html, text
+
+
+def _tpl_renewal_7day(biz: str, cta: str, is_ar: bool) -> tuple[str, str, str]:
+    if is_ar:
+        subject = "يجدّد اشتراكك خلال ٧ أيام"
+        text = (
+            f"مرحبًا {biz}،\n\n"
+            f"اشتراك Khanshoof الحالي ينتهي خلال ٧ أيام. "
+            f"للتجديد قبل أن تفقد القدرة على تعديل المحتوى، اضغط هنا:\n{cta}\n\n"
+            f"— فريق Khanshoof"
+        )
+        html = (
+            f"<p>مرحبًا {biz}،</p>"
+            f"<p>اشتراك Khanshoof الحالي ينتهي خلال ٧ أيام. "
+            f"للتجديد قبل أن تفقد القدرة على تعديل المحتوى، <a href=\"{cta}\">اضغط هنا</a>.</p>"
+            f"<p>— فريق Khanshoof</p>"
+        )
+    else:
+        subject = "Your subscription renews in 7 days"
+        text = (
+            f"Hi {biz},\n\n"
+            f"Your Khanshoof subscription ends in 7 days. "
+            f"To renew before losing the ability to edit content, visit:\n{cta}\n\n"
+            f"— The Khanshoof team"
+        )
+        html = (
+            f"<p>Hi {biz},</p>"
+            f"<p>Your Khanshoof subscription ends in 7 days. "
+            f"To renew before losing the ability to edit content, <a href=\"{cta}\">visit your billing page</a>.</p>"
+            f"<p>— The Khanshoof team</p>"
+        )
+    return subject, html, text
+
+
+REMINDER_TICK_SECONDS    = 3600   # 1 hour
+TRIAL_3DAY_THRESHOLD     = 3
+RENEWAL_7DAY_THRESHOLD   = 7
+
+
+def _send_reminder(org: dict, reminder_type: str) -> int:
+    """Send `reminder_type` email to all admins of `org`. Returns 1 if any
+    send succeeded, 0 otherwise.
+
+    When RESEND_API_KEY is missing, returns 0 WITHOUT inserting a claim row.
+    Callers that have already claimed must handle the case where this returns 0
+    after a successful claim — they keep the claim row (documented tradeoff:
+    all-admins-bounced means no retry). Only the no-key path is special.
+    """
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    if not api_key:
+        logger.info("reminder_skipped_no_resend_key org=%s type=%s",
+                    org.get("id"), reminder_type)
+        return 0
+
+    admins = query_all(
+        "SELECT username FROM users WHERE organization_id = ? "
+        "AND role = 'admin' AND is_admin = 1",
+        (org["id"],),
+    )
+    if not admins:
+        logger.warning("reminder_no_admins org=%s type=%s",
+                       org.get("id"), reminder_type)
+        return 0
+
+    locale = (org.get("locale") or "en").lower()
+    subject, html, text = _reminder_template(reminder_type, org, locale)
+    from_addr = os.getenv("RESEND_FROM", "Khanshoof <noreply@khanshoof.com>")
+
+    any_ok = False
+    for admin in admins:
+        to_email = admin["username"]
+        try:
+            send_via_resend(
+                api_key=api_key, from_addr=from_addr, to=to_email,
+                subject=subject, html=html, text=text,
+            )
+            any_ok = True
+        except Exception as exc:
+            logger.error("reminder_send_failed org=%s type=%s to=%s err=%s",
+                         org.get("id"), reminder_type, to_email, exc)
+    return 1 if any_ok else 0
+
+
+def _maybe_send_reminders_for_org(org: dict) -> int:
+    """Send any applicable reminder for this org. Returns count sent (0 or 1).
+
+    Pre-check: when RESEND_API_KEY is missing, skip the claim too — so a
+    retry on the next tick (with the key set) will succeed.
+    """
+    if not os.getenv("RESEND_API_KEY", "").strip():
+        return 0
+
+    state = subscription_state(org)
+    days = state.get("days_remaining")
+    expires_at_iso = state.get("expires_at")
+    if expires_at_iso is None:
+        return 0
+    expires_at = _parse_iso(expires_at_iso)
+
+    if state["state"] == "trialing":
+        if days is not None and days <= TRIAL_3DAY_THRESHOLD:
+            if _claim_reminder(org["id"], "trial_3day", expires_at):
+                return _send_reminder(org, "trial_3day")
+        return 0
+
+    if state["state"] == "trial_expired":
+        if _claim_reminder(org["id"], "trial_0day", expires_at):
+            return _send_reminder(org, "trial_0day")
+        return 0
+
+    if state["state"] == "active":
+        if days is not None and days <= RENEWAL_7DAY_THRESHOLD:
+            if _claim_reminder(org["id"], "renewal_7day", expires_at):
+                return _send_reminder(org, "renewal_7day")
+        return 0
+
+    return 0
+
+
+def _reminder_check_once() -> int:
+    """One pass through all orgs. Returns count of reminders sent.
+    Pure-Python; testable without the asyncio wrapper."""
+    orgs = query_all(
+        "SELECT id, name, locale, subscription_status, trial_ends_at, paid_through_at "
+        "FROM organizations"
+    )
+    sent = 0
+    for org in orgs:
+        try:
+            sent += _maybe_send_reminders_for_org(org)
+        except Exception as exc:
+            logger.warning("reminder_check_org_failed org=%s err=%s",
+                           org.get("id"), exc)
+    return sent
+
+
+async def _reminder_check_loop():
+    """Background task: every REMINDER_TICK_SECONDS, walk all orgs and
+    send reminders that haven't been sent yet. Errors swallowed; never
+    crashes the app."""
+    while True:
+        await asyncio.sleep(REMINDER_TICK_SECONDS)
+        try:
+            _reminder_check_once()
+        except Exception as exc:
+            logger.warning("reminder_check_loop_failed: %s", exc)
+
+
+@app.on_event("startup")
+async def _start_reminder_loop():
+    asyncio.create_task(_reminder_check_loop())
 
 
 # ── Dayparting (Phase 2.5e) ───────────────────────────────────────────
