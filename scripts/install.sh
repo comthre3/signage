@@ -15,8 +15,10 @@ else
 fi
 
 SUDO=""
+SUDO_PRESERVE_ENV=""
 if ! $COMPOSE ps >/dev/null 2>&1; then
   SUDO="sudo"
+  SUDO_PRESERVE_ENV="-E"   # preserve PLAYER_VERSION (and any other exported vars) across sudo
 fi
 
 if [ ! -f "$ROOT_DIR/.env" ]; then
@@ -52,7 +54,7 @@ export PLAYER_VERSION
 echo "PLAYER_VERSION=$PLAYER_VERSION"
 
 echo "Building and starting stack..."
-(cd "$ROOT_DIR" && $SUDO -E $COMPOSE up -d --build)
+(cd "$ROOT_DIR" && $SUDO $SUDO_PRESERVE_ENV $COMPOSE up -d --build)
 
 echo "Done."
 echo "Dashboard: http://<host>:3000"
