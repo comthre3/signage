@@ -483,3 +483,19 @@ def init_db() -> None:
         )
 
         cursor.execute("ALTER TABLE screens ADD COLUMN IF NOT EXISTS schedule_id INTEGER REFERENCES schedules(id) ON DELETE SET NULL")
+
+        # ── Phase 2.5g: subscription reminders ──────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS subscription_reminders (
+              id              SERIAL PRIMARY KEY,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              reminder_type   TEXT NOT NULL,
+              expires_at      TIMESTAMPTZ NOT NULL,
+              sent_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+              UNIQUE (organization_id, reminder_type, expires_at)
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_subscription_reminders_org "
+            "ON subscription_reminders (organization_id, reminder_type)"
+        )
