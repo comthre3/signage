@@ -2279,6 +2279,108 @@ def _tpl_renewal_7day(biz: str, cta: str, is_ar: bool) -> tuple[str, str, str]:
     return subject, html, text
 
 
+REMINDER_TICK_SECONDS    = 3600   # 1 hour
+TRIAL_3DAY_THRESHOLD     = 3
+RENEWAL_7DAY_THRESHOLD   = 7
+
+
+def _send_reminder(org: dict, reminder_type: str) -> int:
+    """Send `reminder_type` email to all admins of `org`. Returns 1 if any
+    send succeeded, 0 otherwise.
+
+    When RESEND_API_KEY is missing, returns 0 WITHOUT inserting a claim row.
+    Callers that have already claimed must handle the case where this returns 0
+    after a successful claim — they keep the claim row (documented tradeoff:
+    all-admins-bounced means no retry). Only the no-key path is special.
+    """
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    if not api_key:
+        logger.info("reminder_skipped_no_resend_key org=%s type=%s",
+                    org.get("id"), reminder_type)
+        return 0
+
+    admins = query_all(
+        "SELECT username FROM users WHERE organization_id = ? "
+        "AND role = 'admin' AND is_admin = 1",
+        (org["id"],),
+    )
+    if not admins:
+        logger.warning("reminder_no_admins org=%s type=%s",
+                       org.get("id"), reminder_type)
+        return 0
+
+    locale = (org.get("locale") or "en").lower()
+    subject, html, text = _reminder_template(reminder_type, org, locale)
+    from_addr = os.getenv("RESEND_FROM", "Khanshoof <noreply@khanshoof.com>")
+
+    any_ok = False
+    for admin in admins:
+        to_email = admin["username"]
+        try:
+            send_via_resend(
+                api_key=api_key, from_addr=from_addr, to=to_email,
+                subject=subject, html=html, text=text,
+            )
+            any_ok = True
+        except Exception as exc:
+            logger.error("reminder_send_failed org=%s type=%s to=%s err=%s",
+                         org.get("id"), reminder_type, to_email, exc)
+    return 1 if any_ok else 0
+
+
+def _maybe_send_reminders_for_org(org: dict) -> int:
+    """Send any applicable reminder for this org. Returns count sent (0 or 1).
+
+    Pre-check: when RESEND_API_KEY is missing, skip the claim too — so a
+    retry on the next tick (with the key set) will succeed.
+    """
+    if not os.getenv("RESEND_API_KEY", "").strip():
+        return 0
+
+    state = subscription_state(org)
+    days = state.get("days_remaining")
+    expires_at_iso = state.get("expires_at")
+    if expires_at_iso is None:
+        return 0
+    expires_at = _parse_iso(expires_at_iso)
+
+    if state["state"] == "trialing":
+        if days is not None and days <= TRIAL_3DAY_THRESHOLD:
+            if _claim_reminder(org["id"], "trial_3day", expires_at):
+                return _send_reminder(org, "trial_3day")
+        return 0
+
+    if state["state"] == "trial_expired":
+        if _claim_reminder(org["id"], "trial_0day", expires_at):
+            return _send_reminder(org, "trial_0day")
+        return 0
+
+    if state["state"] == "active":
+        if days is not None and days <= RENEWAL_7DAY_THRESHOLD:
+            if _claim_reminder(org["id"], "renewal_7day", expires_at):
+                return _send_reminder(org, "renewal_7day")
+        return 0
+
+    return 0
+
+
+def _reminder_check_once() -> int:
+    """One pass through all orgs. Returns count of reminders sent.
+    Pure-Python; testable without the asyncio wrapper."""
+    orgs = query_all(
+        "SELECT id, name, locale, subscription_status, trial_ends_at, paid_through_at "
+        "FROM organizations"
+    )
+    sent = 0
+    for org in orgs:
+        try:
+            sent += _maybe_send_reminders_for_org(org)
+        except Exception as exc:
+            logger.warning("reminder_check_org_failed org=%s err=%s",
+                           org.get("id"), exc)
+    return sent
+
+
 # ── Dayparting (Phase 2.5e) ───────────────────────────────────────────
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import time as _time_type
