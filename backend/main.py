@@ -972,6 +972,9 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
     )
     execute("DELETE FROM pending_signups WHERE email = ?", (email,))
 
+    org_row = query_one("SELECT * FROM organizations WHERE id = ?", (new_org_id,))
+    sub_state = subscription_state(org_row)
+
     return {
         "token": session_token,
         "user": {
@@ -989,6 +992,11 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
             "subscription_status": "trialing",
             "trial_ends_at": trial_ends_at,
             "locale": "en",
+            # Phase 2.5f derived fields:
+            "state": sub_state["state"],
+            "can_write": sub_state["can_write"],
+            "days_remaining": sub_state["days_remaining"],
+            "expires_at": sub_state["expires_at"],
         },
     }
 
@@ -1003,6 +1011,11 @@ def get_organization(user: dict = Depends(get_current_user)) -> dict:
         (org["id"],),
     )
     org["screens_used"] = int(screens_count["n"] if screens_count else 0)
+    sub_state = subscription_state(org)
+    org["state"] = sub_state["state"]
+    org["can_write"] = sub_state["can_write"]
+    org["days_remaining"] = sub_state["days_remaining"]
+    org["expires_at"] = sub_state["expires_at"]
     return org
 
 
@@ -1108,6 +1121,7 @@ def login(request: Request, payload: LoginRequest) -> dict:
     audit(request, action="auth.login.success",
           actor={"id": user["id"], "username": user["username"],
                  "organization_id": user["organization_id"]})
+    sub_state = subscription_state(org)
     return {
         "token": token,
         "user": {
@@ -1125,6 +1139,11 @@ def login(request: Request, payload: LoginRequest) -> dict:
             "subscription_status": org["subscription_status"],
             "trial_ends_at": org["trial_ends_at"],
             "locale": org["locale"],
+            # Phase 2.5f derived fields:
+            "state": sub_state["state"],
+            "can_write": sub_state["can_write"],
+            "days_remaining": sub_state["days_remaining"],
+            "expires_at": sub_state["expires_at"],
         },
     }
 

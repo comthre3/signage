@@ -250,3 +250,52 @@ def test_unknown_status_does_not_block(client, signed_up_org):
                     headers=_bearer(signed_up_org["token"]),
                     json=_create_simple_playlist_payload())
     assert r.status_code in (200, 201), r.text
+
+
+# ── /organization response shape ──────────────────────────────────────
+
+
+def test_organization_response_includes_derived_fields(client, signed_up_org):
+    r = client.get("/organization", headers=_bearer(signed_up_org["token"]))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "state" in body
+    assert "can_write" in body
+    assert "days_remaining" in body
+    assert "expires_at" in body
+    assert body["state"] == "trialing"
+    assert body["can_write"] is True
+    assert isinstance(body["days_remaining"], int)
+    assert body["days_remaining"] >= 0
+
+
+def test_login_response_includes_derived_fields(client, signed_up_org):
+    r = client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "Khanshoof2026Test",
+    })
+    assert r.status_code == 200, r.text
+    org = r.json().get("organization", {})
+    assert "state" in org
+    assert "can_write" in org
+    assert "days_remaining" in org
+
+
+def test_signup_response_includes_derived_fields(client, unique_business):
+    """Fresh signup → response.organization has state=trialing, can_write=True."""
+    r = client.post("/auth/signup/request",
+                    json={"business_name": unique_business["business_name"],
+                          "email": unique_business["email"]})
+    assert r.status_code == 200, r.text
+    otp = r.json()["dev_otp"]
+    r = client.post("/auth/signup/verify",
+                    json={"email": unique_business["email"], "otp": otp})
+    assert r.status_code == 200, r.text
+    vt = r.json()["verification_token"]
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt,
+                          "password": unique_business["password"]})
+    assert r.status_code == 200, r.text
+    org = r.json().get("organization", {})
+    assert org.get("state") == "trialing"
+    assert org.get("can_write") is True
