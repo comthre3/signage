@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -2379,6 +2380,23 @@ def _reminder_check_once() -> int:
             logger.warning("reminder_check_org_failed org=%s err=%s",
                            org.get("id"), exc)
     return sent
+
+
+async def _reminder_check_loop():
+    """Background task: every REMINDER_TICK_SECONDS, walk all orgs and
+    send reminders that haven't been sent yet. Errors swallowed; never
+    crashes the app."""
+    while True:
+        await asyncio.sleep(REMINDER_TICK_SECONDS)
+        try:
+            _reminder_check_once()
+        except Exception as exc:
+            logger.warning("reminder_check_loop_failed: %s", exc)
+
+
+@app.on_event("startup")
+async def _start_reminder_loop():
+    asyncio.create_task(_reminder_check_loop())
 
 
 # ── Dayparting (Phase 2.5e) ───────────────────────────────────────────

@@ -306,3 +306,13 @@ def test_send_to_all_admins(client, monkeypatch):
     with patch("main.send_via_resend") as mock_send:
         _reminder_check_once()
     assert mock_send.call_count >= 2
+
+
+# ── Startup wire ──────────────────────────────────────────────────────
+
+
+def test_reminder_check_loop_is_defined():
+    """Existence test — the async loop function must be importable."""
+    from main import _reminder_check_loop
+    import inspect
+    assert inspect.iscoroutinefunction(_reminder_check_loop)
