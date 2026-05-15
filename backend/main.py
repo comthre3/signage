@@ -478,6 +478,39 @@ def require_roles(*roles: str):
     return dependency
 
 
+def require_active_subscription(user: dict = Depends(get_current_user)) -> dict:
+    """Block write operations when the org's subscription is expired/lapsed.
+
+    Used as a FastAPI dependency, alongside require_roles when both are needed:
+        Depends(require_roles("admin"))         # role check
+        Depends(require_active_subscription)    # subscription check
+    Both run; both must pass.
+    """
+    org = query_one(
+        "SELECT id, subscription_status, trial_ends_at, paid_through_at "
+        "FROM organizations WHERE id = ?",
+        (org_id(user),),
+    )
+    if not org:
+        raise http_error(403, "no_organization", "No organization for user")
+
+    state = subscription_state(org)
+    if not state["can_write"]:
+        code = ("subscription.trial_expired" if state["state"] == "trial_expired"
+                else "subscription.expired")
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code":        code,
+                "message":     "Subscription required to make changes.",
+                "message_key": "error." + code,
+                "state":       state["state"],
+                "expires_at":  state["expires_at"],
+            },
+        )
+    return user
+
+
 def can_access_screen(user: dict, screen_id: int) -> bool:
     if user.get("is_admin"):
         return True
@@ -2832,7 +2865,9 @@ def list_playlists(user: dict = Depends(get_current_user)) -> list[dict]:
 
 @app.post("/playlists")
 def create_playlist(
-    payload: PlaylistCreate, user: dict = Depends(require_roles("admin", "editor"))
+    payload: PlaylistCreate,
+    user: dict = Depends(require_roles("admin", "editor")),
+    _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist_id = execute(
         "INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
