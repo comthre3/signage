@@ -1987,6 +1987,83 @@ def list_screen_groups(
     return {"screen_id": screen_id, "groups": groups}
 
 
+# ── Subscription state (Phase 2.5f) ───────────────────────────────────
+
+
+def _parse_iso(value) -> Optional[datetime]:
+    """Accept str (ISO) or already-parsed datetime; return tz-aware UTC datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def subscription_state(org: dict) -> dict:
+    """Derive subscription state from raw org columns.
+
+    Returns:
+      {
+        "state":          "trialing" | "trial_expired" | "active" | "lapsed",
+        "can_write":      bool,
+        "days_remaining": int | None,
+        "expires_at":     ISO string | None,
+      }
+
+    Convention: subscription_status='active' with paid_through_at IS NULL
+    means "no expiry" (seeded default org, admin override).
+    """
+    status = org.get("subscription_status") or "trialing"
+    now = datetime.now(timezone.utc)
+
+    def _days_until(ts) -> int:
+        """Whole days remaining, rounded up so +3d still shows 3."""
+        import math
+        return max(0, math.ceil((ts - now).total_seconds() / 86400))
+
+    if status == "trialing":
+        ts = _parse_iso(org.get("trial_ends_at"))
+        if ts and ts > now:
+            return {
+                "state":          "trialing",
+                "can_write":      True,
+                "days_remaining": _days_until(ts),
+                "expires_at":     ts.isoformat(),
+            }
+        return {
+            "state":          "trial_expired",
+            "can_write":      False,
+            "days_remaining": 0,
+            "expires_at":     ts.isoformat() if ts else None,
+        }
+
+    if status == "active":
+        ts = _parse_iso(org.get("paid_through_at"))
+        if ts is None:
+            return {"state": "active", "can_write": True,
+                    "days_remaining": None, "expires_at": None}
+        if ts > now:
+            return {
+                "state":          "active",
+                "can_write":      True,
+                "days_remaining": _days_until(ts),
+                "expires_at":     ts.isoformat(),
+            }
+        return {
+            "state":          "lapsed",
+            "can_write":      False,
+            "days_remaining": 0,
+            "expires_at":     ts.isoformat(),
+        }
+
+    return {"state": status, "can_write": True,
+            "days_remaining": None, "expires_at": None}
+
+
 # ── Dayparting (Phase 2.5e) ───────────────────────────────────────────
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import time as _time_type
