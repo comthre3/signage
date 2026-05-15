@@ -2138,6 +2138,28 @@ def subscription_state(org: dict) -> dict:
             "days_remaining": None, "expires_at": None}
 
 
+# ── Subscription reminders (Phase 2.5g) ───────────────────────────────
+
+
+def _claim_reminder(org_id: int, reminder_type: str, expires_at: datetime) -> bool:
+    """Try to claim the right to send this reminder. Returns True iff newly claimed.
+
+    Race-safe across replicas via UNIQUE(org, type, expires_at) + ON CONFLICT.
+    A `True` return means "this caller got the row in; you may send." A `False`
+    means "someone else already sent this; skip."
+    """
+    row = query_one(
+        """
+        INSERT INTO subscription_reminders (organization_id, reminder_type, expires_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (organization_id, reminder_type, expires_at) DO NOTHING
+        RETURNING id
+        """,
+        (org_id, reminder_type, expires_at),
+    )
+    return row is not None
+
+
 # ── Dayparting (Phase 2.5e) ───────────────────────────────────────────
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import time as _time_type
