@@ -1645,6 +1645,117 @@ def get_audit_log(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+# ── API Key management endpoints (session-only, admin) ────────────────
+
+
+class ApiKeyCreate(BaseModel):
+    name:  str = Field(..., min_length=1, max_length=200)
+    scope: str = Field(..., pattern="^api:(read|rw)$")
+
+
+@app.post("/api-keys", status_code=201)
+def create_api_key(
+    payload: ApiKeyCreate,
+    user: dict = Depends(require_roles("admin")),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    full_key, prefix, hashed = generate_api_key()
+    key_id = execute(
+        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, scope, created_by_user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (org_id(user), payload.name, prefix, hashed, payload.scope, user["id"]),
+    )
+    return {
+        "id":         key_id,
+        "name":       payload.name,
+        "key_prefix": prefix,
+        "key":        full_key,
+        "scope":      payload.scope,
+        "created_at": utc_now_iso(),
+    }
+
+
+@app.get("/api-keys")
+def list_api_keys(user: dict = Depends(require_roles("admin"))) -> dict:
+    rows = query_all(
+        """
+        SELECT id, name, key_prefix, scope, created_at, last_used_at, revoked_at
+        FROM api_keys
+        WHERE organization_id = ?
+        ORDER BY created_at DESC
+        """,
+        (org_id(user),),
+    )
+
+    def fmt(v):
+        if v is None:
+            return None
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return v
+
+    items = []
+    for r in rows:
+        items.append({
+            "id":           r["id"],
+            "name":         r["name"],
+            "key_prefix":   r["key_prefix"],
+            "scope":        r["scope"],
+            "created_at":   fmt(r["created_at"]),
+            "last_used_at": fmt(r["last_used_at"]),
+            "revoked_at":   fmt(r["revoked_at"]),
+        })
+    return {"items": items}
+
+
+@app.delete("/api-keys/{key_id}", status_code=204)
+def revoke_api_key(
+    key_id: int,
+    user: dict = Depends(require_roles("admin")),
+) -> None:
+    row = query_one(
+        "SELECT id FROM api_keys WHERE id = ? AND organization_id = ?",
+        (key_id, org_id(user)),
+    )
+    if not row:
+        raise http_error(404, "api_key.not_found", "API key not found")
+    execute(
+        "UPDATE api_keys SET revoked_at = now() WHERE id = ? AND revoked_at IS NULL",
+        (key_id,),
+    )
+
+
+@app.post("/api-keys/{key_id}/rotate")
+def rotate_api_key(
+    key_id: int,
+    user: dict = Depends(require_roles("admin")),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    old = query_one(
+        "SELECT id, name, scope FROM api_keys "
+        "WHERE id = ? AND organization_id = ? AND revoked_at IS NULL",
+        (key_id, org_id(user)),
+    )
+    if not old:
+        raise http_error(404, "api_key.not_found", "API key not found")
+    execute("UPDATE api_keys SET revoked_at = now() WHERE id = ?", (key_id,))
+    full_key, prefix, hashed = generate_api_key()
+    new_id = execute(
+        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, scope, created_by_user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (org_id(user), old["name"], prefix, hashed, old["scope"], user["id"]),
+    )
+    return {
+        "id":           new_id,
+        "name":         old["name"],
+        "key_prefix":   prefix,
+        "key":          full_key,
+        "scope":        old["scope"],
+        "created_at":   utc_now_iso(),
+        "rotated_from": key_id,
+    }
+
+
 @app.post("/users")
 def create_user(request: Request, payload: UserCreate, user: dict = Depends(require_roles("admin")),
                 _sub: dict = Depends(require_active_subscription)) -> dict:

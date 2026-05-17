@@ -247,3 +247,59 @@ def test_429_includes_retry_after_header(client, monkeypatch):
     lowered = {h.lower() for h in r.headers.keys()}
     assert "retry-after" in lowered
     assert "x-ratelimit-limit" in lowered
+
+
+# ── Management endpoints ──────────────────────────────────────────────
+
+
+def test_post_api_keys_returns_full_key_once(client):
+    session_token, _org_id, _u = _signup_org(client)
+    r = client.post("/api-keys", headers=_bearer(session_token),
+                    json={"name": "Zapier", "scope": "api:rw"})
+    assert r.status_code in (200, 201), r.text
+    body = r.json()
+    assert "key" in body
+    assert body["key"].startswith("khan_live_")
+    assert body["key_prefix"] == body["key"][:12]
+    assert body["scope"] == "api:rw"
+    # Listing afterwards should NOT include the full key
+    r = client.get("/api-keys", headers=_bearer(session_token))
+    items = r.json()["items"]
+    assert all("key" not in item for item in items), \
+        "GET /api-keys must never return the full key, only the prefix"
+
+
+def test_get_api_keys_lists_only_own_org(client):
+    sa, _, _ = _signup_org(client)
+    r = client.post("/api-keys", headers=_bearer(sa),
+                    json={"name": "A", "scope": "api:read"})
+    assert r.status_code in (200, 201)
+    sb, _, _ = _signup_org(client)
+    r = client.get("/api-keys", headers=_bearer(sb))
+    items = r.json()["items"]
+    names = [it["name"] for it in items]
+    assert "A" not in names
+
+
+def test_delete_api_keys_revokes_not_deletes(client):
+    session_token, org_id, _u = _signup_org(client)
+    r = client.post("/api-keys", headers=_bearer(session_token),
+                    json={"name": "tmp", "scope": "api:rw"})
+    key_id = r.json()["id"]
+    r = client.delete(f"/api-keys/{key_id}", headers=_bearer(session_token))
+    assert r.status_code in (200, 204)
+    row = query_one("SELECT revoked_at FROM api_keys WHERE id = ?", (key_id,))
+    assert row is not None
+    assert row["revoked_at"] is not None
+
+
+def test_revoked_key_cannot_authenticate(client):
+    session_token, _org_id, _u = _signup_org(client)
+    r = client.post("/api-keys", headers=_bearer(session_token),
+                    json={"name": "tmp", "scope": "api:rw"})
+    full_key = r.json()["key"]
+    key_id = r.json()["id"]
+    r = client.delete(f"/api-keys/{key_id}", headers=_bearer(session_token))
+    assert r.status_code in (200, 204)
+    r = client.get("/organization", headers=_bearer(full_key))
+    assert r.status_code == 401, r.text
