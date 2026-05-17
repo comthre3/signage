@@ -15,8 +15,10 @@ else
 fi
 
 SUDO=""
+SUDO_PRESERVE_ENV=""
 if ! $COMPOSE ps >/dev/null 2>&1; then
   SUDO="sudo"
+  SUDO_PRESERVE_ENV="-E"   # preserve PLAYER_VERSION (and any other exported vars) across sudo
 fi
 
 if [ ! -f "$ROOT_DIR/.env" ]; then
@@ -37,8 +39,22 @@ fi
 
 mkdir -p "$ROOT_DIR/data" "$ROOT_DIR/uploads"
 
+# Stamp the player Service Worker cache name with the current git SHA so
+# each deploy busts the old offline cache automatically. Falls back to a
+# timestamp when not in a git checkout. Caller can override by exporting
+# PLAYER_VERSION before running this script.
+if [ -z "${PLAYER_VERSION:-}" ]; then
+  if command -v git >/dev/null 2>&1 && git -C "$ROOT_DIR" rev-parse --short HEAD >/dev/null 2>&1; then
+    PLAYER_VERSION="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+  else
+    PLAYER_VERSION="t$(date +%s)"
+  fi
+fi
+export PLAYER_VERSION
+echo "PLAYER_VERSION=$PLAYER_VERSION"
+
 echo "Building and starting stack..."
-(cd "$ROOT_DIR" && $SUDO $COMPOSE up -d --build)
+(cd "$ROOT_DIR" && $SUDO $SUDO_PRESERVE_ENV $COMPOSE up -d --build)
 
 echo "Done."
 echo "Dashboard: http://<host>:3000"
