@@ -200,6 +200,46 @@ def verify_password(password: str, stored: str | None) -> bool:
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
+# ── API keys (Phase 2.5h) ─────────────────────────────────────────────
+
+API_KEY_PREFIX_LEN = 12   # "khan_live_" (10 chars) + 2 randomness chars
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Returns (full_key, prefix, hash). Caller stores prefix + hash; returns
+    full_key to the operator ONCE (never seen again)."""
+    suffix = secrets.token_urlsafe(24)
+    full_key = f"khan_live_{suffix}"
+    prefix = full_key[:API_KEY_PREFIX_LEN]
+    hashed = hash_password(full_key)
+    return full_key, prefix, hashed
+
+
+def lookup_api_key(bearer_token: str) -> Optional[dict]:
+    """Return active api_key row if the bearer matches; else None.
+    Fire-and-forget update of last_used_at."""
+    if not bearer_token or not bearer_token.startswith("khan_live_"):
+        return None
+    prefix = bearer_token[:API_KEY_PREFIX_LEN]
+    candidates = query_all(
+        "SELECT id, organization_id, key_hash, scope, key_prefix FROM api_keys "
+        "WHERE key_prefix = ? AND revoked_at IS NULL",
+        (prefix,),
+    )
+    for row in candidates:
+        if verify_password(bearer_token, row["key_hash"]):
+            try:
+                execute(
+                    "UPDATE api_keys SET last_used_at = now() WHERE id = ?",
+                    (row["id"],),
+                )
+            except Exception as exc:
+                logger.warning("api_key_last_used_update_failed id=%s err=%s",
+                               row["id"], exc)
+            return row
+    return None
+
+
 def http_error(status: int, code: str, message: str) -> HTTPException:
     """Structured error response: detail = {code, message}.
 
