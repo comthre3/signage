@@ -10,7 +10,9 @@ import re
 import secrets
 import shutil
 import subprocess
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
@@ -238,6 +240,67 @@ def lookup_api_key(bearer_token: str) -> Optional[dict]:
                                row["id"], exc)
             return row
     return None
+
+
+PLAN_API_LIMITS = {
+    "starter":    {"per_minute": 30,   "per_hour": 500},
+    "growth":     {"per_minute": 100,  "per_hour": 5000},
+    "business":   {"per_minute": 500,  "per_hour": 25000},
+    "pro":        {"per_minute": 2000, "per_hour": 100000},
+    "enterprise": {"per_minute": 5000, "per_hour": 250000},
+}
+
+_rate_buckets: dict = defaultdict(lambda: {"min": [], "hour": []})
+
+
+def _api_key_rate_check(principal) -> None:
+    """Raise 429 if the principal's API key has exceeded its tier limits.
+    Sessions are NOT rate-limited here."""
+    if principal.api_key is None:
+        return
+    key_id = principal.api_key["id"]
+    org = query_one("SELECT plan FROM organizations WHERE id = ?",
+                    (principal.organization_id,))
+    plan = (org or {}).get("plan", "starter")
+    limits = PLAN_API_LIMITS.get(plan, PLAN_API_LIMITS["starter"])
+
+    now = time.time()
+    bucket = _rate_buckets[key_id]
+    bucket["min"]  = [t for t in bucket["min"]  if t > now - 60]
+    bucket["hour"] = [t for t in bucket["hour"] if t > now - 3600]
+
+    if len(bucket["min"]) >= limits["per_minute"]:
+        oldest = min(bucket["min"])
+        retry_after = max(1, int(60 - (now - oldest)))
+        raise HTTPException(
+            status_code=429,
+            headers={
+                "Retry-After":           str(retry_after),
+                "X-RateLimit-Limit":     str(limits["per_minute"]),
+                "X-RateLimit-Window":    "60",
+                "X-RateLimit-Remaining": "0",
+            },
+            detail={"code": "rate_limited",
+                    "message": "Per-minute rate limit exceeded"},
+        )
+
+    if len(bucket["hour"]) >= limits["per_hour"]:
+        oldest = min(bucket["hour"])
+        retry_after = max(1, int(3600 - (now - oldest)))
+        raise HTTPException(
+            status_code=429,
+            headers={
+                "Retry-After":           str(retry_after),
+                "X-RateLimit-Limit":     str(limits["per_hour"]),
+                "X-RateLimit-Window":    "3600",
+                "X-RateLimit-Remaining": "0",
+            },
+            detail={"code": "rate_limited",
+                    "message": "Per-hour rate limit exceeded"},
+        )
+
+    bucket["min"].append(now)
+    bucket["hour"].append(now)
 
 
 def http_error(status: int, code: str, message: str) -> HTTPException:
@@ -564,9 +627,8 @@ def require_api_scope(
     session_roles: tuple = _ALL_SESSION_ROLES,
 ):
     """Gate an endpoint:
-      - API-keyed: scope must be in allowed_api_scopes
-      - Session-authed: user's role must be in session_roles
-    Rate-limit hook is a no-op here; Task 5 fills it in.
+      - API-keyed: scope must be in allowed_api_scopes, then tier rate limit applied
+      - Session-authed: user's role must be in session_roles (not rate-limited here)
     """
     def dep(principal: AuthedPrincipal = Depends(get_api_authed)) -> AuthedPrincipal:
         if principal.api_key is not None:
@@ -589,6 +651,7 @@ def require_api_scope(
                         "message": f"Role {role} not permitted",
                     },
                 )
+        _api_key_rate_check(principal)
         return principal
     return dep
 

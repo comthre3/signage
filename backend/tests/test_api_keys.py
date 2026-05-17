@@ -210,3 +210,40 @@ def test_api_key_cannot_modify_other_orgs_playlists(client):
     b_pl_id = r.json()["id"]
     r = client.delete(f"/playlists/{b_pl_id}", headers=_bearer(key_a))
     assert r.status_code == 404, r.text
+
+
+# ── Rate limiting (tier-based) ────────────────────────────────────────
+
+
+def test_rate_limit_enforced_per_minute(client, monkeypatch):
+    monkeypatch.setattr("main.PLAN_API_LIMITS", {
+        "starter": {"per_minute": 3, "per_hour": 100},
+    })
+    from main import _rate_buckets
+    _rate_buckets.clear()
+    _t, org_id, _u = _signup_org(client)
+    full_key, _ = _mint_key_row(org_id, scope="api:read")
+    # 3 requests fine
+    for _ in range(3):
+        r = client.get("/organization", headers=_bearer(full_key))
+        assert r.status_code == 200, r.text
+    # 4th request → 429
+    r = client.get("/organization", headers=_bearer(full_key))
+    assert r.status_code == 429, r.text
+
+
+def test_429_includes_retry_after_header(client, monkeypatch):
+    monkeypatch.setattr("main.PLAN_API_LIMITS", {
+        "starter": {"per_minute": 1, "per_hour": 100},
+    })
+    from main import _rate_buckets
+    _rate_buckets.clear()
+    _t, org_id, _u = _signup_org(client)
+    full_key, _ = _mint_key_row(org_id, scope="api:read")
+    r = client.get("/organization", headers=_bearer(full_key))
+    assert r.status_code == 200
+    r = client.get("/organization", headers=_bearer(full_key))
+    assert r.status_code == 429
+    lowered = {h.lower() for h in r.headers.keys()}
+    assert "retry-after" in lowered
+    assert "x-ratelimit-limit" in lowered
