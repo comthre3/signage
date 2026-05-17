@@ -165,6 +165,7 @@ function showSection(id) {
   if (id === "walls") Walls.onShow();
   if (id === "schedules") Schedules.show();
   if (id === "audit-log") AuditLog.show();
+  if (id === "api-keys") ApiKeys.show();
 }
 
 function buildPlayerUrl(base, params) {
@@ -255,20 +256,23 @@ function updateAuthUI() {
   const authUser  = document.getElementById("auth-user");
   const logoutBtn = document.getElementById("logout-btn");
   const nav       = document.querySelector("header nav");
-  const usersBtn  = document.querySelector('button[data-section="users"]');
-  const auditBtn  = document.querySelector('button[data-section="audit-log"]');
+  const usersBtn    = document.querySelector('button[data-section="users"]');
+  const auditBtn    = document.querySelector('button[data-section="audit-log"]');
+  const apiKeysBtn  = document.querySelector('button[data-section="api-keys"]');
   if (currentUser) {
     authUser.textContent = `${currentUser.username} · ${currentUser.role}`;
     logoutBtn.classList.remove("hidden");
     nav.classList.remove("hidden");
     if (usersBtn) usersBtn.classList.toggle("hidden", currentUser.role !== "admin");
     if (auditBtn) auditBtn.classList.toggle("hidden", currentUser.role !== "admin");
+    if (apiKeysBtn) apiKeysBtn.classList.toggle("hidden", currentUser.role !== "admin");
   } else {
     authUser.textContent = "";
     logoutBtn.classList.add("hidden");
     nav.classList.add("hidden");
     if (usersBtn) usersBtn.classList.add("hidden");
     if (auditBtn) auditBtn.classList.add("hidden");
+    if (apiKeysBtn) apiKeysBtn.classList.add("hidden");
   }
 }
 
@@ -3433,4 +3437,159 @@ const SubscriptionBanner = (() => {
 })();
 
 SubscriptionBanner.init();
+
+// ── API Keys (Phase 2.5h) ───────────────────────────────────────────
+const ApiKeys = (() => {
+  async function show() {
+    document.getElementById("api-key-create-modal").classList.add("hidden");
+    document.getElementById("api-key-reveal-modal").classList.add("hidden");
+    await refreshList();
+  }
+
+  async function refreshList() {
+    const container = document.getElementById("api-keys-list");
+    try {
+      const body = await api("/api-keys");
+      renderList(body.items || []);
+    } catch (err) {
+      toast(Khan.t("api_keys.error.fetch", "Failed to load API keys."), "error");
+    }
+  }
+
+  function renderList(items) {
+    const container = document.getElementById("api-keys-list");
+    container.innerHTML = "";
+    if (!items.length) {
+      const p = document.createElement("p");
+      p.className = "empty-state";
+      p.textContent = Khan.t("api_keys.empty", "No API keys yet. Create one to get started.");
+      container.appendChild(p);
+      return;
+    }
+    items.forEach(k => container.appendChild(buildCard(k)));
+  }
+
+  function buildCard(k) {
+    const card = document.createElement("div");
+    card.className = "api-key-card" + (k.revoked_at ? " revoked" : "");
+
+    const h = document.createElement("h3");
+    h.textContent = k.name;
+    card.appendChild(h);
+
+    const meta = document.createElement("div");
+    meta.className = "api-key-meta";
+    meta.innerHTML = `
+      <code>${escHtml(k.key_prefix)}…</code>
+      <span class="badge">${escHtml(k.scope)}</span>
+      <span class="muted">${escHtml(Khan.t("api_keys.col.created", "Created"))}: ${formatDate(k.created_at)}</span>
+      <span class="muted">${escHtml(Khan.t("api_keys.col.last_used", "Last used"))}: ${k.last_used_at ? formatDate(k.last_used_at) : Khan.t("api_keys.never_used", "never")}</span>
+      ${k.revoked_at ? `<span class="muted">${escHtml(Khan.t("api_keys.col.revoked", "Revoked"))}: ${formatDate(k.revoked_at)}</span>` : ""}
+    `;
+    card.appendChild(meta);
+
+    if (!k.revoked_at) {
+      const actions = document.createElement("div");
+      actions.className = "api-key-actions";
+      const revoke = document.createElement("button");
+      revoke.className = "btn btn-danger";
+      revoke.textContent = Khan.t("api_keys.col.revoke", "Revoke");
+      revoke.addEventListener("click", () => revokeKey(k.id, k.name));
+      actions.appendChild(revoke);
+      card.appendChild(actions);
+    }
+
+    return card;
+  }
+
+  function escHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g,
+      c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+  }
+  function formatDate(iso) {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch (_) { return iso; }
+  }
+
+  function openCreateModal() {
+    document.getElementById("api-key-name").value = "";
+    const radios = document.querySelectorAll('input[name="api-key-scope"]');
+    radios.forEach((r) => { r.checked = r.value === "api:rw"; });
+    document.getElementById("api-key-create-modal").classList.remove("hidden");
+  }
+
+  async function submitCreate() {
+    const name = document.getElementById("api-key-name").value.trim();
+    if (!name) {
+      toast(Khan.t("api_keys.name_required", "Name is required."), "error");
+      return;
+    }
+    const scopeRadio = document.querySelector('input[name="api-key-scope"]:checked');
+    const scope = scopeRadio ? scopeRadio.value : "api:rw";
+    try {
+      const created = await api("/api-keys", {
+        method: "POST",
+        body: JSON.stringify({ name, scope }),
+      });
+      document.getElementById("api-key-create-modal").classList.add("hidden");
+      revealNewKey(created);
+      await refreshList();
+    } catch (err) {
+      toast(err.message || Khan.t("api_keys.error.create", "Failed to create key."), "error");
+    }
+  }
+
+  function revealNewKey(created) {
+    document.getElementById("api-key-secret-block").textContent = created.key;
+    document.getElementById("api-key-reveal-modal").classList.remove("hidden");
+  }
+
+  async function copySecret() {
+    const text = document.getElementById("api-key-secret-block").textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(Khan.t("api_keys.created.copied", "Copied to clipboard."), "success");
+    } catch (_) {
+      toast(Khan.t("api_keys.created.copy_failed", "Copy failed — select the key and use Ctrl+C."), "error");
+    }
+  }
+
+  function closeRevealModal() {
+    // Clear the secret from the DOM so it doesn't linger if the user navigates back
+    document.getElementById("api-key-secret-block").textContent = "";
+    document.getElementById("api-key-reveal-modal").classList.add("hidden");
+  }
+
+  async function revokeKey(id, name) {
+    const ok = await confirmDialog({
+      title:        Khan.t("api_keys.revoke_confirm.title", "Revoke API key?"),
+      message:      Khan.t("api_keys.revoke_confirm.message",
+                           "Revoke API key \"{name}\"? Any agent using it will stop working immediately.")
+                       .replace("{name}", name),
+      confirmLabel: Khan.t("api_keys.col.revoke", "Revoke"),
+      danger:       true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/api-keys/${id}`, { method: "DELETE" });
+      toast(Khan.t("api_keys.revoked_toast", "API key revoked."), "success");
+      await refreshList();
+    } catch (err) {
+      toast(err.message || Khan.t("api_keys.error.revoke", "Failed to revoke."), "error");
+    }
+  }
+
+  function init() {
+    document.getElementById("api-key-new-btn")?.addEventListener("click", openCreateModal);
+    document.getElementById("api-key-create-cancel")?.addEventListener("click", () =>
+      document.getElementById("api-key-create-modal").classList.add("hidden"));
+    document.getElementById("api-key-create-submit")?.addEventListener("click", submitCreate);
+    document.getElementById("api-key-copy-btn")?.addEventListener("click", copySecret);
+    document.getElementById("api-key-reveal-done")?.addEventListener("click", closeRevealModal);
+  }
+
+  return { show, init };
+})();
+
+ApiKeys.init();
 

@@ -10,7 +10,9 @@ import re
 import secrets
 import shutil
 import subprocess
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
@@ -198,6 +200,107 @@ def verify_password(password: str, stored: str | None) -> bool:
     salt = bytes.fromhex(salt_hex)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120000)
     return secrets.compare_digest(digest.hex(), digest_hex)
+
+
+# ── API keys (Phase 2.5h) ─────────────────────────────────────────────
+
+API_KEY_PREFIX_LEN = 12   # "khan_live_" (10 chars) + 2 randomness chars
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Returns (full_key, prefix, hash). Caller stores prefix + hash; returns
+    full_key to the operator ONCE (never seen again)."""
+    suffix = secrets.token_urlsafe(24)
+    full_key = f"khan_live_{suffix}"
+    prefix = full_key[:API_KEY_PREFIX_LEN]
+    hashed = hash_password(full_key)
+    return full_key, prefix, hashed
+
+
+def lookup_api_key(bearer_token: str) -> Optional[dict]:
+    """Return active api_key row if the bearer matches; else None.
+    Fire-and-forget update of last_used_at."""
+    if not bearer_token or not bearer_token.startswith("khan_live_"):
+        return None
+    prefix = bearer_token[:API_KEY_PREFIX_LEN]
+    candidates = query_all(
+        "SELECT id, organization_id, key_hash, scope, key_prefix FROM api_keys "
+        "WHERE key_prefix = ? AND revoked_at IS NULL",
+        (prefix,),
+    )
+    for row in candidates:
+        if verify_password(bearer_token, row["key_hash"]):
+            try:
+                execute(
+                    "UPDATE api_keys SET last_used_at = now() WHERE id = ?",
+                    (row["id"],),
+                )
+            except Exception as exc:
+                logger.warning("api_key_last_used_update_failed id=%s err=%s",
+                               row["id"], exc)
+            return row
+    return None
+
+
+PLAN_API_LIMITS = {
+    "starter":    {"per_minute": 30,   "per_hour": 500},
+    "growth":     {"per_minute": 100,  "per_hour": 5000},
+    "business":   {"per_minute": 500,  "per_hour": 25000},
+    "pro":        {"per_minute": 2000, "per_hour": 100000},
+    "enterprise": {"per_minute": 5000, "per_hour": 250000},
+}
+
+_rate_buckets: dict = defaultdict(lambda: {"min": [], "hour": []})
+
+
+def _api_key_rate_check(principal) -> None:
+    """Raise 429 if the principal's API key has exceeded its tier limits.
+    Sessions are NOT rate-limited here."""
+    if principal.api_key is None:
+        return
+    key_id = principal.api_key["id"]
+    org = query_one("SELECT plan FROM organizations WHERE id = ?",
+                    (principal.organization_id,))
+    plan = (org or {}).get("plan", "starter")
+    limits = PLAN_API_LIMITS.get(plan, PLAN_API_LIMITS["starter"])
+
+    now = time.time()
+    bucket = _rate_buckets[key_id]
+    bucket["min"]  = [t for t in bucket["min"]  if t > now - 60]
+    bucket["hour"] = [t for t in bucket["hour"] if t > now - 3600]
+
+    if len(bucket["min"]) >= limits["per_minute"]:
+        oldest = min(bucket["min"])
+        retry_after = max(1, int(60 - (now - oldest)))
+        raise HTTPException(
+            status_code=429,
+            headers={
+                "Retry-After":           str(retry_after),
+                "X-RateLimit-Limit":     str(limits["per_minute"]),
+                "X-RateLimit-Window":    "60",
+                "X-RateLimit-Remaining": "0",
+            },
+            detail={"code": "rate_limited",
+                    "message": "Per-minute rate limit exceeded"},
+        )
+
+    if len(bucket["hour"]) >= limits["per_hour"]:
+        oldest = min(bucket["hour"])
+        retry_after = max(1, int(3600 - (now - oldest)))
+        raise HTTPException(
+            status_code=429,
+            headers={
+                "Retry-After":           str(retry_after),
+                "X-RateLimit-Limit":     str(limits["per_hour"]),
+                "X-RateLimit-Window":    "3600",
+                "X-RateLimit-Remaining": "0",
+            },
+            detail={"code": "rate_limited",
+                    "message": "Per-hour rate limit exceeded"},
+        )
+
+    bucket["min"].append(now)
+    bucket["hour"].append(now)
 
 
 def http_error(status: int, code: str, message: str) -> HTTPException:
@@ -419,12 +522,12 @@ def is_online(last_seen: Optional[str]) -> bool:
     return (datetime.now(timezone.utc) - last_seen_dt).total_seconds() < 90
 
 
-def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=401, detail="Invalid authorization")
+def _session_lookup(token: str) -> Optional[dict]:
+    """Look up an active session by bearer token. Returns user dict or None.
+
+    Idle TTL eviction + last_used update preserved from the original
+    get_current_user body.
+    """
     session = query_one(
         """
         SELECT sessions.token, sessions.user_id, users.username, users.is_admin,
@@ -436,7 +539,7 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         (token,),
     )
     if not session:
-        raise HTTPException(status_code=401, detail="Invalid session")
+        return None
     last_used = session.get("last_used") or session.get("created_at")
     if last_used:
         try:
@@ -446,7 +549,7 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         if last_used_dt:
             if (datetime.now(timezone.utc) - last_used_dt).total_seconds() > SESSION_TTL_SECONDS:
                 execute("DELETE FROM sessions WHERE token = ?", (token,))
-                raise HTTPException(status_code=401, detail="Session expired")
+                return None
     execute(
         "UPDATE sessions SET last_used = ? WHERE token = ?",
         (utc_now_iso(), token),
@@ -459,6 +562,98 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         "organization_id": session.get("organization_id"),
         "token": token,
     }
+
+
+def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization")
+    user = _session_lookup(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return user
+
+
+class AuthedPrincipal:
+    """Carries whichever identity authenticated the request."""
+
+    def __init__(
+        self,
+        *,
+        user: Optional[dict] = None,
+        api_key: Optional[dict] = None,
+        organization_id: int,
+        scope: str,
+    ):
+        self.user = user
+        self.api_key = api_key
+        self.organization_id = organization_id
+        self.scope = scope
+
+
+def get_api_authed(authorization: Optional[str] = Header(None)) -> AuthedPrincipal:
+    """Dual-mode auth. Accepts a session bearer token OR an API key."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization")
+
+    key_row = lookup_api_key(token)
+    if key_row:
+        return AuthedPrincipal(
+            api_key=key_row,
+            organization_id=key_row["organization_id"],
+            scope=key_row["scope"],
+        )
+
+    user = _session_lookup(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return AuthedPrincipal(
+        user=user,
+        organization_id=user["organization_id"],
+        scope="session",
+    )
+
+
+_ALL_SESSION_ROLES = ("admin", "editor", "viewer")
+
+
+def require_api_scope(
+    *allowed_api_scopes: str,
+    session_roles: tuple = _ALL_SESSION_ROLES,
+):
+    """Gate an endpoint:
+      - API-keyed: scope must be in allowed_api_scopes, then tier rate limit applied
+      - Session-authed: user's role must be in session_roles (not rate-limited here)
+    """
+    def dep(principal: AuthedPrincipal = Depends(get_api_authed)) -> AuthedPrincipal:
+        if principal.api_key is not None:
+            if principal.scope not in allowed_api_scopes:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code":    "api.insufficient_scope",
+                        "message": f"This endpoint requires one of: {', '.join(allowed_api_scopes)}",
+                        "scope":   principal.scope,
+                    },
+                )
+        else:
+            role = (principal.user or {}).get("role", "viewer")
+            if role not in session_roles:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code":    "insufficient_role",
+                        "message": f"Role {role} not permitted",
+                    },
+                )
+        _api_key_rate_check(principal)
+        return principal
+    return dep
 
 
 def org_id(user: dict) -> int:
@@ -479,18 +674,19 @@ def require_roles(*roles: str):
     return dependency
 
 
-def require_active_subscription(user: dict = Depends(get_current_user)) -> dict:
+def require_active_subscription(principal: AuthedPrincipal = Depends(get_api_authed)) -> dict:
     """Block write operations when the org's subscription is expired/lapsed.
 
     Used as a FastAPI dependency, alongside require_roles when both are needed:
         Depends(require_roles("admin"))         # role check
         Depends(require_active_subscription)    # subscription check
     Both run; both must pass.
+    Accepts both session tokens and API keys via get_api_authed.
     """
     org = query_one(
         "SELECT id, subscription_status, trial_ends_at, paid_through_at "
         "FROM organizations WHERE id = ?",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     if not org:
         raise http_error(403, "no_organization", "No organization for user")
@@ -509,7 +705,7 @@ def require_active_subscription(user: dict = Depends(get_current_user)) -> dict:
                 "expires_at":  state["expires_at"],
             },
         )
-    return user
+    return principal.user if principal.user is not None else {}
 
 
 def can_access_screen(user: dict, screen_id: int) -> bool:
@@ -1003,8 +1199,10 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
 
 
 @app.get("/organization")
-def get_organization(user: dict = Depends(get_current_user)) -> dict:
-    org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))
+def get_organization(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (principal.organization_id,))
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     screens_count = query_one(
@@ -1245,63 +1443,88 @@ def _load_schedule(sid: int, org: int) -> Optional[dict]:
 
 
 @app.post("/schedules", status_code=201)
-def create_schedule(payload: ScheduleCreate,
-                    user: dict = Depends(require_roles("admin", "editor")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
+def create_schedule(
+    payload: ScheduleCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    org = principal.organization_id
     sid = execute(
         "INSERT INTO schedules (organization_id, name) VALUES (?, ?)",
-        (org_id(user), payload.name),
+        (org, payload.name),
     )
-    return _load_schedule(sid, org_id(user))
+    return _load_schedule(sid, org)
 
 
 @app.get("/schedules")
-def list_schedules(user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def list_schedules(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
     rows = query_all(
         "SELECT id, name, created_at FROM schedules WHERE organization_id = ? "
         "ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     items = [_schedule_row_to_dict(r, []) for r in rows]
     return {"items": items}
 
 
 @app.get("/schedules/{sid}")
-def get_schedule(sid: int,
-                 user: dict = Depends(require_roles("admin", "editor"))) -> dict:
-    sched = _load_schedule(sid, org_id(user))
+def get_schedule(
+    sid: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    sched = _load_schedule(sid, principal.organization_id)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
     return sched
 
 
 @app.put("/schedules/{sid}")
-def update_schedule(sid: int, payload: ScheduleUpdate,
-                    user: dict = Depends(require_roles("admin", "editor")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
-    sched = _load_schedule(sid, org_id(user))
+def update_schedule(
+    sid: int,
+    payload: ScheduleUpdate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    org = principal.organization_id
+    sched = _load_schedule(sid, org)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
     if payload.name is not None:
         execute("UPDATE schedules SET name = ? WHERE id = ?", (payload.name, sid))
-    return _load_schedule(sid, org_id(user))
+    return _load_schedule(sid, org)
 
 
 @app.delete("/schedules/{sid}", status_code=204)
-def delete_schedule(sid: int,
-                    user: dict = Depends(require_roles("admin")),
-                    _sub: dict = Depends(require_active_subscription)) -> None:
-    sched = _load_schedule(sid, org_id(user))
+def delete_schedule(
+    sid: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin",),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> None:
+    sched = _load_schedule(sid, principal.organization_id)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
     execute("DELETE FROM schedules WHERE id = ?", (sid,))
 
 
 @app.put("/schedules/{sid}/rules")
-def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
-                           user: dict = Depends(require_roles("admin", "editor")),
-                           _sub: dict = Depends(require_active_subscription)) -> dict:
-    sched = _load_schedule(sid, org_id(user))
+def replace_schedule_rules(
+    sid: int,
+    payload: ScheduleRulesIn,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    org = principal.organization_id
+    sched = _load_schedule(sid, org)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
 
@@ -1310,7 +1533,7 @@ def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
     for r_in in payload.rules:
         owned = query_one(
             "SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
-            (r_in.playlist_id, org_id(user)),
+            (r_in.playlist_id, org),
         )
         if not owned:
             raise http_error(404, "playlist.not_found",
@@ -1341,7 +1564,7 @@ def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
              r["days_of_week"], r["position"]),
         )
 
-    return _load_schedule(sid, org_id(user))
+    return _load_schedule(sid, org)
 
 
 @app.get("/audit-log")
@@ -1420,6 +1643,117 @@ def get_audit_log(
         })
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+# ── API Key management endpoints (session-only, admin) ────────────────
+
+
+class ApiKeyCreate(BaseModel):
+    name:  str = Field(..., min_length=1, max_length=200)
+    scope: str = Field(..., pattern="^api:(read|rw)$")
+
+
+@app.post("/api-keys", status_code=201)
+def create_api_key(
+    payload: ApiKeyCreate,
+    user: dict = Depends(require_roles("admin")),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    full_key, prefix, hashed = generate_api_key()
+    key_id = execute(
+        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, scope, created_by_user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (org_id(user), payload.name, prefix, hashed, payload.scope, user["id"]),
+    )
+    return {
+        "id":         key_id,
+        "name":       payload.name,
+        "key_prefix": prefix,
+        "key":        full_key,
+        "scope":      payload.scope,
+        "created_at": utc_now_iso(),
+    }
+
+
+@app.get("/api-keys")
+def list_api_keys(user: dict = Depends(require_roles("admin"))) -> dict:
+    rows = query_all(
+        """
+        SELECT id, name, key_prefix, scope, created_at, last_used_at, revoked_at
+        FROM api_keys
+        WHERE organization_id = ?
+        ORDER BY created_at DESC
+        """,
+        (org_id(user),),
+    )
+
+    def fmt(v):
+        if v is None:
+            return None
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return v
+
+    items = []
+    for r in rows:
+        items.append({
+            "id":           r["id"],
+            "name":         r["name"],
+            "key_prefix":   r["key_prefix"],
+            "scope":        r["scope"],
+            "created_at":   fmt(r["created_at"]),
+            "last_used_at": fmt(r["last_used_at"]),
+            "revoked_at":   fmt(r["revoked_at"]),
+        })
+    return {"items": items}
+
+
+@app.delete("/api-keys/{key_id}", status_code=204)
+def revoke_api_key(
+    key_id: int,
+    user: dict = Depends(require_roles("admin")),
+) -> None:
+    row = query_one(
+        "SELECT id FROM api_keys WHERE id = ? AND organization_id = ?",
+        (key_id, org_id(user)),
+    )
+    if not row:
+        raise http_error(404, "api_key.not_found", "API key not found")
+    execute(
+        "UPDATE api_keys SET revoked_at = now() WHERE id = ? AND revoked_at IS NULL",
+        (key_id,),
+    )
+
+
+@app.post("/api-keys/{key_id}/rotate")
+def rotate_api_key(
+    key_id: int,
+    user: dict = Depends(require_roles("admin")),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    old = query_one(
+        "SELECT id, name, scope FROM api_keys "
+        "WHERE id = ? AND organization_id = ? AND revoked_at IS NULL",
+        (key_id, org_id(user)),
+    )
+    if not old:
+        raise http_error(404, "api_key.not_found", "API key not found")
+    execute("UPDATE api_keys SET revoked_at = now() WHERE id = ?", (key_id,))
+    full_key, prefix, hashed = generate_api_key()
+    new_id = execute(
+        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, scope, created_by_user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (org_id(user), old["name"], prefix, hashed, old["scope"], user["id"]),
+    )
+    return {
+        "id":           new_id,
+        "name":         old["name"],
+        "key_prefix":   prefix,
+        "key":          full_key,
+        "scope":        old["scope"],
+        "created_at":   utc_now_iso(),
+        "rotated_from": key_id,
+    }
 
 
 @app.post("/users")
@@ -1510,10 +1844,12 @@ def delete_user(request: Request, user_id: int, user: dict = Depends(require_rol
 
 
 @app.get("/sites")
-def list_sites(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_sites(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     return query_all(
         "SELECT * FROM sites WHERE organization_id = ? ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
 
 
@@ -1589,9 +1925,12 @@ def delete_site(site_id: int, user: dict = Depends(require_roles("admin")),
 
 
 @app.get("/screens")
-def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
-    oid = org_id(user)
-    if user.get("is_admin"):
+def list_screens(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
+    oid = principal.organization_id
+    user = principal.user or {}
+    if user.get("is_admin") or principal.api_key is not None:
         rows = query_all(
             """
             SELECT screens.*, sites.name AS site_name, playlists.name AS playlist_name
@@ -1604,6 +1943,7 @@ def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
             (oid,),
         )
     else:
+        uid = user.get("id")
         rows = query_all(
             """
             SELECT DISTINCT screens.*, sites.name AS site_name, playlists.name AS playlist_name
@@ -1616,7 +1956,7 @@ def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
               AND (screens.owner_user_id = ? OR user_groups.user_id = ?)
             ORDER BY screens.created_at DESC
             """,
-            (oid, user["id"], user["id"]),
+            (oid, uid, uid),
         )
     return [sanitize_screen(row, include_token=False) for row in rows]
 
@@ -1669,10 +2009,14 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
 
 @app.put("/screens/{screen_id}")
 def update_screen(
-    screen_id: int, payload: ScreenUpdate, user: dict = Depends(require_roles("admin", "editor")),
+    screen_id: int,
+    payload: ScreenUpdate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
-    oid = org_id(user)
+    oid = principal.organization_id
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
         (screen_id, oid),
@@ -1739,15 +2083,17 @@ def delete_screen(request: Request, screen_id: int, user: dict = Depends(require
 
 @app.get("/screens/{screen_id}/zones")
 def list_screen_zones(
-    screen_id: int, user: dict = Depends(require_roles("admin", "editor"))
+    screen_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
 ) -> dict:
     screen = query_one(
         "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
-        (screen_id, org_id(user)),
+        (screen_id, principal.organization_id),
     )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
-    if not user.get("is_admin"):
+    user = principal.user or {}
+    if not user.get("is_admin") and principal.api_key is None:
         require_screen_access(screen_id, user)
     zones = get_screen_zones(screen_id)
     return {"zones": zones}
@@ -2777,18 +3123,23 @@ def create_wall(request: Request, payload: WallCreate,
 
 
 @app.get("/walls")
-def list_walls(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_walls(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     walls = query_all(
         "SELECT * FROM walls WHERE organization_id = ? ORDER BY id DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     return [serialize_wall(w) for w in walls]
 
 
 @app.get("/walls/{wall_id}")
-def get_wall(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
+def get_wall(
+    wall_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
-                     (wall_id, org_id(user)))
+                     (wall_id, principal.organization_id))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall not found")
     return serialize_wall(wall)
@@ -3017,8 +3368,11 @@ def _load_spanned_wall_or_404(wall_id: int, owner_org_id: int) -> dict:
 
 
 @app.get("/walls/{wall_id}/canvas-playlist")
-def get_canvas_playlist(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def get_canvas_playlist(
+    wall_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     items = query_all(
         """SELECT pi.id, pi.media_id, pi.position, pi.duration_seconds,
                   pi.duration_override_seconds, pi.fit_mode,
@@ -3039,13 +3393,18 @@ class CanvasItemCreate(BaseModel):
 
 
 @app.post("/walls/{wall_id}/canvas-playlist/items", status_code=201)
-def add_canvas_item(wall_id: int, payload: CanvasItemCreate,
-                    user: dict = Depends(require_roles("admin", "editor")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def add_canvas_item(
+    wall_id: int,
+    payload: CanvasItemCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
-        (payload.media_id, org_id(user)),
+        (payload.media_id, principal.organization_id),
     )
     if not media:
         raise http_error(404, "media.not_found", "Media not found")
@@ -3075,10 +3434,16 @@ class CanvasItemUpdate(BaseModel):
 
 
 @app.patch("/walls/{wall_id}/canvas-playlist/items/{item_id}")
-def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
-                      user: dict = Depends(require_roles("admin", "editor")),
-                      _sub: dict = Depends(require_active_subscription)) -> dict:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def patch_canvas_item(
+    wall_id: int,
+    item_id: int,
+    payload: CanvasItemUpdate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     item = query_one(
         "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, wall["spanned_playlist_id"]),
@@ -3094,10 +3459,15 @@ def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
 
 
 @app.delete("/walls/{wall_id}/canvas-playlist/items/{item_id}", status_code=204)
-def delete_canvas_item(wall_id: int, item_id: int,
-                       user: dict = Depends(require_roles("admin", "editor")),
-                       _sub: dict = Depends(require_active_subscription)) -> None:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def delete_canvas_item(
+    wall_id: int,
+    item_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> None:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     execute(
         "DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, wall["spanned_playlist_id"]),
@@ -3171,31 +3541,38 @@ def preview_content(token: str) -> dict:
 
 
 @app.get("/playlists")
-def list_playlists(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_playlists(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     return query_all(
         "SELECT * FROM playlists WHERE organization_id = ? ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
 
 
 @app.post("/playlists")
 def create_playlist(
     payload: PlaylistCreate,
-    user: dict = Depends(require_roles("admin", "editor")),
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist_id = execute(
         "INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
-        (org_id(user), payload.name, utc_now_iso()),
+        (principal.organization_id, payload.name, utc_now_iso()),
     )
     return query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
 
 
 @app.get("/playlists/{playlist_id}")
-def get_playlist(playlist_id: int, user: dict = Depends(get_current_user)) -> dict:
+def get_playlist(
+    playlist_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3223,12 +3600,14 @@ def get_playlist(playlist_id: int, user: dict = Depends(get_current_user)) -> di
 def update_playlist(
     playlist_id: int,
     payload: PlaylistUpdate,
-    user: dict = Depends(require_roles("admin", "editor")),
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3240,11 +3619,16 @@ def update_playlist(
 
 
 @app.delete("/playlists/{playlist_id}")
-def delete_playlist(playlist_id: int, user: dict = Depends(require_roles("admin")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
+def delete_playlist(
+    playlist_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3275,10 +3659,14 @@ def _default_duration_seconds(media: dict) -> int:
 
 @app.post("/playlists/{playlist_id}/items")
 def add_playlist_item(
-    playlist_id: int, payload: PlaylistItemCreate, user: dict = Depends(require_roles("admin", "editor")),
+    playlist_id: int,
+    payload: PlaylistItemCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
-    oid = org_id(user)
+    oid = principal.organization_id
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
         (playlist_id, oid),
@@ -3317,12 +3705,16 @@ def add_playlist_item(
 
 @app.delete("/playlists/{playlist_id}/items/{item_id}")
 def delete_playlist_item(
-    playlist_id: int, item_id: int, user: dict = Depends(require_roles("admin", "editor")),
+    playlist_id: int,
+    item_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist = query_one(
         "SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3337,10 +3729,12 @@ def delete_playlist_item(
 
 
 @app.get("/media")
-def list_media(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_media(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     media = query_all(
         "SELECT * FROM media WHERE organization_id = ? ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     for item in media:
         if item.get("mime_type") == "text/url":
@@ -3354,7 +3748,9 @@ def list_media(user: dict = Depends(get_current_user)) -> list[dict]:
 async def upload_media(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    user: dict = Depends(require_roles("admin", "editor")),
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     contents = await file.read()
@@ -3376,7 +3772,7 @@ async def upload_media(
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
-            org_id(user),
+            principal.organization_id,
             file.filename or filename,
             filename,
             content_type,
@@ -3393,7 +3789,10 @@ async def upload_media(
 
 @app.post("/media/url")
 def create_media_url(
-    payload: MediaUrlCreate, user: dict = Depends(require_roles("admin", "editor")),
+    payload: MediaUrlCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     url = payload.url.strip()
@@ -3404,7 +3803,7 @@ def create_media_url(
         INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (org_id(user), payload.name, url, "text/url", 0, utc_now_iso()),
+        (principal.organization_id, payload.name, url, "text/url", 0, utc_now_iso()),
     )
     item = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
     item["url"] = item["filename"]
@@ -3412,11 +3811,16 @@ def create_media_url(
 
 
 @app.delete("/media/{media_id}")
-def delete_media(media_id: int, user: dict = Depends(require_roles("admin", "editor")),
-                 _sub: dict = Depends(require_active_subscription)) -> dict:
+def delete_media(
+    media_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
-        (media_id, org_id(user)),
+        (media_id, principal.organization_id),
     )
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")

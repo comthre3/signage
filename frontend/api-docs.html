@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Khanshoof API — Docs</title>
+    <style>
+      :root {
+        --bg: #fff8f0;
+        --fg: #3b2a14;
+        --muted: #8b6f5e;
+        --border: #e9ddc6;
+        --pre-bg: #f5ecd9;
+        --link: #b0653e;
+        --max: 760px;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--fg);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        line-height: 1.55; }
+      main { max-width: var(--max); margin: 0 auto; padding: 48px 24px 96px; }
+      h1 { margin-block-start: 0; }
+      h2 { margin-block-start: 2em; border-block-end: 1px solid var(--border); padding-block-end: 8px; }
+      h3 { margin-block-start: 1.5em; }
+      a { color: var(--link); }
+      code { font-family: ui-monospace, monospace; font-size: 0.9em;
+        background: var(--pre-bg); padding: 1px 6px; border-radius: 4px; }
+      pre { background: var(--pre-bg); padding: 16px; border-radius: 8px;
+        overflow-x: auto; font-size: 0.9em; line-height: 1.4; }
+      pre code { background: transparent; padding: 0; }
+      table { border-collapse: collapse; width: 100%; font-size: 0.95em; }
+      th, td { padding: 8px 12px; text-align: left; border-block-end: 1px solid var(--border); }
+      .muted { color: var(--muted); }
+      .badge { display: inline-block; padding: 1px 8px; border-radius: 999px;
+        background: var(--pre-bg); font-size: 0.8em; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Khanshoof API</h1>
+      <p class="muted">v1 — agent-friendly REST API for managing media, playlists, screens, walls, and schedules.</p>
+
+      <h2>Quick start</h2>
+      <p>Create an API key from <a href="/">the admin dashboard → API Keys tab</a>. Then:</p>
+      <pre><code>curl https://api.khanshoof.com/playlists \
+  -H "Authorization: Bearer khan_live_..."</code></pre>
+
+      <h2>Authentication</h2>
+      <p>Every request must include an <code>Authorization</code> header:</p>
+      <pre><code>Authorization: Bearer khan_live_&lt;your-key&gt;</code></pre>
+      <p>Keys are tied to your organization. They start with <code>khan_live_</code> followed by ~32 random characters. Treat them like passwords — never commit them to source control or share them in client-side code.</p>
+
+      <h2>Scopes</h2>
+      <table>
+        <tr><th>Scope</th><th>Allowed methods</th></tr>
+        <tr><td><code>api:read</code></td><td>GET — list/read media, playlists, screens, walls, schedules</td></tr>
+        <tr><td><code>api:rw</code></td><td>Everything in <code>api:read</code> plus POST/PUT/PATCH/DELETE on those resources</td></tr>
+      </table>
+      <p>Each API key is bound to one scope at creation time. Rotate to upgrade — there's no in-place scope change.</p>
+
+      <h2>Rate limits</h2>
+      <p>Per-key, by your organization's subscription plan:</p>
+      <table>
+        <tr><th>Plan</th><th>Per minute</th><th>Per hour</th></tr>
+        <tr><td>Starter</td><td>30</td><td>500</td></tr>
+        <tr><td>Growth</td><td>100</td><td>5,000</td></tr>
+        <tr><td>Business</td><td>500</td><td>25,000</td></tr>
+        <tr><td>Pro</td><td>2,000</td><td>100,000</td></tr>
+        <tr><td>Enterprise</td><td>5,000</td><td>250,000</td></tr>
+      </table>
+      <p>When you hit the limit, responses are <code>429</code> with headers <code>Retry-After</code>, <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Window</code>, <code>X-RateLimit-Remaining</code>.</p>
+
+      <h2>Error codes</h2>
+      <table>
+        <tr><th>HTTP</th><th>Code</th><th>Meaning</th></tr>
+        <tr><td>401</td><td>—</td><td>Missing/invalid Authorization header or revoked key</td></tr>
+        <tr><td>402</td><td><code>subscription.expired</code> / <code>subscription.trial_expired</code></td><td>Your organization's subscription is expired — renew to make changes</td></tr>
+        <tr><td>403</td><td><code>api.insufficient_scope</code></td><td>Key scope doesn't permit this operation (e.g., POST with <code>api:read</code> key)</td></tr>
+        <tr><td>404</td><td>—</td><td>Resource not found, or belongs to another organization</td></tr>
+        <tr><td>422</td><td>—</td><td>Request body validation failed</td></tr>
+        <tr><td>429</td><td><code>rate_limited</code></td><td>Per-minute or per-hour rate limit hit</td></tr>
+      </table>
+
+      <h2>Endpoint reference</h2>
+
+      <h3>Media</h3>
+      <ul>
+        <li><code>GET /media</code> — list your media library</li>
+        <li><code>GET /media/{id}</code> — get one media item</li>
+        <li><code>POST /media/upload</code> — multipart upload (returns id + url)</li>
+        <li><code>POST /media/url</code> — add a URL-based media item</li>
+        <li><code>DELETE /media/{id}</code> — delete a media item</li>
+      </ul>
+
+      <h3>Playlists</h3>
+      <ul>
+        <li><code>GET /playlists</code> · <code>GET /playlists/{id}</code></li>
+        <li><code>POST /playlists</code> — create</li>
+        <li><code>PUT /playlists/{id}</code> · <code>DELETE /playlists/{id}</code></li>
+        <li><code>POST /playlists/{id}/items</code> — add item</li>
+        <li><code>DELETE /playlists/{id}/items/{item_id}</code> — remove item</li>
+      </ul>
+
+      <h3>Sites + Screens</h3>
+      <ul>
+        <li><code>GET /sites</code></li>
+        <li><code>GET /screens</code> · <code>GET /screens/{id}/zones</code></li>
+        <li><code>PUT /screens/{id}</code> — assign a playlist or schedule</li>
+      </ul>
+
+      <h3>Walls</h3>
+      <ul>
+        <li><code>GET /walls</code> · <code>GET /walls/{id}</code></li>
+        <li><code>GET /walls/{id}/canvas-playlist</code></li>
+        <li><code>POST /walls/{id}/canvas-playlist/items</code></li>
+        <li><code>PATCH /walls/{id}/canvas-playlist/items/{item_id}</code></li>
+        <li><code>DELETE /walls/{id}/canvas-playlist/items/{item_id}</code></li>
+      </ul>
+
+      <h3>Schedules (dayparting)</h3>
+      <ul>
+        <li><code>GET /schedules</code> · <code>GET /schedules/{id}</code></li>
+        <li><code>POST /schedules</code> · <code>PUT /schedules/{id}</code> · <code>DELETE /schedules/{id}</code></li>
+        <li><code>PUT /schedules/{id}/rules</code> — replace all rules at once</li>
+      </ul>
+
+      <h3>Organization</h3>
+      <ul>
+        <li><code>GET /organization</code> — your org's plan, subscription state, screen limit</li>
+      </ul>
+
+      <h2>What's not in the API (yet)</h2>
+      <ul>
+        <li>Creating users, sites, or screens (paired with screen-limit logic — coming in a later phase)</li>
+        <li>Triggering billing or signup flows</li>
+        <li>Zone editing (advanced layout)</li>
+        <li>Outbound webhooks</li>
+        <li>MCP server wrapper (coming soon)</li>
+      </ul>
+
+      <h2>Support</h2>
+      <p>Email <a href="mailto:support@khanshoof.com">support@khanshoof.com</a> with your <code>key_prefix</code> (the first 12 characters of your key — e.g. <code>khan_live_a1</code>). Never send your full key.</p>
+    </main>
+  </body>
+</html>

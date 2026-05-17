@@ -35,6 +35,7 @@
           <button data-section="users" data-i18n="nav.users">Users</button>
           <button data-section="walls" data-i18n="nav.walls">Walls</button>
           <button data-section="audit-log" data-i18n="nav.audit_log">Audit log</button>
+          <button data-section="api-keys" data-i18n="nav.api_keys">API Keys</button>
           <button data-section="billing" data-i18n="nav.billing">Billing</button>
         </nav>
         <div class="auth-status">
@@ -508,6 +509,56 @@
             <button id="audit-page-newer" data-i18n="audit_log.pagination.newer">← Newer</button>
             <span id="audit-page-info"></span>
             <button id="audit-page-older" data-i18n="audit_log.pagination.older">Older →</button>
+          </div>
+        </section>
+
+        <section id="api-keys" class="panel hidden">
+          <header class="panel-header">
+            <h2 data-i18n="api_keys.title">API Keys</h2>
+            <button id="api-key-new-btn" class="btn" data-i18n="api_keys.new">+ New key</button>
+          </header>
+
+          <p class="muted">
+            <span data-i18n="api_keys.intro">Programmatically manage media, playlists, screens, walls, and schedules. </span>
+            <a id="api-key-docs-link" href="/api-docs.html" target="_blank" data-i18n="api_keys.docs_link">Read the API docs ↗</a>
+          </p>
+
+          <div id="api-keys-list" class="api-keys-list"></div>
+
+          <div id="api-key-create-modal" class="modal hidden" role="dialog" aria-modal="true">
+            <div class="modal-card">
+              <h3 data-i18n="api_keys.new">+ New key</h3>
+              <label class="field">
+                <span data-i18n="api_keys.field.name">Name</span>
+                <input id="api-key-name" type="text" maxlength="200" placeholder="Zapier" />
+              </label>
+              <fieldset class="field">
+                <legend data-i18n="api_keys.field.scope">Scope</legend>
+                <label class="radio-row">
+                  <input type="radio" name="api-key-scope" value="api:read" />
+                  <span data-i18n="api_keys.scope.read">Read only</span>
+                </label>
+                <label class="radio-row">
+                  <input type="radio" name="api-key-scope" value="api:rw" checked />
+                  <span data-i18n="api_keys.scope.rw">Read + write</span>
+                </label>
+              </fieldset>
+              <div class="modal-actions">
+                <button id="api-key-create-cancel" class="btn" data-i18n="confirm_dialog.cancel">Cancel</button>
+                <button id="api-key-create-submit" class="btn btn-primary" data-i18n="api_keys.create">Create key</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="api-key-reveal-modal" class="modal hidden" role="dialog" aria-modal="true">
+            <div class="modal-card">
+              <h3 data-i18n="api_keys.created.warning">Save this key now — you won't see it again.</h3>
+              <pre id="api-key-secret-block" class="api-key-secret-block"></pre>
+              <div class="modal-actions">
+                <button id="api-key-copy-btn" class="btn" data-i18n="api_keys.created.copy">Copy</button>
+                <button id="api-key-reveal-done" class="btn btn-primary" data-i18n="confirm_dialog.ok">Done</button>
+              </div>
+            </div>
           </div>
         </section>
       </div>
