@@ -1380,63 +1380,88 @@ def _load_schedule(sid: int, org: int) -> Optional[dict]:
 
 
 @app.post("/schedules", status_code=201)
-def create_schedule(payload: ScheduleCreate,
-                    user: dict = Depends(require_roles("admin", "editor")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
+def create_schedule(
+    payload: ScheduleCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    org = principal.organization_id
     sid = execute(
         "INSERT INTO schedules (organization_id, name) VALUES (?, ?)",
-        (org_id(user), payload.name),
+        (org, payload.name),
     )
-    return _load_schedule(sid, org_id(user))
+    return _load_schedule(sid, org)
 
 
 @app.get("/schedules")
-def list_schedules(user: dict = Depends(require_roles("admin", "editor"))) -> dict:
+def list_schedules(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
     rows = query_all(
         "SELECT id, name, created_at FROM schedules WHERE organization_id = ? "
         "ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     items = [_schedule_row_to_dict(r, []) for r in rows]
     return {"items": items}
 
 
 @app.get("/schedules/{sid}")
-def get_schedule(sid: int,
-                 user: dict = Depends(require_roles("admin", "editor"))) -> dict:
-    sched = _load_schedule(sid, org_id(user))
+def get_schedule(
+    sid: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    sched = _load_schedule(sid, principal.organization_id)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
     return sched
 
 
 @app.put("/schedules/{sid}")
-def update_schedule(sid: int, payload: ScheduleUpdate,
-                    user: dict = Depends(require_roles("admin", "editor")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
-    sched = _load_schedule(sid, org_id(user))
+def update_schedule(
+    sid: int,
+    payload: ScheduleUpdate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    org = principal.organization_id
+    sched = _load_schedule(sid, org)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
     if payload.name is not None:
         execute("UPDATE schedules SET name = ? WHERE id = ?", (payload.name, sid))
-    return _load_schedule(sid, org_id(user))
+    return _load_schedule(sid, org)
 
 
 @app.delete("/schedules/{sid}", status_code=204)
-def delete_schedule(sid: int,
-                    user: dict = Depends(require_roles("admin")),
-                    _sub: dict = Depends(require_active_subscription)) -> None:
-    sched = _load_schedule(sid, org_id(user))
+def delete_schedule(
+    sid: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin",),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> None:
+    sched = _load_schedule(sid, principal.organization_id)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
     execute("DELETE FROM schedules WHERE id = ?", (sid,))
 
 
 @app.put("/schedules/{sid}/rules")
-def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
-                           user: dict = Depends(require_roles("admin", "editor")),
-                           _sub: dict = Depends(require_active_subscription)) -> dict:
-    sched = _load_schedule(sid, org_id(user))
+def replace_schedule_rules(
+    sid: int,
+    payload: ScheduleRulesIn,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    org = principal.organization_id
+    sched = _load_schedule(sid, org)
     if not sched:
         raise http_error(404, "schedule.not_found", "Schedule not found")
 
@@ -1445,7 +1470,7 @@ def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
     for r_in in payload.rules:
         owned = query_one(
             "SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
-            (r_in.playlist_id, org_id(user)),
+            (r_in.playlist_id, org),
         )
         if not owned:
             raise http_error(404, "playlist.not_found",
@@ -1476,7 +1501,7 @@ def replace_schedule_rules(sid: int, payload: ScheduleRulesIn,
              r["days_of_week"], r["position"]),
         )
 
-    return _load_schedule(sid, org_id(user))
+    return _load_schedule(sid, org)
 
 
 @app.get("/audit-log")
@@ -1645,10 +1670,12 @@ def delete_user(request: Request, user_id: int, user: dict = Depends(require_rol
 
 
 @app.get("/sites")
-def list_sites(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_sites(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     return query_all(
         "SELECT * FROM sites WHERE organization_id = ? ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
 
 
@@ -1724,9 +1751,12 @@ def delete_site(site_id: int, user: dict = Depends(require_roles("admin")),
 
 
 @app.get("/screens")
-def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
-    oid = org_id(user)
-    if user.get("is_admin"):
+def list_screens(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
+    oid = principal.organization_id
+    user = principal.user or {}
+    if user.get("is_admin") or principal.api_key is not None:
         rows = query_all(
             """
             SELECT screens.*, sites.name AS site_name, playlists.name AS playlist_name
@@ -1739,6 +1769,7 @@ def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
             (oid,),
         )
     else:
+        uid = user.get("id")
         rows = query_all(
             """
             SELECT DISTINCT screens.*, sites.name AS site_name, playlists.name AS playlist_name
@@ -1751,7 +1782,7 @@ def list_screens(user: dict = Depends(get_current_user)) -> list[dict]:
               AND (screens.owner_user_id = ? OR user_groups.user_id = ?)
             ORDER BY screens.created_at DESC
             """,
-            (oid, user["id"], user["id"]),
+            (oid, uid, uid),
         )
     return [sanitize_screen(row, include_token=False) for row in rows]
 
@@ -1804,10 +1835,14 @@ def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("adm
 
 @app.put("/screens/{screen_id}")
 def update_screen(
-    screen_id: int, payload: ScreenUpdate, user: dict = Depends(require_roles("admin", "editor")),
+    screen_id: int,
+    payload: ScreenUpdate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
-    oid = org_id(user)
+    oid = principal.organization_id
     screen = query_one(
         "SELECT * FROM screens WHERE id = ? AND organization_id = ?",
         (screen_id, oid),
@@ -1874,15 +1909,17 @@ def delete_screen(request: Request, screen_id: int, user: dict = Depends(require
 
 @app.get("/screens/{screen_id}/zones")
 def list_screen_zones(
-    screen_id: int, user: dict = Depends(require_roles("admin", "editor"))
+    screen_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
 ) -> dict:
     screen = query_one(
         "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
-        (screen_id, org_id(user)),
+        (screen_id, principal.organization_id),
     )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
-    if not user.get("is_admin"):
+    user = principal.user or {}
+    if not user.get("is_admin") and principal.api_key is None:
         require_screen_access(screen_id, user)
     zones = get_screen_zones(screen_id)
     return {"zones": zones}
@@ -2912,18 +2949,23 @@ def create_wall(request: Request, payload: WallCreate,
 
 
 @app.get("/walls")
-def list_walls(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_walls(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     walls = query_all(
         "SELECT * FROM walls WHERE organization_id = ? ORDER BY id DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     return [serialize_wall(w) for w in walls]
 
 
 @app.get("/walls/{wall_id}")
-def get_wall(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
+def get_wall(
+    wall_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
     wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
-                     (wall_id, org_id(user)))
+                     (wall_id, principal.organization_id))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall not found")
     return serialize_wall(wall)
@@ -3152,8 +3194,11 @@ def _load_spanned_wall_or_404(wall_id: int, owner_org_id: int) -> dict:
 
 
 @app.get("/walls/{wall_id}/canvas-playlist")
-def get_canvas_playlist(wall_id: int, user: dict = Depends(get_current_user)) -> dict:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def get_canvas_playlist(
+    wall_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     items = query_all(
         """SELECT pi.id, pi.media_id, pi.position, pi.duration_seconds,
                   pi.duration_override_seconds, pi.fit_mode,
@@ -3174,13 +3219,18 @@ class CanvasItemCreate(BaseModel):
 
 
 @app.post("/walls/{wall_id}/canvas-playlist/items", status_code=201)
-def add_canvas_item(wall_id: int, payload: CanvasItemCreate,
-                    user: dict = Depends(require_roles("admin", "editor")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def add_canvas_item(
+    wall_id: int,
+    payload: CanvasItemCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
-        (payload.media_id, org_id(user)),
+        (payload.media_id, principal.organization_id),
     )
     if not media:
         raise http_error(404, "media.not_found", "Media not found")
@@ -3210,10 +3260,16 @@ class CanvasItemUpdate(BaseModel):
 
 
 @app.patch("/walls/{wall_id}/canvas-playlist/items/{item_id}")
-def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
-                      user: dict = Depends(require_roles("admin", "editor")),
-                      _sub: dict = Depends(require_active_subscription)) -> dict:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def patch_canvas_item(
+    wall_id: int,
+    item_id: int,
+    payload: CanvasItemUpdate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     item = query_one(
         "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, wall["spanned_playlist_id"]),
@@ -3229,10 +3285,15 @@ def patch_canvas_item(wall_id: int, item_id: int, payload: CanvasItemUpdate,
 
 
 @app.delete("/walls/{wall_id}/canvas-playlist/items/{item_id}", status_code=204)
-def delete_canvas_item(wall_id: int, item_id: int,
-                       user: dict = Depends(require_roles("admin", "editor")),
-                       _sub: dict = Depends(require_active_subscription)) -> None:
-    wall = _load_spanned_wall_or_404(wall_id, org_id(user))
+def delete_canvas_item(
+    wall_id: int,
+    item_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> None:
+    wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
     execute(
         "DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, wall["spanned_playlist_id"]),
@@ -3331,10 +3392,13 @@ def create_playlist(
 
 
 @app.get("/playlists/{playlist_id}")
-def get_playlist(playlist_id: int, user: dict = Depends(get_current_user)) -> dict:
+def get_playlist(
+    playlist_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3362,12 +3426,14 @@ def get_playlist(playlist_id: int, user: dict = Depends(get_current_user)) -> di
 def update_playlist(
     playlist_id: int,
     payload: PlaylistUpdate,
-    user: dict = Depends(require_roles("admin", "editor")),
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3379,11 +3445,16 @@ def update_playlist(
 
 
 @app.delete("/playlists/{playlist_id}")
-def delete_playlist(playlist_id: int, user: dict = Depends(require_roles("admin")),
-                    _sub: dict = Depends(require_active_subscription)) -> dict:
+def delete_playlist(
+    playlist_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3414,10 +3485,14 @@ def _default_duration_seconds(media: dict) -> int:
 
 @app.post("/playlists/{playlist_id}/items")
 def add_playlist_item(
-    playlist_id: int, payload: PlaylistItemCreate, user: dict = Depends(require_roles("admin", "editor")),
+    playlist_id: int,
+    payload: PlaylistItemCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
-    oid = org_id(user)
+    oid = principal.organization_id
     playlist = query_one(
         "SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
         (playlist_id, oid),
@@ -3456,12 +3531,16 @@ def add_playlist_item(
 
 @app.delete("/playlists/{playlist_id}/items/{item_id}")
 def delete_playlist_item(
-    playlist_id: int, item_id: int, user: dict = Depends(require_roles("admin", "editor")),
+    playlist_id: int,
+    item_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist = query_one(
         "SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
-        (playlist_id, org_id(user)),
+        (playlist_id, principal.organization_id),
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
@@ -3476,10 +3555,12 @@ def delete_playlist_item(
 
 
 @app.get("/media")
-def list_media(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_media(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     media = query_all(
         "SELECT * FROM media WHERE organization_id = ? ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     for item in media:
         if item.get("mime_type") == "text/url":
@@ -3493,7 +3574,9 @@ def list_media(user: dict = Depends(get_current_user)) -> list[dict]:
 async def upload_media(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    user: dict = Depends(require_roles("admin", "editor")),
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     contents = await file.read()
@@ -3515,7 +3598,7 @@ async def upload_media(
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
-            org_id(user),
+            principal.organization_id,
             file.filename or filename,
             filename,
             content_type,
@@ -3532,7 +3615,10 @@ async def upload_media(
 
 @app.post("/media/url")
 def create_media_url(
-    payload: MediaUrlCreate, user: dict = Depends(require_roles("admin", "editor")),
+    payload: MediaUrlCreate,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     url = payload.url.strip()
@@ -3543,7 +3629,7 @@ def create_media_url(
         INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (org_id(user), payload.name, url, "text/url", 0, utc_now_iso()),
+        (principal.organization_id, payload.name, url, "text/url", 0, utc_now_iso()),
     )
     item = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
     item["url"] = item["filename"]
@@ -3551,11 +3637,16 @@ def create_media_url(
 
 
 @app.delete("/media/{media_id}")
-def delete_media(media_id: int, user: dict = Depends(require_roles("admin", "editor")),
-                 _sub: dict = Depends(require_active_subscription)) -> dict:
+def delete_media(
+    media_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
-        (media_id, org_id(user)),
+        (media_id, principal.organization_id),
     )
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")

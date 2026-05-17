@@ -183,3 +183,30 @@ def test_session_passes_all_gates(client):
     r = client.post("/playlists", headers=_bearer(session_token),
                     json={"name": "session"})
     assert r.status_code in (200, 201), r.text
+
+
+# ── Org-scoping (API keys can only see/modify their own org) ──────────
+
+
+def test_api_key_cannot_see_other_orgs_playlists(client):
+    """An API key for org A must NOT see playlists created by org B."""
+    _ta, org_a, _ua = _signup_org(client)
+    key_a, _ = _mint_key_row(org_a, scope="api:rw")
+    tb, org_b, _ub = _signup_org(client)
+    r = client.post("/playlists", headers=_bearer(tb), json={"name": "B's playlist"})
+    assert r.status_code in (200, 201), r.text
+    b_pl_id = r.json()["id"]
+    r = client.get("/playlists", headers=_bearer(key_a))
+    assert r.status_code == 200
+    ids = [p["id"] for p in r.json()]
+    assert b_pl_id not in ids
+
+
+def test_api_key_cannot_modify_other_orgs_playlists(client):
+    _ta, org_a, _ua = _signup_org(client)
+    key_a, _ = _mint_key_row(org_a, scope="api:rw")
+    tb, org_b, _ub = _signup_org(client)
+    r = client.post("/playlists", headers=_bearer(tb), json={"name": "B's playlist"})
+    b_pl_id = r.json()["id"]
+    r = client.delete(f"/playlists/{b_pl_id}", headers=_bearer(key_a))
+    assert r.status_code == 404, r.text
