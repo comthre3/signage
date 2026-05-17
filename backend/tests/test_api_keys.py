@@ -112,3 +112,74 @@ def test_lookup_updates_last_used_at(client):
     time.sleep(0.1)
     after = query_one("SELECT last_used_at FROM api_keys WHERE key_prefix = ?", (prefix,))
     assert after["last_used_at"] is not None
+
+
+# ── AuthedPrincipal + get_api_authed + require_api_scope ──────────────
+
+
+def _bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_get_api_authed_accepts_session_token(client):
+    session_token, org_id, _u = _signup_org(client)
+    r = client.get("/organization", headers=_bearer(session_token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == org_id
+
+
+def test_get_api_authed_accepts_api_key(client):
+    _t, org_id, _u = _signup_org(client)
+    full_key, _ = _mint_key_row(org_id, scope="api:rw")
+    r = client.get("/organization", headers=_bearer(full_key))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == org_id
+
+
+def test_get_api_authed_rejects_missing_header(client):
+    r = client.get("/organization")
+    assert r.status_code == 401
+
+
+def test_get_api_authed_rejects_bad_scheme(client):
+    r = client.get("/organization", headers={"Authorization": "Basic dGVzdA=="})
+    assert r.status_code == 401
+
+
+def test_get_api_authed_rejects_unknown_key(client):
+    r = client.get("/organization", headers=_bearer("khan_live_garbage_does_not_exist_xxxxxxxxxx"))
+    assert r.status_code == 401
+
+
+def test_read_scope_can_GET_playlists(client):
+    _t, org_id, _u = _signup_org(client)
+    full_key, _ = _mint_key_row(org_id, scope="api:read")
+    r = client.get("/playlists", headers=_bearer(full_key))
+    assert r.status_code == 200, r.text
+
+
+def test_read_scope_cannot_POST_playlists(client):
+    _t, org_id, _u = _signup_org(client)
+    full_key, _ = _mint_key_row(org_id, scope="api:read")
+    r = client.post("/playlists", headers=_bearer(full_key),
+                    json={"name": "denied"})
+    assert r.status_code == 403, r.text
+    body = r.json()
+    assert body["detail"]["code"] == "api.insufficient_scope"
+
+
+def test_rw_scope_can_POST_playlists(client):
+    _t, org_id, _u = _signup_org(client)
+    full_key, _ = _mint_key_row(org_id, scope="api:rw")
+    r = client.post("/playlists", headers=_bearer(full_key),
+                    json={"name": "allowed"})
+    assert r.status_code in (200, 201), r.text
+
+
+def test_session_passes_all_gates(client):
+    session_token, org_id, _u = _signup_org(client)
+    r = client.post("/playlists", headers=_bearer(session_token),
+                    json={"name": "session"})
+    assert r.status_code in (200, 201), r.text

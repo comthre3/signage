@@ -459,12 +459,12 @@ def is_online(last_seen: Optional[str]) -> bool:
     return (datetime.now(timezone.utc) - last_seen_dt).total_seconds() < 90
 
 
-def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=401, detail="Invalid authorization")
+def _session_lookup(token: str) -> Optional[dict]:
+    """Look up an active session by bearer token. Returns user dict or None.
+
+    Idle TTL eviction + last_used update preserved from the original
+    get_current_user body.
+    """
     session = query_one(
         """
         SELECT sessions.token, sessions.user_id, users.username, users.is_admin,
@@ -476,7 +476,7 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         (token,),
     )
     if not session:
-        raise HTTPException(status_code=401, detail="Invalid session")
+        return None
     last_used = session.get("last_used") or session.get("created_at")
     if last_used:
         try:
@@ -486,7 +486,7 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         if last_used_dt:
             if (datetime.now(timezone.utc) - last_used_dt).total_seconds() > SESSION_TTL_SECONDS:
                 execute("DELETE FROM sessions WHERE token = ?", (token,))
-                raise HTTPException(status_code=401, detail="Session expired")
+                return None
     execute(
         "UPDATE sessions SET last_used = ? WHERE token = ?",
         (utc_now_iso(), token),
@@ -499,6 +499,98 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         "organization_id": session.get("organization_id"),
         "token": token,
     }
+
+
+def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization")
+    user = _session_lookup(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return user
+
+
+class AuthedPrincipal:
+    """Carries whichever identity authenticated the request."""
+
+    def __init__(
+        self,
+        *,
+        user: Optional[dict] = None,
+        api_key: Optional[dict] = None,
+        organization_id: int,
+        scope: str,
+    ):
+        self.user = user
+        self.api_key = api_key
+        self.organization_id = organization_id
+        self.scope = scope
+
+
+def get_api_authed(authorization: Optional[str] = Header(None)) -> AuthedPrincipal:
+    """Dual-mode auth. Accepts a session bearer token OR an API key."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization")
+
+    key_row = lookup_api_key(token)
+    if key_row:
+        return AuthedPrincipal(
+            api_key=key_row,
+            organization_id=key_row["organization_id"],
+            scope=key_row["scope"],
+        )
+
+    user = _session_lookup(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return AuthedPrincipal(
+        user=user,
+        organization_id=user["organization_id"],
+        scope="session",
+    )
+
+
+_ALL_SESSION_ROLES = ("admin", "editor", "viewer")
+
+
+def require_api_scope(
+    *allowed_api_scopes: str,
+    session_roles: tuple = _ALL_SESSION_ROLES,
+):
+    """Gate an endpoint:
+      - API-keyed: scope must be in allowed_api_scopes
+      - Session-authed: user's role must be in session_roles
+    Rate-limit hook is a no-op here; Task 5 fills it in.
+    """
+    def dep(principal: AuthedPrincipal = Depends(get_api_authed)) -> AuthedPrincipal:
+        if principal.api_key is not None:
+            if principal.scope not in allowed_api_scopes:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code":    "api.insufficient_scope",
+                        "message": f"This endpoint requires one of: {', '.join(allowed_api_scopes)}",
+                        "scope":   principal.scope,
+                    },
+                )
+        else:
+            role = (principal.user or {}).get("role", "viewer")
+            if role not in session_roles:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code":    "insufficient_role",
+                        "message": f"Role {role} not permitted",
+                    },
+                )
+        return principal
+    return dep
 
 
 def org_id(user: dict) -> int:
@@ -519,18 +611,19 @@ def require_roles(*roles: str):
     return dependency
 
 
-def require_active_subscription(user: dict = Depends(get_current_user)) -> dict:
+def require_active_subscription(principal: AuthedPrincipal = Depends(get_api_authed)) -> dict:
     """Block write operations when the org's subscription is expired/lapsed.
 
     Used as a FastAPI dependency, alongside require_roles when both are needed:
         Depends(require_roles("admin"))         # role check
         Depends(require_active_subscription)    # subscription check
     Both run; both must pass.
+    Accepts both session tokens and API keys via get_api_authed.
     """
     org = query_one(
         "SELECT id, subscription_status, trial_ends_at, paid_through_at "
         "FROM organizations WHERE id = ?",
-        (org_id(user),),
+        (principal.organization_id,),
     )
     if not org:
         raise http_error(403, "no_organization", "No organization for user")
@@ -549,7 +642,7 @@ def require_active_subscription(user: dict = Depends(get_current_user)) -> dict:
                 "expires_at":  state["expires_at"],
             },
         )
-    return user
+    return principal.user if principal.user is not None else {}
 
 
 def can_access_screen(user: dict, screen_id: int) -> bool:
@@ -1043,8 +1136,10 @@ def signup_complete(payload: SignupCompleteRequest) -> dict:
 
 
 @app.get("/organization")
-def get_organization(user: dict = Depends(get_current_user)) -> dict:
-    org = query_one("SELECT * FROM organizations WHERE id = ?", (org_id(user),))
+def get_organization(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (principal.organization_id,))
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     screens_count = query_one(
@@ -3211,22 +3306,26 @@ def preview_content(token: str) -> dict:
 
 
 @app.get("/playlists")
-def list_playlists(user: dict = Depends(get_current_user)) -> list[dict]:
+def list_playlists(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> list[dict]:
     return query_all(
         "SELECT * FROM playlists WHERE organization_id = ? ORDER BY created_at DESC",
-        (org_id(user),),
+        (principal.organization_id,),
     )
 
 
 @app.post("/playlists")
 def create_playlist(
     payload: PlaylistCreate,
-    user: dict = Depends(require_roles("admin", "editor")),
+    principal: AuthedPrincipal = Depends(require_api_scope(
+        "api:rw", session_roles=("admin", "editor"),
+    )),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     playlist_id = execute(
         "INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
-        (org_id(user), payload.name, utc_now_iso()),
+        (principal.organization_id, payload.name, utc_now_iso()),
     )
     return query_one("SELECT * FROM playlists WHERE id = ?", (playlist_id,))
 
