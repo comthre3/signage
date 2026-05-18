@@ -431,3 +431,195 @@ def authorize_decision(
 
     qs = urlencode({"code": code, "state": pending["state"]})
     return RedirectResponse(f"{pending['redirect_uri']}?{qs}", status_code=302)
+
+
+# ── Token endpoint ──────────────────────────────────────────────────
+
+
+_ACCESS_TTL_SECONDS  = 3600         # 1 hour
+_REFRESH_TTL_SECONDS = 90 * 86400   # 90 days
+
+
+def _pkce_matches(verifier: str, challenge: str) -> bool:
+    """Compute S256 challenge from verifier and compare to stored challenge."""
+    if not verifier or not challenge:
+        return False
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return secrets.compare_digest(computed, challenge)
+
+
+def _hash_token(token: str) -> str:
+    from main import hash_password
+    return hash_password(token)
+
+
+def _verify_token_hash(token: str, hashed: str) -> bool:
+    from main import verify_password
+    return verify_password(token, hashed)
+
+
+def _oauth_error(status: int, error: str, description: str = "") -> JSONResponse:
+    return JSONResponse(
+        status_code=status,
+        content={"error": error, "error_description": description},
+    )
+
+
+def _issue_tokens(client_id: str, org_id: int, user_id: Optional[int],
+                  scope: str) -> dict:
+    """Generate, hash, and store a new (access, refresh) pair. Returns the
+    response body dict (with plaintext tokens)."""
+    access = secrets.token_urlsafe(32)
+    refresh = secrets.token_urlsafe(32)
+    access_hash = _hash_token(access)
+    refresh_hash = _hash_token(refresh)
+    now = datetime.now(timezone.utc)
+    access_exp = now + timedelta(seconds=_ACCESS_TTL_SECONDS)
+    refresh_exp = now + timedelta(seconds=_REFRESH_TTL_SECONDS)
+    execute(
+        """
+        INSERT INTO oauth_tokens
+          (access_token_hash, refresh_token_hash, client_id,
+           organization_id, user_id, scope,
+           access_expires_at, refresh_expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (access_hash, refresh_hash, client_id, org_id, user_id, scope,
+         access_exp.isoformat(), refresh_exp.isoformat()),
+    )
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "Bearer",
+        "expires_in": _ACCESS_TTL_SECONDS,
+        "scope": scope,
+    }
+
+
+def _exchange_authorization_code(
+    code: str, client_id: str, redirect_uri: str, code_verifier: str,
+) -> dict:
+    # PBKDF2 with random salt → lookup-key is not stable. Fetch by client_id
+    # and iterate verify.
+    candidates = query_all(
+        "SELECT id, code_hash, client_id, organization_id, user_id, scope, "
+        "       redirect_uri, code_challenge, expires_at, consumed_at "
+        "FROM oauth_authorization_codes WHERE client_id = ?",
+        (client_id,),
+    )
+    matching = None
+    for row in candidates:
+        if _verify_token_hash(code, row["code_hash"]):
+            matching = row
+            break
+    if not matching:
+        raise HTTPException(status_code=400,
+            detail={"error": "invalid_grant",
+                    "error_description": "Unknown or expired authorization code"})
+
+    if matching["consumed_at"] is not None:
+        raise HTTPException(status_code=400,
+            detail={"error": "invalid_grant",
+                    "error_description": "Authorization code already used"})
+
+    # Expiry check
+    expires = matching["expires_at"]
+    if hasattr(expires, "isoformat"):
+        expires_dt = expires
+    else:
+        expires_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+    if expires_dt.tzinfo is None:
+        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+    if expires_dt < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400,
+            detail={"error": "invalid_grant",
+                    "error_description": "Authorization code expired"})
+
+    if matching["redirect_uri"] != redirect_uri:
+        raise HTTPException(status_code=400,
+            detail={"error": "invalid_grant",
+                    "error_description": "redirect_uri mismatch"})
+
+    if not _pkce_matches(code_verifier, matching["code_challenge"]):
+        raise HTTPException(status_code=400,
+            detail={"error": "invalid_grant",
+                    "error_description": "PKCE verifier did not match"})
+
+    execute(
+        "UPDATE oauth_authorization_codes SET consumed_at = now() WHERE id = ?",
+        (matching["id"],),
+    )
+
+    return _issue_tokens(
+        client_id=matching["client_id"],
+        org_id=matching["organization_id"],
+        user_id=matching["user_id"],
+        scope=matching["scope"],
+    )
+
+
+def _refresh_tokens(refresh_token: str, client_id: str) -> dict:
+    candidates = query_all(
+        "SELECT id, refresh_token_hash, client_id, organization_id, user_id, "
+        "       scope, refresh_expires_at, revoked_at "
+        "FROM oauth_tokens WHERE client_id = ? AND revoked_at IS NULL",
+        (client_id,),
+    )
+    matching = None
+    for row in candidates:
+        if _verify_token_hash(refresh_token, row["refresh_token_hash"]):
+            matching = row
+            break
+    if not matching:
+        raise HTTPException(status_code=400,
+            detail={"error": "invalid_grant",
+                    "error_description": "Unknown or revoked refresh token"})
+
+    expires = matching["refresh_expires_at"]
+    if hasattr(expires, "isoformat"):
+        expires_dt = expires
+    else:
+        expires_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+    if expires_dt.tzinfo is None:
+        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+    if expires_dt < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400,
+            detail={"error": "invalid_grant",
+                    "error_description": "Refresh token expired"})
+
+    execute(
+        "UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
+        (matching["id"],),
+    )
+    return _issue_tokens(
+        client_id=matching["client_id"],
+        org_id=matching["organization_id"],
+        user_id=matching["user_id"],
+        scope=matching["scope"],
+    )
+
+
+@router.post("/oauth/token")
+def token(
+    grant_type: str = Form(...),
+    code: Optional[str] = Form(None),
+    redirect_uri: Optional[str] = Form(None),
+    client_id: Optional[str] = Form(None),
+    code_verifier: Optional[str] = Form(None),
+    refresh_token: Optional[str] = Form(None),
+):
+    if grant_type == "authorization_code":
+        if not all((code, redirect_uri, client_id, code_verifier)):
+            return _oauth_error(400, "invalid_request",
+                                "Missing required field for authorization_code grant")
+        return _exchange_authorization_code(code, client_id, redirect_uri, code_verifier)
+
+    if grant_type == "refresh_token":
+        if not all((refresh_token, client_id)):
+            return _oauth_error(400, "invalid_request",
+                                "Missing required field for refresh_token grant")
+        return _refresh_tokens(refresh_token, client_id)
+
+    return _oauth_error(400, "unsupported_grant_type",
+                        f"Grant type '{grant_type}' is not supported")
