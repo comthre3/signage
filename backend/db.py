@@ -534,11 +534,6 @@ def init_db() -> None:
               registered_at   TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_oauth_clients_client_id "
-            "ON oauth_clients (client_id)"
-        )
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
               id              SERIAL PRIMARY KEY,
@@ -554,11 +549,6 @@ def init_db() -> None:
               created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_oauth_codes_hash "
-            "ON oauth_authorization_codes (code_hash)"
-        )
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS oauth_tokens (
               id                  SERIAL PRIMARY KEY,
