@@ -136,3 +136,28 @@ def test_register_returns_no_client_secret(client):
     assert r.status_code == 201
     assert "client_secret" not in r.json()
     assert "client_secret_expires_at" not in r.json()
+
+
+def test_register_rejects_plain_http_non_localhost(client):
+    """Regression: http:// to non-localhost must be rejected (hijack vector)."""
+    r = client.post("/oauth/register", json={
+        "client_name": "Evil",
+        "redirect_uris": ["http://evil.example.com/callback"],
+    })
+    assert r.status_code == 400, r.text
+
+
+def test_register_rejects_ftp_scheme(client):
+    r = client.post("/oauth/register", json={
+        "client_name": "FtpApp",
+        "redirect_uris": ["ftp://files.example.com/oauth"],
+    })
+    assert r.status_code == 400, r.text
+
+
+def test_register_rejects_file_url_with_slashes(client):
+    r = client.post("/oauth/register", json={
+        "client_name": "FileApp",
+        "redirect_uris": ["file:///etc/passwd"],
+    })
+    assert r.status_code == 400, r.text
