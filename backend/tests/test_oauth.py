@@ -161,3 +161,183 @@ def test_register_rejects_file_url_with_slashes(client):
         "redirect_uris": ["file:///etc/passwd"],
     })
     assert r.status_code == 400, r.text
+
+
+# ── Authorization endpoint + consent UI ──────────────────────────────
+import uuid
+import hashlib
+import base64
+import secrets
+
+
+def _signup_org(client, suffix=None):
+    """Create a fresh org via signup. Returns (token, org_id, user_id, email)."""
+    sfx = suffix or uuid.uuid4().hex[:8]
+    email = f"oauth-{sfx}@example.com"
+    r = client.post("/auth/signup/request",
+                    json={"business_name": f"OAuthBiz {sfx}", "email": email})
+    assert r.status_code == 200, r.text
+    otp = r.json()["dev_otp"]
+    r = client.post("/auth/signup/verify",
+                    json={"email": email, "otp": otp})
+    vt = r.json()["verification_token"]
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt,
+                          "password": "Khanshoof2026Test"})
+    body = r.json()
+    return body["token"], body["organization"]["id"], body["user"]["id"], email
+
+
+def _register_client(client, name="TestApp", uris=None):
+    r = client.post("/oauth/register", json={
+        "client_name": name,
+        "redirect_uris": uris or ["http://localhost:5173/oauth/callback"],
+    })
+    assert r.status_code == 201, r.text
+    return r.json()["client_id"]
+
+
+def _pkce_pair():
+    """Returns (code_verifier, code_challenge)."""
+    verifier = secrets.token_urlsafe(48)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def test_authorize_rejects_invalid_response_type(client):
+    cid = _register_client(client)
+    _v, ch = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "token",
+        "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read",
+        "state": "abc",
+        "code_challenge": ch,
+        "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 400)
+
+
+def test_authorize_rejects_plain_pkce_method(client):
+    cid = _register_client(client)
+    _v, ch = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code",
+        "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read",
+        "state": "abc",
+        "code_challenge": ch,
+        "code_challenge_method": "plain",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 400)
+
+
+def test_authorize_rejects_unknown_client_id(client):
+    _v, ch = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code",
+        "client_id": "nonexistent_client",
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read",
+        "state": "abc",
+        "code_challenge": ch,
+        "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    assert r.status_code == 400
+
+
+def test_authorize_rejects_unregistered_redirect_uri(client):
+    cid = _register_client(client, uris=["http://localhost:5173/oauth/callback"])
+    _v, ch = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code",
+        "client_id": cid,
+        "redirect_uri": "http://attacker.example.com/cb",
+        "scope": "api:read",
+        "state": "abc",
+        "code_challenge": ch,
+        "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    assert r.status_code == 400
+
+
+def test_authorize_renders_login_when_no_session(client):
+    cid = _register_client(client)
+    _v, ch = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read", "state": "abc",
+        "code_challenge": ch, "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    assert r.status_code == 200
+    assert "Sign in" in r.text
+
+
+def test_authorize_renders_consent_with_session(client):
+    cid = _register_client(client)
+    session_token, _o, _u, email = _signup_org(client)
+    _v, ch = _pkce_pair()
+    cookies = {"oauth_session": session_token}
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:rw", "state": "abc",
+        "code_challenge": ch, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    assert r.status_code == 200
+    assert "Authorize" in r.text or "TestApp" in r.text
+
+
+def test_authorize_decision_allow_redirects_with_code(client):
+    cid = _register_client(client)
+    session_token, _o, _u, email = _signup_org(client)
+    _v, ch = _pkce_pair()
+    cookies = {"oauth_session": session_token}
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:rw", "state": "xyz",
+        "code_challenge": ch, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    assert r.status_code == 200
+    import re
+    m = re.search(r'name="request_id" value="([^"]+)"', r.text)
+    assert m, "request_id missing from consent page"
+    request_id = m.group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies=cookies, follow_redirects=False)
+    assert r.status_code == 302, r.text
+    location = r.headers["location"]
+    assert location.startswith("http://localhost:5173/oauth/callback?")
+    assert "code=" in location
+    assert "state=xyz" in location
+
+
+def test_authorize_decision_deny_redirects_with_error(client):
+    cid = _register_client(client)
+    session_token, _o, _u, email = _signup_org(client)
+    _v, ch = _pkce_pair()
+    cookies = {"oauth_session": session_token}
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read", "state": "deny-test",
+        "code_challenge": ch, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    import re
+    m = re.search(r'name="request_id" value="([^"]+)"', r.text)
+    request_id = m.group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "deny",
+                          "scope": "api:read"},
+                    cookies=cookies, follow_redirects=False)
+    assert r.status_code == 302
+    location = r.headers["location"]
+    assert "error=access_denied" in location
+    assert "state=deny-test" in location

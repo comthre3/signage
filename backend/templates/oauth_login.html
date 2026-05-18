@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in to Khanshoof</title>
+    <link rel="stylesheet" href="https://app.khanshoof.com/oauth-consent.css">
+  </head>
+  <body class="oauth-page">
+    <main class="oauth-card">
+      <h1>Sign in to Khanshoof</h1>
+      <p class="muted">to continue authorizing <strong>{{ client_name }}</strong></p>
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      <form method="POST" action="/oauth/login">
+        <input type="hidden" name="request_id" value="{{ request_id }}">
+        <label>Email
+          <input type="email" name="username" required autofocus>
+        </label>
+        <label>Password
+          <input type="password" name="password" required>
+        </label>
+        <button type="submit" class="btn btn-primary">Sign in</button>
+      </form>
+    </main>
+  </body>
+</html>
