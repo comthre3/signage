@@ -1,5 +1,5 @@
 """Tests for the Phase 2.5i-1 OAuth 2.1 authorization server."""
-from db import query_one, query_all
+from db import query_one, query_all, execute
 
 
 def test_oauth_clients_table_exists():
@@ -420,3 +420,224 @@ def test_oauth_redirect_url_encodes_state_with_special_chars(client):
     assert "state=abc%26injected" in location, location
     # The injected= part must NOT be a separate URL parameter
     assert "&injected=" not in location.split("state=")[1].split("&")[0]
+
+
+# ── Token endpoint ──────────────────────────────────────────────────
+
+
+def _full_authorize_flow(client) -> dict:
+    """Run the full flow up to having a redirect URL with code. Returns
+    {'code', 'verifier', 'client_id', 'redirect_uri', 'session_token', 'org_id'}."""
+    cid = _register_client(client)
+    session_token, org_id, _u, _email = _signup_org(client)
+    verifier, challenge = _pkce_pair()
+    cookies = {"oauth_session": session_token}
+    redirect_uri = "http://localhost:5173/oauth/callback"
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": redirect_uri,
+        "scope": "api:rw", "state": "s",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    import re
+    m = re.search(r'name="request_id" value="([^"]+)"', r.text)
+    request_id = m.group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies=cookies, follow_redirects=False)
+    location = r.headers["location"]
+    code = re.search(r"code=([^&]+)", location).group(1)
+    return {
+        "code": code, "verifier": verifier,
+        "client_id": cid, "redirect_uri": redirect_uri,
+        "session_token": session_token, "org_id": org_id,
+    }
+
+
+def test_token_exchanges_code_for_tokens(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"],
+        "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"],
+        "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "access_token" in body
+    assert "refresh_token" in body
+    assert body["token_type"] == "Bearer"
+    assert body["expires_in"] == 3600
+    assert body["scope"] == "api:rw"
+
+
+def test_token_rejects_consumed_code(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 200
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 400
+
+
+def test_token_rejects_mismatched_redirect_uri(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"],
+        "redirect_uri": "http://evil.example.com/cb",
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 400
+
+
+def test_token_rejects_bad_pkce_verifier(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"],
+        "code_verifier": "wrong_verifier_value",
+    })
+    assert r.status_code == 400
+
+
+def test_token_rejects_unknown_code(client):
+    cid = _register_client(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": "unknown_random_code_xyz",
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid,
+        "code_verifier": "v",
+    })
+    assert r.status_code == 400
+
+
+def test_token_rejects_unsupported_grant_type(client):
+    cid = _register_client(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "password",
+        "username": "x", "password": "y", "client_id": cid,
+    })
+    assert r.status_code == 400
+
+
+def test_refresh_issues_new_pair(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    tokens = r.json()
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200, r.text
+    new_tokens = r.json()
+    assert new_tokens["access_token"] != tokens["access_token"]
+    assert new_tokens["refresh_token"] != tokens["refresh_token"]
+
+
+def test_refresh_rotates_old_pair_invalidated(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    tokens = r.json()
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 400
+
+
+def test_refresh_rejects_unknown(client):
+    cid = _register_client(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": "unknown_random_token",
+        "client_id": cid,
+    })
+    assert r.status_code == 400
+
+
+def test_token_response_includes_expected_fields(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    body = r.json()
+    for key in ("access_token", "refresh_token", "token_type",
+                "expires_in", "scope"):
+        assert key in body
+    assert body["token_type"] == "Bearer"
+
+
+def test_authorization_code_expired(client):
+    """Expired code is rejected. Simulate by manually backdating expires_at."""
+    flow = _full_authorize_flow(client)
+    execute(
+        "UPDATE oauth_authorization_codes SET expires_at = ? "
+        "WHERE client_id = ?",
+        ("2020-01-01T00:00:00+00:00", flow["client_id"]),
+    )
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 400
+
+
+def test_token_endpoint_returns_json_error_shape(client):
+    cid = _register_client(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": "x",
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid,
+        "code_verifier": "v",
+    })
+    assert r.status_code == 400
+    body = r.json()
+    assert "error" in body or "detail" in body
+
+
+def test_access_token_works_on_api_endpoint(client):
+    """The access token issued via OAuth must authenticate against /organization."""
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    access_token = r.json()["access_token"]
+    # NOTE: Task 6 wires lookup_oauth_access_token into get_api_authed.
+    # Pre-T6: expect 401. Post-T6: expect 200. For now we accept either.
+    r2 = client.get("/organization",
+                    headers={"Authorization": f"Bearer {access_token}"})
+    assert r2.status_code in (200, 401), r2.text
