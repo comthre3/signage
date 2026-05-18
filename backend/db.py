@@ -522,3 +522,87 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_api_keys_prefix "
             "ON api_keys (key_prefix)"
         )
+
+        # ── Phase 2.5i-1: OAuth 2.1 provider ─────────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_clients (
+              id              SERIAL PRIMARY KEY,
+              client_id       TEXT NOT NULL UNIQUE,
+              client_name     TEXT NOT NULL,
+              redirect_uris   JSONB NOT NULL,
+              pre_registered  BOOLEAN NOT NULL DEFAULT false,
+              registered_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_clients_client_id "
+            "ON oauth_clients (client_id)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+              id              SERIAL PRIMARY KEY,
+              code_hash       TEXT NOT NULL UNIQUE,
+              client_id       TEXT NOT NULL,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              scope           TEXT NOT NULL CHECK (scope IN ('api:read', 'api:rw')),
+              redirect_uri    TEXT NOT NULL,
+              code_challenge  TEXT NOT NULL,
+              expires_at      TIMESTAMPTZ NOT NULL,
+              consumed_at     TIMESTAMPTZ,
+              created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_codes_hash "
+            "ON oauth_authorization_codes (code_hash)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_tokens (
+              id                  SERIAL PRIMARY KEY,
+              access_token_hash   TEXT NOT NULL UNIQUE,
+              refresh_token_hash  TEXT NOT NULL UNIQUE,
+              client_id           TEXT NOT NULL,
+              organization_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              user_id             INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              scope               TEXT NOT NULL CHECK (scope IN ('api:read', 'api:rw')),
+              granted_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+              access_expires_at   TIMESTAMPTZ NOT NULL,
+              refresh_expires_at  TIMESTAMPTZ NOT NULL,
+              last_used_at        TIMESTAMPTZ,
+              revoked_at          TIMESTAMPTZ
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_access "
+            "ON oauth_tokens (access_token_hash) WHERE revoked_at IS NULL"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_refresh "
+            "ON oauth_tokens (refresh_token_hash) WHERE revoked_at IS NULL"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_org "
+            "ON oauth_tokens (organization_id, revoked_at)"
+        )
+
+        # Pre-registered MCP clients (idempotent — ON CONFLICT DO NOTHING)
+        _PRE_REGISTERED_CLIENTS = [
+            ("claude-desktop", "Claude Desktop",
+             '["claude-desktop://oauth/callback", "http://localhost:5173/oauth/callback"]'),
+            ("claude-code",    "Claude Code",
+             '["claude-code://oauth/callback"]'),
+            ("cursor",         "Cursor",
+             '["cursor://oauth/callback"]'),
+            ("zed",            "Zed",
+             '["zed://oauth/callback"]'),
+        ]
+        for cid, name, uris_json in _PRE_REGISTERED_CLIENTS:
+            cursor.execute(
+                "INSERT INTO oauth_clients (client_id, client_name, redirect_uris, pre_registered) "
+                "VALUES (%s, %s, %s::jsonb, true) "
+                "ON CONFLICT (client_id) DO NOTHING",
+                (cid, name, uris_json),
+            )
