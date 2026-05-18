@@ -80,3 +80,59 @@ def test_well_known_no_auth_required(client):
     r2 = client.get("/.well-known/oauth-protected-resource")
     assert r1.status_code == 200
     assert r2.status_code == 200
+
+
+# ── Dynamic client registration ──────────────────────────────────────
+
+
+def test_register_creates_client_with_dyn_prefix(client):
+    r = client.post("/oauth/register", json={
+        "client_name": "Test Integration",
+        "redirect_uris": ["http://localhost:5173/oauth/callback"],
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["client_id"].startswith("dyn_")
+    assert body["client_name"] == "Test Integration"
+    assert body["token_endpoint_auth_method"] == "none"
+    assert "client_secret" not in body
+
+
+def test_register_validates_redirect_uri_schemes(client):
+    """https, http://localhost, http://127.0.0.1, and custom schemes are OK."""
+    valid = client.post("/oauth/register", json={
+        "client_name": "ValidApp",
+        "redirect_uris": [
+            "https://example.com/callback",
+            "http://localhost:3000/callback",
+            "http://127.0.0.1:9999/callback",
+            "myapp://oauth/callback",
+        ],
+    })
+    assert valid.status_code == 201, valid.text
+
+
+def test_register_rejects_data_url_scheme(client):
+    r = client.post("/oauth/register", json={
+        "client_name": "BadApp",
+        "redirect_uris": ["data:text/html,<script>"],
+    })
+    assert r.status_code == 400, r.text
+
+
+def test_register_rejects_too_many_uris(client):
+    r = client.post("/oauth/register", json={
+        "client_name": "WideApp",
+        "redirect_uris": [f"https://app{i}.example.com/cb" for i in range(11)],
+    })
+    assert r.status_code == 400, r.text
+
+
+def test_register_returns_no_client_secret(client):
+    r = client.post("/oauth/register", json={
+        "client_name": "PublicOnly",
+        "redirect_uris": ["https://example.com/cb"],
+    })
+    assert r.status_code == 201
+    assert "client_secret" not in r.json()
+    assert "client_secret_expires_at" not in r.json()
