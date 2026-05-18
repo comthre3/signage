@@ -47,3 +47,36 @@ def test_pre_registered_clients_have_friendly_names():
     )
     assert row is not None
     assert row["client_name"] == "Claude Desktop"
+
+
+# ── Discovery endpoints ──────────────────────────────────────────────
+
+
+def test_well_known_authorization_server_metadata(client):
+    r = client.get("/.well-known/oauth-authorization-server")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "authorization_endpoint" in body
+    assert "token_endpoint" in body
+    assert "revocation_endpoint" in body
+    assert "registration_endpoint" in body
+    assert body["code_challenge_methods_supported"] == ["S256"]
+    assert "api:read" in body["scopes_supported"]
+    assert "api:rw" in body["scopes_supported"]
+
+
+def test_well_known_protected_resource_metadata(client):
+    r = client.get("/.well-known/oauth-protected-resource")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "resource" in body
+    assert "authorization_servers" in body
+    assert body["bearer_methods_supported"] == ["header"]
+
+
+def test_well_known_no_auth_required(client):
+    """Discovery endpoints must be public — no Authorization header."""
+    r1 = client.get("/.well-known/oauth-authorization-server")
+    r2 = client.get("/.well-known/oauth-protected-resource")
+    assert r1.status_code == 200
+    assert r2.status_code == 200

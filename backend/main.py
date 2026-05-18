@@ -29,6 +29,7 @@ from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
 from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
+from oauth import router as oauth_router
 from walls import attach_walls
 
 logger = logging.getLogger("signage")
@@ -141,6 +142,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 attach_walls(app)
+app.include_router(oauth_router)
 
 
 def slugify(value: str) -> str:
