@@ -8,6 +8,7 @@ from __future__ import annotations
 # Several imports below are pre-staged for Tasks 3–6 (authorize / token /
 # revoke endpoints) and are unused by the discovery endpoints alone.
 import os
+import re
 import secrets
 import hashlib
 import base64
@@ -18,6 +19,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request, Response, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from pydantic import BaseModel, Field
+
+from db import execute, query_one, query_all
 
 
 router = APIRouter()
@@ -63,11 +67,6 @@ def protected_resource_metadata() -> dict:
 
 # ── Dynamic client registration ──────────────────────────────────────
 
-from pydantic import BaseModel, Field
-
-# Import db helpers — placed here to avoid cycles
-from db import execute, query_one, query_all  # noqa: E402
-
 
 class ClientRegistration(BaseModel):
     client_name: str = Field(..., min_length=1, max_length=200)
@@ -79,16 +78,17 @@ _ALLOWED_SCHEMES_RE = (
     r"https://"
     r"|http://localhost(:\d+)?(/|$)"
     r"|http://127\.0\.0\.1(:\d+)?(/|$)"
-    r"|[a-z][a-z0-9+\-.]*://"
+    r"|(?!https?://|ftp://|sftp://|ws://|wss://|telnet://|ldap://|ldaps://|file://|gopher://|tftp://)"
+    r"[a-z][a-z0-9+\-.]*://"
     r")"
 )
+
+_ALLOWED_SCHEMES_PAT = re.compile(_ALLOWED_SCHEMES_RE, re.IGNORECASE)
 
 _FORBIDDEN_SCHEMES = ("data:", "file:", "javascript:", "vbscript:")
 
 
 def _validate_redirect_uris(uris: list[str]) -> None:
-    import re
-    pat = re.compile(_ALLOWED_SCHEMES_RE, re.IGNORECASE)
     for uri in uris:
         if not isinstance(uri, str) or len(uri) > 2000:
             raise HTTPException(status_code=400,
@@ -100,7 +100,7 @@ def _validate_redirect_uris(uris: list[str]) -> None:
                 raise HTTPException(status_code=400,
                     detail={"code": "invalid_redirect_uri",
                             "message": f"Forbidden scheme in {uri[:80]}"})
-        if not pat.match(uri):
+        if not _ALLOWED_SCHEMES_PAT.match(uri):
             raise HTTPException(status_code=400,
                 detail={"code": "invalid_redirect_uri",
                         "message": f"Unsupported scheme in {uri[:80]}"})
@@ -116,7 +116,7 @@ def register_client(payload: ClientRegistration) -> dict:
     client_id = "dyn_" + secrets.token_urlsafe(18)
     execute(
         "INSERT INTO oauth_clients (client_id, client_name, redirect_uris, pre_registered) "
-        "VALUES (?, ?, ?, false)",
+        "VALUES (?, ?, ?::jsonb, false)",
         (client_id, payload.client_name, json.dumps(payload.redirect_uris)),
     )
     return {
