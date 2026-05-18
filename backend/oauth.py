@@ -14,14 +14,17 @@ import hashlib
 import base64
 import json
 import time
+import math
 from typing import Optional
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus, urlencode
 
-from fastapi import APIRouter, Request, Response, HTTPException, Form, Query
+from fastapi import APIRouter, Request, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from db import execute, query_one, query_all
+from db import execute, query_one, query_all, utc_now_iso
 
 
 router = APIRouter()
@@ -130,13 +133,13 @@ def register_client(payload: ClientRegistration) -> dict:
 
 # ── Authorization flow ──────────────────────────────────────────────
 
-from fastapi.templating import Jinja2Templates
-
 _templates_dir = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=_templates_dir)
 
 
-# In-memory pending-auth state: request_id -> dict of authorize-time params
+# Short-lived OAuth authorization-flow state. In-memory only — does not survive
+# process restart. NOT safe for multi-worker uvicorn (state on worker A is
+# invisible on worker B). v1 limitation; spec documents the trade-off.
 _pending_auth: dict = {}
 _PENDING_AUTH_TTL = 600   # 10 minutes
 
@@ -209,22 +212,19 @@ def authorize(
         )
 
     if response_type != "code":
-        return RedirectResponse(
-            f"{redirect_uri}?error=unsupported_response_type&state={state}",
-            status_code=302,
-        )
+        qs = urlencode({"error": "unsupported_response_type", "state": state})
+        return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
     if code_challenge_method != "S256":
-        return RedirectResponse(
-            f"{redirect_uri}?error=invalid_request&error_description="
-            f"code_challenge_method+must+be+S256&state={state}",
-            status_code=302,
-        )
+        qs = urlencode({
+            "error": "invalid_request",
+            "error_description": "code_challenge_method must be S256",
+            "state": state,
+        })
+        return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
     if scope not in ("api:read", "api:rw"):
-        return RedirectResponse(
-            f"{redirect_uri}?error=invalid_scope&state={state}",
-            status_code=302,
-        )
+        qs = urlencode({"error": "invalid_scope", "state": state})
+        return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
     if resume:
         pending = _pending_auth.get(resume)
@@ -271,7 +271,6 @@ def authorize(
 @router.post("/oauth/login")
 def oauth_login(
     request: Request,
-    response: Response,
     username: str = Form(...),
     password: str = Form(...),
     request_id: str = Form(...),
@@ -281,31 +280,106 @@ def oauth_login(
         return _error_response(request, "Login session expired",
                                "Please restart the authorization flow from your MCP client.")
 
-    from main import verify_password
-    user_row = query_one("SELECT * FROM users WHERE username = ?", (username,))
-    if not user_row or not verify_password(password, user_row["password_hash"]):
-        client_row = _client_or_error(pending["client_id"])
+    from main import (
+        verify_password, audit, _client_ip,
+        LOGIN_LOCKOUT_WINDOW_SECONDS, LOGIN_LOCKOUT_THRESHOLD,
+    )
+    client_row = _client_or_error(pending["client_id"])
+    client_name = client_row["client_name"] if client_row else pending["client_id"]
+
+    ip = _client_ip(request)
+
+    # ── Lockout check (mirrors main.login) ──────────────────────────
+    last_success_row = query_one(
+        "SELECT MAX(attempted_at) AS ts FROM login_attempts "
+        "WHERE username = ? AND success = true",
+        (username,),
+    )
+    last_success_ts = last_success_row["ts"] if last_success_row else None
+
+    if last_success_ts is not None:
+        failure_filter = (
+            "WHERE username = ? AND success = false "
+            "  AND attempted_at > now() - interval '%d seconds' "
+            "  AND attempted_at > ?" % LOGIN_LOCKOUT_WINDOW_SECONDS
+        )
+        failure_params = (username, last_success_ts)
+    else:
+        failure_filter = (
+            "WHERE username = ? AND success = false "
+            "  AND attempted_at > now() - interval '%d seconds'"
+            % LOGIN_LOCKOUT_WINDOW_SECONDS
+        )
+        failure_params = (username,)
+
+    failure_count_row = query_one(
+        f"SELECT COUNT(*) AS n FROM login_attempts {failure_filter}",
+        failure_params,
+    )
+    failure_count = int(failure_count_row["n"]) if failure_count_row else 0
+
+    if failure_count >= LOGIN_LOCKOUT_THRESHOLD:
+        retry_minutes = math.ceil(LOGIN_LOCKOUT_WINDOW_SECONDS / 60)
+        oldest_row = query_one(
+            f"SELECT MIN(attempted_at) AS ts FROM login_attempts {failure_filter}",
+            failure_params,
+        )
+        oldest_ts = oldest_row["ts"] if oldest_row else None
+        if oldest_ts is not None:
+            elapsed = (datetime.now(timezone.utc) - oldest_ts).total_seconds()
+            retry_seconds = max(0, int(LOGIN_LOCKOUT_WINDOW_SECONDS - elapsed))
+            retry_minutes = math.ceil(retry_seconds / 60)
+        audit(request, action="auth.oauth_login.failure", actor=None,
+              details={"reason": "account_locked", "username": username})
         html = templates.get_template("oauth_login.html").render(
-            client_name=client_row["client_name"] if client_row else pending["client_id"],
+            client_name=client_name,
+            request_id=request_id,
+            error=f"Too many failed attempts. Try again in {retry_minutes} minute(s).",
+        )
+        return HTMLResponse(html, status_code=429)
+
+    # ── Verify password ──────────────────────────────────────────────
+    user_row = query_one("SELECT * FROM users WHERE username = ?", (username,))
+    ok = bool(user_row) and verify_password(password, user_row["password_hash"])
+
+    # Record attempt regardless of outcome
+    execute(
+        "INSERT INTO login_attempts (username, success, ip, attempted_at) "
+        "VALUES (?, ?, ?, ?)",
+        (username, ok, ip, utc_now_iso()),
+    )
+
+    if not ok:
+        audit(request, action="auth.oauth_login.failure", actor=None,
+              details={"reason": "invalid_credentials", "username": username})
+        html = templates.get_template("oauth_login.html").render(
+            client_name=client_name,
             request_id=request_id,
             error="Invalid credentials. Try again.",
         )
         return HTMLResponse(html, status_code=401)
 
     session_token = secrets.token_urlsafe(32)
-    from db import utc_now_iso as _utc_now
     execute(
         "INSERT INTO sessions (user_id, token, created_at, last_used) "
         "VALUES (?, ?, ?, ?)",
-        (user_row["id"], session_token, _utc_now(), _utc_now()),
+        (user_row["id"], session_token, utc_now_iso(), utc_now_iso()),
     )
+    audit(request, action="auth.oauth_login.success",
+          actor={"id": user_row["id"], "username": user_row["username"],
+                 "organization_id": user_row["organization_id"]})
 
-    redirect_url = (
-        f"/oauth/authorize?response_type=code&client_id={pending['client_id']}"
-        f"&redirect_uri={pending['redirect_uri']}&scope={pending['scope']}"
-        f"&state={pending['state']}&code_challenge={pending['code_challenge']}"
-        f"&code_challenge_method=S256&resume={request_id}"
-    )
+    qs = urlencode({
+        "response_type": "code",
+        "client_id": pending["client_id"],
+        "redirect_uri": pending["redirect_uri"],
+        "scope": pending["scope"],
+        "state": pending["state"],
+        "code_challenge": pending["code_challenge"],
+        "code_challenge_method": "S256",
+        "resume": request_id,
+    })
+    redirect_url = f"/oauth/authorize?{qs}"
     resp = RedirectResponse(redirect_url, status_code=302)
     resp.set_cookie(
         "oauth_session", session_token,
@@ -322,21 +396,19 @@ def authorize_decision(
     decision: str = Form(...),
     scope: str = Form(...),
 ):
-    pending = _pending_auth.pop(request_id, None)
-    if not pending:
-        return _error_response(request, "Authorization expired",
-                               "Please restart from your MCP client.")
-
     user = _session_user_from_cookie(request)
     if not user:
         return _error_response(request, "Not signed in",
                                "Sign in first to authorize this client.")
 
+    pending = _pending_auth.pop(request_id, None)
+    if not pending:
+        return _error_response(request, "Authorization expired",
+                               "Please restart from your MCP client.")
+
     if decision != "allow":
-        return RedirectResponse(
-            f"{pending['redirect_uri']}?error=access_denied&state={pending['state']}",
-            status_code=302,
-        )
+        qs = urlencode({"error": "access_denied", "state": pending["state"]})
+        return RedirectResponse(f"{pending['redirect_uri']}?{qs}", status_code=302)
 
     if scope not in ("api:read", "api:rw"):
         scope = pending["scope"]
@@ -357,7 +429,5 @@ def authorize_decision(
          expires.isoformat()),
     )
 
-    return RedirectResponse(
-        f"{pending['redirect_uri']}?code={code}&state={pending['state']}",
-        status_code=302,
-    )
+    qs = urlencode({"code": code, "state": pending["state"]})
+    return RedirectResponse(f"{pending['redirect_uri']}?{qs}", status_code=302)

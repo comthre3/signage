@@ -341,3 +341,82 @@ def test_authorize_decision_deny_redirects_with_error(client):
     location = r.headers["location"]
     assert "error=access_denied" in location
     assert "state=deny-test" in location
+
+
+def test_oauth_login_wrong_password_returns_401(client):
+    """Direct test of the oauth_login error path."""
+    cid = _register_client(client)
+    session_token, _o, _u, email = _signup_org(client)
+    _v, ch = _pkce_pair()
+    # First, hit /oauth/authorize anonymously so a pending entry is created
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read", "state": "abc",
+        "code_challenge": ch, "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    assert r.status_code == 200
+    import re
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    # Now POST wrong password
+    r = client.post("/oauth/login", data={
+        "request_id": request_id,
+        "username": email,
+        "password": "wrong-password",
+    })
+    assert r.status_code == 401, r.text
+    assert "Invalid credentials" in r.text or "incorrect" in r.text.lower()
+
+
+def test_oauth_login_with_correct_password_redirects_to_authorize_resume(client):
+    """Verify oauth_login.html → POST /oauth/login → 302 → /oauth/authorize?resume=..."""
+    cid = _register_client(client)
+    session_token, _o, _u, email = _signup_org(client)
+    _v, ch = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read", "state": "abc",
+        "code_challenge": ch, "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    import re
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/login", data={
+        "request_id": request_id,
+        "username": email,
+        "password": "Khanshoof2026Test",
+    }, follow_redirects=False)
+    assert r.status_code == 302, r.text
+    location = r.headers["location"]
+    assert location.startswith("/oauth/authorize?")
+    assert f"resume={request_id}" in location
+    # Cookie set on response
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "oauth_session=" in set_cookie
+
+
+def test_oauth_redirect_url_encodes_state_with_special_chars(client):
+    """state containing & must be URL-encoded so the client receives the right value."""
+    cid = _register_client(client)
+    session_token, _o, _u, _e = _signup_org(client)
+    _v, ch = _pkce_pair()
+    cookies = {"oauth_session": session_token}
+    weird_state = "abc&injected=evil"
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:rw", "state": weird_state,
+        "code_challenge": ch, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    import re
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies=cookies, follow_redirects=False)
+    assert r.status_code == 302
+    location = r.headers["location"]
+    # The literal & must be encoded as %26 so it stays as a single state value
+    assert "state=abc%26injected" in location, location
+    # The injected= part must NOT be a separate URL parameter
+    assert "&injected=" not in location.split("state=")[1].split("&")[0]
