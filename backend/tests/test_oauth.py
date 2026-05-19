@@ -798,3 +798,113 @@ def test_oauth_token_lists_screens_like_api_key(client):
     # The signup org has no screens by default; assert the response is a list,
     # not a 500 from require_screen_access misfire.
     assert isinstance(r.json(), list)
+
+
+# ── End-to-end ──────────────────────────────────────────────────────
+
+
+def test_full_happy_path(client):
+    """Single test exercising the full OAuth flow."""
+    # 1. Register
+    r = client.post("/oauth/register", json={
+        "client_name": "E2E Client",
+        "redirect_uris": ["http://localhost:5173/cb"],
+    })
+    assert r.status_code == 201
+    cid = r.json()["client_id"]
+
+    # 2. Sign up an org
+    session_token, _o, _u, _e = _signup_org(client)
+    cookies = {"oauth_session": session_token}
+
+    # 3. Authorize
+    verifier, challenge = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/cb",
+        "scope": "api:rw", "state": "e2e",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    import re
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+
+    # 4. Allow
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies=cookies, follow_redirects=False)
+    location = r.headers["location"]
+    code = re.search(r"code=([^&]+)", location).group(1)
+
+    # 5. Token
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code, "redirect_uri": "http://localhost:5173/cb",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    tokens = r.json()
+    access = tokens["access_token"]
+    refresh = tokens["refresh_token"]
+
+    # 6. Use the access token
+    r = client.get("/organization", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 200
+    r = client.post("/playlists",
+                    headers={"Authorization": f"Bearer {access}"},
+                    json={"name": "E2E playlist"})
+    assert r.status_code in (200, 201)
+
+    # 7. Refresh
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": refresh, "client_id": cid,
+    })
+    new_tokens = r.json()
+    new_access = new_tokens["access_token"]
+    assert new_access != access
+
+    # 8. New access works
+    r = client.get("/organization", headers={"Authorization": f"Bearer {new_access}"})
+    assert r.status_code == 200
+
+    # 9. Old access NO longer works (revoked on refresh)
+    r = client.get("/organization", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 401
+
+    # 10. Revoke the new access
+    r = client.post("/oauth/revoke", data={
+        "token": new_access, "client_id": cid,
+    })
+    assert r.status_code == 200
+
+    # 11. Revoked token no longer works
+    r = client.get("/organization", headers={"Authorization": f"Bearer {new_access}"})
+    assert r.status_code == 401
+
+
+def test_pkce_verifier_required(client):
+    """PKCE is mandatory in OAuth 2.1 — no code_verifier means rejection."""
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 400
+
+
+def test_authorization_code_single_use(client):
+    """RFC 6749 + 7636: codes must be single-use."""
+    flow = _full_authorize_flow(client)
+    r1 = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r1.status_code == 200
+    r2 = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r2.status_code == 400
