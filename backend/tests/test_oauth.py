@@ -781,3 +781,20 @@ def test_oauth_read_scope_cannot_POST_playlists(client):
                     json={"name": "blocked"})
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "api.insufficient_scope"
+
+
+def test_oauth_token_lists_screens_like_api_key(client):
+    """Regression: OAuth principal must NOT be filtered through the
+    session-user group-membership branch on GET /screens."""
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    access = r.json()["access_token"]
+    r = client.get("/screens", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 200, r.text
+    # The signup org has no screens by default; assert the response is a list,
+    # not a 500 from require_screen_access misfire.
+    assert isinstance(r.json(), list)
