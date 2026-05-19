@@ -611,6 +611,15 @@ def get_api_authed(authorization: Optional[str] = Header(None)) -> AuthedPrincip
             scope=key_row["scope"],
         )
 
+    # OAuth access token (Phase 2.5i-1)
+    from oauth import lookup_oauth_access_token
+    oauth_row = lookup_oauth_access_token(token)
+    if oauth_row:
+        return AuthedPrincipal(
+            organization_id=oauth_row["organization_id"],
+            scope=oauth_row["scope"],
+        )
+
     user = _session_lookup(token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid session")
@@ -633,7 +642,10 @@ def require_api_scope(
       - Session-authed: user's role must be in session_roles (not rate-limited here)
     """
     def dep(principal: AuthedPrincipal = Depends(get_api_authed)) -> AuthedPrincipal:
-        if principal.api_key is not None:
+        if principal.api_key is not None or (
+            principal.user is None and principal.scope in ("api:read", "api:rw")
+        ):
+            # API key OR OAuth access token — enforce scope
             if principal.scope not in allowed_api_scopes:
                 raise HTTPException(
                     status_code=403,

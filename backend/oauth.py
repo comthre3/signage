@@ -19,7 +19,7 @@ from typing import Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Request, HTTPException, Form, Query
+from fastapi import APIRouter, Request, Response, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -633,3 +633,62 @@ def token(
 
     return _oauth_error(400, "unsupported_grant_type",
                         f"Grant type '{grant_type}' is not supported")
+
+
+# ── Revocation ───────────────────────────────────────────────────────
+
+
+@router.post("/oauth/revoke")
+def revoke(
+    token: str = Form(...),
+    client_id: Optional[str] = Form(None),
+    token_type_hint: Optional[str] = Form(None),
+):
+    """RFC 7009: revoke an access or refresh token. Always returns 200."""
+    candidates = query_all(
+        "SELECT id, access_token_hash, refresh_token_hash, revoked_at "
+        "FROM oauth_tokens WHERE revoked_at IS NULL "
+        "AND (client_id = ? OR ?::text IS NULL)",
+        (client_id, client_id),
+    )
+    for row in candidates:
+        if _verify_token_hash(token, row["access_token_hash"]) or \
+           _verify_token_hash(token, row["refresh_token_hash"]):
+            execute(
+                "UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
+                (row["id"],),
+            )
+            break
+    return Response(status_code=200)
+
+
+# ── Access-token lookup (used by get_api_authed in main.py) ──────────
+
+
+def lookup_oauth_access_token(token: str) -> Optional[dict]:
+    """Return active oauth_tokens row if token matches; else None.
+    Fire-and-forget last_used_at update."""
+    if not token:
+        return None
+    # Quickly reject API keys (handled separately in get_api_authed).
+    if token.startswith("khan_live_"):
+        return None
+    candidates = query_all(
+        "SELECT id, access_token_hash, organization_id, user_id, scope, "
+        "       access_expires_at, revoked_at "
+        "FROM oauth_tokens "
+        "WHERE revoked_at IS NULL AND access_expires_at > now()"
+    )
+    for row in candidates:
+        if _verify_token_hash(token, row["access_token_hash"]):
+            try:
+                execute(
+                    "UPDATE oauth_tokens SET last_used_at = now() WHERE id = ?",
+                    (row["id"],),
+                )
+            except Exception as exc:
+                from main import logger
+                logger.warning("oauth_token_last_used_update_failed id=%s err=%s",
+                               row["id"], exc)
+            return row
+    return None
