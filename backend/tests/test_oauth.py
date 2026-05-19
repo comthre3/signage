@@ -685,3 +685,99 @@ def test_token_rejects_code_from_different_client(client):
     })
     assert r.status_code == 400, r.text
     assert r.json()["error"] == "invalid_grant"
+
+
+# ── Revocation + API integration ────────────────────────────────────
+
+
+def test_revoke_marks_pair_revoked(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    tokens = r.json()
+    r = client.post("/oauth/revoke", data={
+        "token": tokens["access_token"],
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200, r.text
+    row = query_one(
+        "SELECT revoked_at FROM oauth_tokens WHERE client_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (flow["client_id"],),
+    )
+    assert row["revoked_at"] is not None
+
+
+def test_revoke_returns_200_for_unknown_token(client):
+    """RFC 7009: server MUST return 200 to avoid leaking validity."""
+    cid = _register_client(client)
+    r = client.post("/oauth/revoke", data={
+        "token": "unknown_garbage",
+        "client_id": cid,
+    })
+    assert r.status_code == 200
+
+
+def test_revoked_access_token_returns_401(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    access = r.json()["access_token"]
+    r = client.get("/organization", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 200
+    r = client.post("/oauth/revoke", data={
+        "token": access, "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200
+    r = client.get("/organization", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 401
+
+
+def test_oauth_access_token_can_GET_playlists(client):
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    access = r.json()["access_token"]
+    r = client.get("/playlists", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 200, r.text
+
+
+def test_oauth_read_scope_cannot_POST_playlists(client):
+    """A token with api:read scope must NOT be allowed to POST."""
+    cid = _register_client(client)
+    session_token, _o, _u, _e = _signup_org(client)
+    verifier, challenge = _pkce_pair()
+    cookies = {"oauth_session": session_token}
+    redirect_uri = "http://localhost:5173/oauth/callback"
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": redirect_uri, "scope": "api:read", "state": "s",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    import re
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:read"},
+                    cookies=cookies, follow_redirects=False)
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code, "redirect_uri": redirect_uri,
+        "client_id": cid, "code_verifier": verifier,
+    })
+    access = r.json()["access_token"]
+    r = client.post("/playlists",
+                    headers={"Authorization": f"Bearer {access}"},
+                    json={"name": "blocked"})
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "api.insufficient_scope"
