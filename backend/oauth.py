@@ -17,7 +17,7 @@ import time
 import math
 from typing import Optional
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Request, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -444,7 +444,10 @@ def _pkce_matches(verifier: str, challenge: str) -> bool:
     """Compute S256 challenge from verifier and compare to stored challenge."""
     if not verifier or not challenge:
         return False
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    try:
+        digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    except UnicodeEncodeError:
+        return False
     computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return secrets.compare_digest(computed, challenge)
 
@@ -459,17 +462,24 @@ def _verify_token_hash(token: str, hashed: str) -> bool:
     return verify_password(token, hashed)
 
 
+_TOKEN_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+}
+
+
 def _oauth_error(status: int, error: str, description: str = "") -> JSONResponse:
     return JSONResponse(
         status_code=status,
         content={"error": error, "error_description": description},
+        headers=_TOKEN_NO_CACHE_HEADERS,
     )
 
 
 def _issue_tokens(client_id: str, org_id: int, user_id: Optional[int],
-                  scope: str) -> dict:
-    """Generate, hash, and store a new (access, refresh) pair. Returns the
-    response body dict (with plaintext tokens)."""
+                  scope: str) -> JSONResponse:
+    """Generate, hash, and store a new (access, refresh) pair. Returns a
+    JSONResponse with plaintext tokens and RFC 6749 §5.1 no-store headers."""
     access = secrets.token_urlsafe(32)
     refresh = secrets.token_urlsafe(32)
     access_hash = _hash_token(access)
@@ -488,24 +498,31 @@ def _issue_tokens(client_id: str, org_id: int, user_id: Optional[int],
         (access_hash, refresh_hash, client_id, org_id, user_id, scope,
          access_exp.isoformat(), refresh_exp.isoformat()),
     )
-    return {
-        "access_token": access,
-        "refresh_token": refresh,
-        "token_type": "Bearer",
-        "expires_in": _ACCESS_TTL_SECONDS,
-        "scope": scope,
-    }
+    return JSONResponse(
+        content={
+            "access_token": access,
+            "refresh_token": refresh,
+            "token_type": "Bearer",
+            "expires_in": _ACCESS_TTL_SECONDS,
+            "scope": scope,
+        },
+        headers=_TOKEN_NO_CACHE_HEADERS,
+    )
 
 
 def _exchange_authorization_code(
     code: str, client_id: str, redirect_uri: str, code_verifier: str,
-) -> dict:
+) -> JSONResponse:
     # PBKDF2 with random salt → lookup-key is not stable. Fetch by client_id
-    # and iterate verify.
+    # and iterate verify. Filter to live codes only so the iteration set stays
+    # tightly bounded; post-iteration checks below defend against TOCTOU.
     candidates = query_all(
         "SELECT id, code_hash, client_id, organization_id, user_id, scope, "
         "       redirect_uri, code_challenge, expires_at, consumed_at "
-        "FROM oauth_authorization_codes WHERE client_id = ?",
+        "FROM oauth_authorization_codes "
+        "WHERE client_id = ? "
+        "  AND consumed_at IS NULL "
+        "  AND expires_at > now()",
         (client_id,),
     )
     matching = None
@@ -515,7 +532,7 @@ def _exchange_authorization_code(
             break
     if not matching:
         return _oauth_error(400, "invalid_grant",
-                            "Unknown or expired authorization code")
+                            "Unknown, expired, or already-used authorization code")
 
     if matching["consumed_at"] is not None:
         return _oauth_error(400, "invalid_grant",
@@ -554,7 +571,7 @@ def _exchange_authorization_code(
     )
 
 
-def _refresh_tokens(refresh_token: str, client_id: str) -> dict:
+def _refresh_tokens(refresh_token: str, client_id: str) -> JSONResponse:
     candidates = query_all(
         "SELECT id, refresh_token_hash, client_id, organization_id, user_id, "
         "       scope, refresh_expires_at, revoked_at "
