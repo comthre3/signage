@@ -624,7 +624,9 @@ def test_token_endpoint_returns_json_error_shape(client):
     })
     assert r.status_code == 400
     body = r.json()
-    assert "error" in body or "detail" in body
+    # RFC 6749 §5.2 — error body is top-level, not nested under "detail"
+    assert body["error"] == "invalid_grant", body
+    assert "error_description" in body
 
 
 def test_access_token_works_on_api_endpoint(client):
