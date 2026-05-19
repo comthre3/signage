@@ -514,14 +514,12 @@ def _exchange_authorization_code(
             matching = row
             break
     if not matching:
-        raise HTTPException(status_code=400,
-            detail={"error": "invalid_grant",
-                    "error_description": "Unknown or expired authorization code"})
+        return _oauth_error(400, "invalid_grant",
+                            "Unknown or expired authorization code")
 
     if matching["consumed_at"] is not None:
-        raise HTTPException(status_code=400,
-            detail={"error": "invalid_grant",
-                    "error_description": "Authorization code already used"})
+        return _oauth_error(400, "invalid_grant",
+                            "Authorization code already used")
 
     # Expiry check
     expires = matching["expires_at"]
@@ -532,19 +530,16 @@ def _exchange_authorization_code(
     if expires_dt.tzinfo is None:
         expires_dt = expires_dt.replace(tzinfo=timezone.utc)
     if expires_dt < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400,
-            detail={"error": "invalid_grant",
-                    "error_description": "Authorization code expired"})
+        return _oauth_error(400, "invalid_grant",
+                            "Authorization code expired")
 
     if matching["redirect_uri"] != redirect_uri:
-        raise HTTPException(status_code=400,
-            detail={"error": "invalid_grant",
-                    "error_description": "redirect_uri mismatch"})
+        return _oauth_error(400, "invalid_grant",
+                            "redirect_uri mismatch")
 
     if not _pkce_matches(code_verifier, matching["code_challenge"]):
-        raise HTTPException(status_code=400,
-            detail={"error": "invalid_grant",
-                    "error_description": "PKCE verifier did not match"})
+        return _oauth_error(400, "invalid_grant",
+                            "PKCE verifier did not match")
 
     execute(
         "UPDATE oauth_authorization_codes SET consumed_at = now() WHERE id = ?",
@@ -572,9 +567,8 @@ def _refresh_tokens(refresh_token: str, client_id: str) -> dict:
             matching = row
             break
     if not matching:
-        raise HTTPException(status_code=400,
-            detail={"error": "invalid_grant",
-                    "error_description": "Unknown or revoked refresh token"})
+        return _oauth_error(400, "invalid_grant",
+                            "Unknown or revoked refresh token")
 
     expires = matching["refresh_expires_at"]
     if hasattr(expires, "isoformat"):
@@ -584,9 +578,8 @@ def _refresh_tokens(refresh_token: str, client_id: str) -> dict:
     if expires_dt.tzinfo is None:
         expires_dt = expires_dt.replace(tzinfo=timezone.utc)
     if expires_dt < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400,
-            detail={"error": "invalid_grant",
-                    "error_description": "Refresh token expired"})
+        return _oauth_error(400, "invalid_grant",
+                            "Refresh token expired")
 
     execute(
         "UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
