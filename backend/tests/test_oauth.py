@@ -643,3 +643,45 @@ def test_access_token_works_on_api_endpoint(client):
     r2 = client.get("/organization",
                     headers={"Authorization": f"Bearer {access_token}"})
     assert r2.status_code in (200, 401), r2.text
+
+
+def test_token_response_sets_no_store_cache_header(client):
+    """RFC 6749 §5.1: token responses must be Cache-Control: no-store."""
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 200
+    assert "no-store" in r.headers.get("cache-control", "").lower()
+
+
+def test_token_rejects_non_ascii_pkce_verifier(client):
+    """Non-ASCII verifier must produce a structured 400, not a 500."""
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"],
+        "code_verifier": "naïve中文",
+    })
+    assert r.status_code == 400, r.text
+    assert r.json()["error"] == "invalid_grant"
+
+
+def test_token_rejects_code_from_different_client(client):
+    """A code issued for client A must not be usable by client B."""
+    flow = _full_authorize_flow(client)
+    # Register a second, unrelated client
+    other_cid = _register_client(client, name="Other")
+    # Try to redeem flow's code at the OTHER client's identity
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"],
+        "redirect_uri": flow["redirect_uri"],
+        "client_id": other_cid,
+        "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 400, r.text
+    assert r.json()["error"] == "invalid_grant"
