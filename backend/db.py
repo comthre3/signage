@@ -577,6 +577,10 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_org "
             "ON oauth_tokens (organization_id, revoked_at)"
         )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client "
+            "ON oauth_tokens (client_id) WHERE revoked_at IS NULL"
+        )
 
         # Pre-registered MCP clients (idempotent — ON CONFLICT DO NOTHING)
         _PRE_REGISTERED_CLIENTS = [

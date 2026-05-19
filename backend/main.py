@@ -596,7 +596,7 @@ class AuthedPrincipal:
 
 
 def get_api_authed(authorization: Optional[str] = Header(None)) -> AuthedPrincipal:
-    """Dual-mode auth. Accepts a session bearer token OR an API key."""
+    """Triple-mode auth. Accepts a session bearer token, an API key, or an OAuth access token."""
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing authorization")
     scheme, _, token = authorization.partition(" ")
@@ -622,7 +622,7 @@ def get_api_authed(authorization: Optional[str] = Header(None)) -> AuthedPrincip
 
     user = _session_lookup(token)
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid session")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     return AuthedPrincipal(
         user=user,
         organization_id=user["organization_id"],
@@ -642,10 +642,8 @@ def require_api_scope(
       - Session-authed: user's role must be in session_roles (not rate-limited here)
     """
     def dep(principal: AuthedPrincipal = Depends(get_api_authed)) -> AuthedPrincipal:
-        if principal.api_key is not None or (
-            principal.user is None and principal.scope in ("api:read", "api:rw")
-        ):
-            # API key OR OAuth access token — enforce scope
+        if principal.scope != "session":
+            # Machine principal (API key or OAuth access token) — enforce scope
             if principal.scope not in allowed_api_scopes:
                 raise HTTPException(
                     status_code=403,
@@ -1944,7 +1942,7 @@ def list_screens(
 ) -> list[dict]:
     oid = principal.organization_id
     user = principal.user or {}
-    if user.get("is_admin") or principal.api_key is not None:
+    if user.get("is_admin") or principal.scope != "session":
         rows = query_all(
             """
             SELECT screens.*, sites.name AS site_name, playlists.name AS playlist_name
@@ -2107,7 +2105,7 @@ def list_screen_zones(
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     user = principal.user or {}
-    if not user.get("is_admin") and principal.api_key is None:
+    if not user.get("is_admin") and principal.scope == "session":
         require_screen_access(screen_id, user)
     zones = get_screen_zones(screen_id)
     return {"zones": zones}
