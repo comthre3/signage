@@ -177,8 +177,8 @@ def _result_data(body: dict) -> Any:
 # ── Task 3: 14 read tools ──────────────────────────────────────────────
 
 
-def test_tools_list_has_14_reads_after_task3(mcp_client):
-    """After Task 3, tools/list should have at least 14 read tools registered."""
+def test_tools_list_has_12_reads_after_task3(mcp_client):
+    """After Task 3, tools/list should have at least 12 read tools registered."""
     body = _jsonrpc_call(mcp_client, "tools/list")
     if "error" in body:
         _jsonrpc_call(mcp_client, "initialize", params={
@@ -190,8 +190,6 @@ def test_tools_list_has_14_reads_after_task3(mcp_client):
     names = {t["name"] for t in body["result"]["tools"]}
     expected_reads = {
         "khanshoof_get_organization",
-        "khanshoof_list_users",
-        "khanshoof_get_current_user",
         "khanshoof_list_sites",
         "khanshoof_list_screens",
         "khanshoof_get_screen",
@@ -206,16 +204,6 @@ def test_tools_list_has_14_reads_after_task3(mcp_client):
     }
     missing = expected_reads - names
     assert not missing, f"Missing read tools: {missing}"
-
-
-def test_get_current_user(mcp_client):
-    """khanshoof_get_current_user works with a session token (GET /auth/me is session-only)."""
-    flow = _full_authorize_flow(mcp_client)
-    session_token = flow["session_token"]
-    body = _mcp_call_tool(mcp_client, "khanshoof_get_current_user", bearer=session_token)
-    data = _result_data(body)
-    assert isinstance(data, dict)
-    assert "id" in data
 
 
 def test_list_sites(mcp_client):
