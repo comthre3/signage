@@ -178,6 +178,71 @@ def attach_mcp(app) -> None:
         """Get the current organization's profile, including plan + screen limits."""
         return await _dispatch(app, ctx, "GET", "/organization")
 
+    @mcp.tool()
+    async def khanshoof_list_users(ctx: Context) -> list[dict]:
+        """List all users in the current organization."""
+        return await _dispatch(app, ctx, "GET", "/users")
+
+    @mcp.tool()
+    async def khanshoof_get_current_user(ctx: Context) -> dict:
+        """Get the profile of the user who authorized this OAuth session."""
+        return await _dispatch(app, ctx, "GET", "/auth/me")
+
+    @mcp.tool()
+    async def khanshoof_list_sites(ctx: Context) -> list[dict]:
+        """List all sites (physical locations) in the current organization."""
+        return await _dispatch(app, ctx, "GET", "/sites")
+
+    @mcp.tool()
+    async def khanshoof_list_screens(ctx: Context) -> list[dict]:
+        """List all screens across all sites in the current organization."""
+        return await _dispatch(app, ctx, "GET", "/screens")
+
+    @mcp.tool()
+    async def khanshoof_get_screen(ctx: Context, screen_id: int) -> dict:
+        """Get details for a single screen by id, including its current playlist."""
+        return await _dispatch(app, ctx, "GET", f"/screens/{screen_id}")
+
+    @mcp.tool()
+    async def khanshoof_get_screen_zones(ctx: Context, screen_id: int) -> dict:
+        """Get the wall-zone configuration for a multi-zone screen."""
+        return await _dispatch(app, ctx, "GET", f"/screens/{screen_id}/zones")
+
+    @mcp.tool()
+    async def khanshoof_list_playlists(ctx: Context) -> list[dict]:
+        """List all playlists in the current organization."""
+        return await _dispatch(app, ctx, "GET", "/playlists")
+
+    @mcp.tool()
+    async def khanshoof_get_playlist(ctx: Context, playlist_id: int) -> dict:
+        """Get a single playlist by id, including its items in order."""
+        return await _dispatch(app, ctx, "GET", f"/playlists/{playlist_id}")
+
+    @mcp.tool()
+    async def khanshoof_list_schedules(ctx: Context) -> dict:
+        """List all dayparting schedules in the current organization. Returns {items: [...]}."""
+        return await _dispatch(app, ctx, "GET", "/schedules")
+
+    @mcp.tool()
+    async def khanshoof_get_schedule(ctx: Context, schedule_id: int) -> dict:
+        """Get a single schedule by id, including all its rules."""
+        return await _dispatch(app, ctx, "GET", f"/schedules/{schedule_id}")
+
+    @mcp.tool()
+    async def khanshoof_list_walls(ctx: Context) -> list[dict]:
+        """List all video walls (multi-screen displays) in the current organization."""
+        return await _dispatch(app, ctx, "GET", "/walls")
+
+    @mcp.tool()
+    async def khanshoof_get_wall(ctx: Context, wall_id: int) -> dict:
+        """Get a single wall by id, including its layout and assigned playlist."""
+        return await _dispatch(app, ctx, "GET", f"/walls/{wall_id}")
+
+    @mcp.tool()
+    async def khanshoof_list_media(ctx: Context) -> list[dict]:
+        """List all media assets (images, videos, URLs) uploaded to the org."""
+        return await _dispatch(app, ctx, "GET", "/media")
+
     sub_app = mcp.streamable_http_app()
 
     _cm: object = None

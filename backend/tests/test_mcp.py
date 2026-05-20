@@ -148,3 +148,115 @@ def test_get_organization_with_invalid_bearer_returns_invalid_request(mcp_client
     body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
                           bearer="garbage_not_a_real_token_xyz")
     _assert_mcp_auth_error(body)
+
+
+import json
+from typing import Any
+
+
+def _result_data(body: dict) -> Any:
+    """Pull the structured result out of a tools/call response, tolerating
+    both the wrapped `content` envelope and the raw-dict shape."""
+    assert "result" in body, body
+    r = body["result"]
+    if isinstance(r, dict) and "content" in r:
+        # MCP SDK 1.12.4 wrapped envelope — parse the text content as JSON
+        assert r.get("isError") is False, body
+        content = r["content"]
+        if not content:
+            # Empty content means the tool returned an empty list/None
+            return []
+        text = content[0]["text"]
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+    return r
+
+
+# ── Task 3: 14 read tools ──────────────────────────────────────────────
+
+
+def test_tools_list_has_14_reads_after_task3(mcp_client):
+    """After Task 3, tools/list should have at least 14 read tools registered."""
+    body = _jsonrpc_call(mcp_client, "tools/list")
+    if "error" in body:
+        _jsonrpc_call(mcp_client, "initialize", params={
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "0"},
+        })
+        body = _jsonrpc_call(mcp_client, "tools/list")
+    names = {t["name"] for t in body["result"]["tools"]}
+    expected_reads = {
+        "khanshoof_get_organization",
+        "khanshoof_list_users",
+        "khanshoof_get_current_user",
+        "khanshoof_list_sites",
+        "khanshoof_list_screens",
+        "khanshoof_get_screen",
+        "khanshoof_get_screen_zones",
+        "khanshoof_list_playlists",
+        "khanshoof_get_playlist",
+        "khanshoof_list_schedules",
+        "khanshoof_get_schedule",
+        "khanshoof_list_walls",
+        "khanshoof_get_wall",
+        "khanshoof_list_media",
+    }
+    missing = expected_reads - names
+    assert not missing, f"Missing read tools: {missing}"
+
+
+def test_get_current_user(mcp_client):
+    """khanshoof_get_current_user works with a session token (GET /auth/me is session-only)."""
+    flow = _full_authorize_flow(mcp_client)
+    session_token = flow["session_token"]
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_current_user", bearer=session_token)
+    data = _result_data(body)
+    assert isinstance(data, dict)
+    assert "id" in data
+
+
+def test_list_sites(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_list_sites", bearer=access_token)
+    data = _result_data(body)
+    assert isinstance(data, list)
+
+
+def test_list_screens(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_list_screens", bearer=access_token)
+    data = _result_data(body)
+    assert isinstance(data, list)
+
+
+def test_list_playlists(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_list_playlists", bearer=access_token)
+    data = _result_data(body)
+    assert isinstance(data, list)
+
+
+def test_list_schedules(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_list_schedules", bearer=access_token)
+    data = _result_data(body)
+    # /schedules returns {"items": [...]}
+    assert isinstance(data, dict)
+    assert "items" in data
+
+
+def test_list_walls(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_list_walls", bearer=access_token)
+    data = _result_data(body)
+    assert isinstance(data, list)
+
+
+def test_list_media(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_list_media", bearer=access_token)
+    data = _result_data(body)
+    assert isinstance(data, list)
