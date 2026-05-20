@@ -179,16 +179,6 @@ def attach_mcp(app) -> None:
         return await _dispatch(app, ctx, "GET", "/organization")
 
     @mcp.tool()
-    async def khanshoof_list_users(ctx: Context) -> list[dict]:
-        """List all users in the current organization."""
-        return await _dispatch(app, ctx, "GET", "/users")
-
-    @mcp.tool()
-    async def khanshoof_get_current_user(ctx: Context) -> dict:
-        """Get the profile of the user who authorized this OAuth session."""
-        return await _dispatch(app, ctx, "GET", "/auth/me")
-
-    @mcp.tool()
     async def khanshoof_list_sites(ctx: Context) -> list[dict]:
         """List all sites (physical locations) in the current organization."""
         return await _dispatch(app, ctx, "GET", "/sites")
