@@ -233,6 +233,144 @@ def attach_mcp(app) -> None:
         """List all media assets (images, videos, URLs) uploaded to the org."""
         return await _dispatch(app, ctx, "GET", "/media")
 
+    # ── Write tools (require api:rw scope on the underlying handler) ──
+
+    @mcp.tool()
+    async def khanshoof_create_playlist(
+        ctx: Context,
+        name: str,
+        description: Optional[str] = None,
+    ) -> dict:
+        """Create a new empty playlist. Requires api:rw scope."""
+        body = {"name": name}
+        if description is not None:
+            body["description"] = description
+        return await _dispatch(app, ctx, "POST", "/playlists", json_body=body)
+
+    @mcp.tool()
+    async def khanshoof_update_playlist(
+        ctx: Context,
+        playlist_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> dict:
+        """Update a playlist's name or description. Requires api:rw scope."""
+        body = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        return await _dispatch(app, ctx, "PUT", f"/playlists/{playlist_id}",
+                               json_body=body)
+
+    @mcp.tool()
+    async def khanshoof_delete_playlist(
+        ctx: Context,
+        playlist_id: int,
+    ) -> dict:
+        """Delete a playlist. Returns null on success. Requires api:rw scope."""
+        return await _dispatch(app, ctx, "DELETE", f"/playlists/{playlist_id}")
+
+    @mcp.tool()
+    async def khanshoof_add_playlist_item(
+        ctx: Context,
+        playlist_id: int,
+        media_id: int,
+        duration_seconds: Optional[int] = None,
+    ) -> dict:
+        """Add a media item to a playlist. duration_seconds defaults to the
+        media type's standard duration if omitted. Requires api:rw scope."""
+        body: dict = {"media_id": media_id}
+        if duration_seconds is not None:
+            body["duration_seconds"] = duration_seconds
+        return await _dispatch(app, ctx, "POST", f"/playlists/{playlist_id}/items",
+                               json_body=body)
+
+    @mcp.tool()
+    async def khanshoof_create_schedule(
+        ctx: Context,
+        name: str,
+    ) -> dict:
+        """Create a new dayparting schedule (initially with no rules).
+        Requires api:rw scope."""
+        return await _dispatch(app, ctx, "POST", "/schedules",
+                               json_body={"name": name})
+
+    @mcp.tool()
+    async def khanshoof_update_schedule(
+        ctx: Context,
+        schedule_id: int,
+        name: str,
+    ) -> dict:
+        """Rename a schedule. Requires api:rw scope."""
+        return await _dispatch(app, ctx, "PUT", f"/schedules/{schedule_id}",
+                               json_body={"name": name})
+
+    @mcp.tool()
+    async def khanshoof_delete_schedule(
+        ctx: Context,
+        schedule_id: int,
+    ) -> dict:
+        """Delete a schedule. Requires api:rw scope."""
+        return await _dispatch(app, ctx, "DELETE", f"/schedules/{schedule_id}")
+
+    @mcp.tool()
+    async def khanshoof_set_schedule_rules(
+        ctx: Context,
+        schedule_id: int,
+        rules: list[dict],
+    ) -> dict:
+        """Replace the rules in a schedule. Each rule is a dict with
+        playlist_id (int), start_time (HH:MM), end_time (HH:MM),
+        days_of_week (int bitmask 1-127), and position (int, default 0).
+        Pass an empty list to clear all rules. Requires api:rw scope."""
+        return await _dispatch(app, ctx, "PUT",
+                               f"/schedules/{schedule_id}/rules",
+                               json_body={"rules": rules})
+
+    @mcp.tool()
+    async def khanshoof_assign_playlist_to_screen(
+        ctx: Context,
+        screen_id: int,
+        playlist_id: int,
+    ) -> dict:
+        """Assign a playlist to a screen. The screen will start playing this
+        playlist on its next refresh. Requires api:rw scope."""
+        return await _dispatch(app, ctx, "PUT", f"/screens/{screen_id}",
+                               json_body={"playlist_id": playlist_id})
+
+    @mcp.tool()
+    async def khanshoof_add_canvas_playlist_item(
+        ctx: Context,
+        wall_id: int,
+        media_id: int,
+        position: int,
+        duration_override_seconds: Optional[int] = None,
+        fit_mode: Optional[str] = None,
+    ) -> dict:
+        """Add a media item to a spanned (canvas-mode) wall's playlist.
+        position is required (0-based index). fit_mode is one of
+        'fit', 'fill', or 'stretch' (default 'fit'). Requires api:rw scope."""
+        body: dict = {"media_id": media_id, "position": position}
+        if duration_override_seconds is not None:
+            body["duration_override_seconds"] = duration_override_seconds
+        if fit_mode is not None:
+            body["fit_mode"] = fit_mode
+        return await _dispatch(app, ctx, "POST",
+                               f"/walls/{wall_id}/canvas-playlist/items",
+                               json_body=body)
+
+    @mcp.tool()
+    async def khanshoof_add_media_url(
+        ctx: Context,
+        url: str,
+        name: str,
+    ) -> dict:
+        """Add a media item by URL (image/video URL). Both url and name are
+        required. Requires api:rw scope."""
+        return await _dispatch(app, ctx, "POST", "/media/url",
+                               json_body={"url": url, "name": name})
+
     sub_app = mcp.streamable_http_app()
 
     _cm: object = None
