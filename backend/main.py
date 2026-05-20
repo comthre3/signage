@@ -30,6 +30,7 @@ from db import init_db, execute, query_all, query_one, utc_now_iso
 from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
 from oauth import router as oauth_router
+from mcp_server import attach_mcp
 from walls import attach_walls
 
 logger = logging.getLogger("signage")
@@ -143,6 +144,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 attach_walls(app)
 app.include_router(oauth_router)
+attach_mcp(app)
 
 
 def slugify(value: str) -> str:
