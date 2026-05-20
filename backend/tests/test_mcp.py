@@ -47,10 +47,104 @@ def test_mcp_initialize_handshake(mcp_client):
     assert body["result"]["serverInfo"]["name"] == "khanshoof"
 
 
-def test_mcp_tools_list_initially_empty(mcp_client):
-    """Before any tools register, tools/list must return an empty array."""
+def test_mcp_tools_list_returns_array(mcp_client):
+    """tools/list must return a valid tools array."""
     body = _jsonrpc_call(mcp_client, "tools/list")
     if "error" in body:
         assert body["error"]["code"] in (-32600, -32002), body
     else:
-        assert body["result"]["tools"] == []
+        assert isinstance(body["result"]["tools"], list)
+
+
+# ── Helpers shared with later tests ────────────────────────────────────
+
+from tests.test_oauth import _full_authorize_flow
+
+
+def _mcp_call_tool(client, tool_name: str, args: dict | None = None,
+                   bearer: str | None = None) -> dict:
+    """Call tools/call. Returns the parsed JSON-RPC response."""
+    return _jsonrpc_call(
+        client, "tools/call",
+        params={"name": tool_name, "arguments": args or {}},
+        bearer=bearer,
+    )
+
+
+def _get_oauth_access_token(client, scope: str = "api:rw") -> tuple[str, str]:
+    """Run the full OAuth flow and exchange a code for an access token.
+
+    Returns (access_token, oauth_client_id)."""
+    flow = _full_authorize_flow(client)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"],
+        "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"],
+        "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 200, r.text
+    return r.json()["access_token"], flow["client_id"]
+
+
+# ── Task 2: dispatch helper + canary tool ──────────────────────────────
+
+
+def test_tools_list_shows_get_organization(mcp_client):
+    body = _jsonrpc_call(mcp_client, "tools/list")
+    if "error" in body:
+        _jsonrpc_call(mcp_client, "initialize", params={
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "0"},
+        })
+        body = _jsonrpc_call(mcp_client, "tools/list")
+    names = [t["name"] for t in body["result"]["tools"]]
+    assert "khanshoof_get_organization" in names
+
+
+def test_get_organization_with_valid_oauth_token(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
+                          bearer=access_token)
+    assert "result" in body, body
+    result = body["result"]
+    if "content" in result:
+        assert result.get("isError") is False
+    elif "id" in result:
+        pass
+
+
+def _assert_mcp_auth_error(body: dict) -> None:
+    """Assert an auth error in either JSON-RPC error or MCP isError content form.
+
+    MCP SDK >= 1.9 wraps McpError inside result.content[].isError rather than
+    surfacing it as a top-level JSON-RPC error field.
+
+    Accepts any auth-related keyword in the error text.
+    """
+    _AUTH_KEYWORDS = ("authentication", "token", "bearer", "expired", "unauthorized")
+    if "error" in body:
+        # Traditional JSON-RPC error surface
+        assert body["error"]["code"] == -32600, body
+        msg = body["error"]["message"].lower()
+        assert any(kw in msg for kw in _AUTH_KEYWORDS), body
+    else:
+        # MCP SDK isError content surface
+        result = body.get("result", {})
+        assert result.get("isError") is True, body
+        texts = " ".join(
+            c["text"] for c in result.get("content", []) if c.get("type") == "text"
+        ).lower()
+        assert any(kw in texts for kw in _AUTH_KEYWORDS), body
+
+
+def test_get_organization_without_bearer_returns_invalid_request(mcp_client):
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization", bearer=None)
+    _assert_mcp_auth_error(body)
+
+
+def test_get_organization_with_invalid_bearer_returns_invalid_request(mcp_client):
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
+                          bearer="garbage_not_a_real_token_xyz")
+    _assert_mcp_auth_error(body)
