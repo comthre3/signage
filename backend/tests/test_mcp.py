@@ -162,6 +162,12 @@ def _result_data(body: dict) -> Any:
     if isinstance(r, dict) and "content" in r:
         # MCP SDK 1.12.4 wrapped envelope — parse the text content as JSON
         assert r.get("isError") is False, body
+        # structuredContent.result is present for list-returning tools and
+        # contains the full list, whereas content[0]["text"] only has the
+        # first element serialised as a single JSON object.
+        sc = r.get("structuredContent")
+        if isinstance(sc, dict) and "result" in sc:
+            return sc["result"]
         content = r["content"]
         if not content:
             # Empty content means the tool returned an empty list/None
@@ -551,3 +557,80 @@ def test_tool_descriptions_mention_scope_for_writes(mcp_client):
     for t in body["result"]["tools"]:
         if t["name"] in write_tool_names:
             assert "api:rw" in (t.get("description") or "").lower(), t["name"]
+
+
+# ── Task 6: End-to-end ────────────────────────────────────────────────
+
+
+def test_full_e2e_oauth_then_mcp_tool_call(mcp_client):
+    """OAuth register → authorize → token → MCP initialize → tools/call.
+
+    This is the integration smoke test that proves the MCP server,
+    the OAuth provider, and FastAPI all line up over the wire."""
+    import secrets, hashlib, base64, re
+    from tests.test_oauth import _signup_org
+
+    # 1. Register an MCP client dynamically
+    r = mcp_client.post("/oauth/register", json={
+        "client_name": "E2E MCP Client",
+        "redirect_uris": ["http://localhost:5173/oauth/cb"],
+    })
+    assert r.status_code == 201, r.text
+    cid = r.json()["client_id"]
+
+    # 2. Sign up a real org
+    session_token, _o, _u, _e = _signup_org(mcp_client)
+    cookies = {"oauth_session": session_token}
+
+    # 3. Authorize (consent)
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    redirect_uri = "http://localhost:5173/oauth/cb"
+    r = mcp_client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": redirect_uri, "scope": "api:rw",
+        "state": "e2e", "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = mcp_client.post("/oauth/authorize/decision",
+                        data={"request_id": request_id, "decision": "allow",
+                              "scope": "api:rw"},
+                        cookies=cookies, follow_redirects=False)
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = mcp_client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code, "redirect_uri": redirect_uri,
+        "client_id": cid, "code_verifier": verifier,
+    })
+    access_token = r.json()["access_token"]
+
+    # 4. MCP initialize over the same token
+    body = _jsonrpc_call(mcp_client, "initialize", bearer=access_token, params={
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "e2e-test", "version": "0"},
+    })
+    assert body["result"]["serverInfo"]["name"] == "khanshoof"
+
+    # 5. tools/list
+    body = _jsonrpc_call(mcp_client, "tools/list", bearer=access_token)
+    names = [t["name"] for t in body["result"]["tools"]]
+    assert "khanshoof_create_playlist" in names
+    assert "khanshoof_list_playlists" in names
+
+    # 6. Create a playlist via MCP
+    body = _mcp_call_tool(mcp_client, "khanshoof_create_playlist",
+                          args={"name": "E2E MCP playlist"},
+                          bearer=access_token)
+    created = _result_data(body)
+    assert "id" in created
+    assert created["name"] == "E2E MCP playlist"
+
+    # 7. List playlists via MCP — confirm it's there
+    body = _mcp_call_tool(mcp_client, "khanshoof_list_playlists",
+                          bearer=access_token)
+    playlists = _result_data(body)
+    assert any(p["id"] == created["id"] for p in playlists)
