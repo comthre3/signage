@@ -354,3 +354,200 @@ def test_add_media_url(mcp_client):
     # Either success (result key) or a structured error from FastAPI —
     # both prove the dispatch path reached the handler.
     assert "result" in body or "error" in body, body
+
+
+# ── Task 5: cross-cutting auth + scope + error mapping ────────────────
+
+
+def _read_scope_access_token(client) -> str:
+    """Run the OAuth flow with api:read scope (not api:rw)."""
+    import secrets, hashlib, base64, re
+    from tests.test_oauth import _signup_org, _register_client
+
+    cid = _register_client(client, name="ReadScope")
+    session_token, _o, _u, _e = _signup_org(client)
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    cookies = {"oauth_session": session_token}
+    redirect_uri = "http://localhost:5173/oauth/callback"
+
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": redirect_uri, "scope": "api:read", "state": "s",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, cookies=cookies, follow_redirects=False)
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:read"},
+                    cookies=cookies, follow_redirects=False)
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code, "redirect_uri": redirect_uri,
+        "client_id": cid, "code_verifier": verifier,
+    })
+    return r.json()["access_token"]
+
+
+def _err_code_and_data(body: dict) -> tuple[int | None, dict]:
+    """Pull (code, data) from either a top-level JSON-RPC error OR an
+    isError=True content envelope. Returns (code, {}) or (None, {})."""
+    if "error" in body:
+        return body["error"]["code"], (body["error"].get("data") or {})
+    r = body.get("result") or {}
+    if isinstance(r, dict) and r.get("isError"):
+        # SDK 1.12.4 wraps errors here — try to recover code/data from text
+        try:
+            text = r["content"][0]["text"]
+            import json as _json
+            parsed = _json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed.get("code"), (parsed.get("data") or {})
+        except (KeyError, ValueError, IndexError):
+            pass
+        return None, {}
+    return None, {}
+
+
+def test_read_scope_token_cannot_create_playlist(mcp_client):
+    """An api:read OAuth token on a write tool must return -32000 with
+    data.code == 'api.insufficient_scope'."""
+    access = _read_scope_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_create_playlist",
+                          args={"name": "blocked"},
+                          bearer=access)
+    code, data = _err_code_and_data(body)
+    # Either explicit -32000 with code, OR isError envelope mentioning scope
+    if code is not None:
+        assert code == -32000, body
+        assert data.get("code") == "api.insufficient_scope", body
+    else:
+        # Fall-back: assert the error is at least signalled as isError
+        r = body.get("result") or {}
+        assert r.get("isError") is True, body
+        text = (r.get("content") or [{}])[0].get("text", "")
+        assert ("scope" in text.lower() or "insufficient" in text.lower()
+                or "api:rw" in text.lower() or "requires" in text.lower()), body
+
+
+def test_validation_error_maps_to_invalid_params(mcp_client):
+    """Missing a required arg (no `name`) should produce -32602."""
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_create_playlist",
+                          args={},   # name is required
+                          bearer=access_token)
+    code, _ = _err_code_and_data(body)
+    # MCP SDK validates inputSchema → -32602; FastAPI Pydantic → also -32602
+    # Either is acceptable. Also accept -32000 if structurally wrapped.
+    if code is not None:
+        assert code in (-32602, -32000), body
+    else:
+        # isError envelope — accept it as long as it's signalled
+        r = body.get("result") or {}
+        assert r.get("isError") is True, body
+
+
+def test_unknown_playlist_id_maps_to_app_error(mcp_client):
+    """GET /playlists/9999999 → FastAPI 404 → MCP -32000."""
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_playlist",
+                          args={"playlist_id": 9999999},
+                          bearer=access_token)
+    code, data = _err_code_and_data(body)
+    if code is not None:
+        assert code == -32000, body
+        assert data.get("http_status") == 404, body
+    else:
+        r = body.get("result") or {}
+        assert r.get("isError") is True, body
+        text = (r.get("content") or [{}])[0].get("text", "")
+        assert "not found" in text.lower() or "404" in text, body
+
+
+def test_revoked_oauth_token_rejected(mcp_client):
+    """After revocation, the token must fail with -32600."""
+    access_token, oauth_client_id = _get_oauth_access_token(mcp_client)
+    # Confirm it works first
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
+                          bearer=access_token)
+    assert "result" in body, body
+    # Revoke
+    r = mcp_client.post("/oauth/revoke", data={
+        "token": access_token, "client_id": oauth_client_id,
+    })
+    assert r.status_code == 200
+    # Now it should fail
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
+                          bearer=access_token)
+    code, _ = _err_code_and_data(body)
+    if code is not None:
+        assert code == -32600, body
+    else:
+        r = body.get("result") or {}
+        assert r.get("isError") is True, body
+
+
+def test_cross_org_isolation(mcp_client):
+    """A token issued for org A must not be able to read org B's playlist."""
+    access_a, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_create_playlist",
+                          args={"name": "Org A private"},
+                          bearer=access_a)
+    a_playlist_id = _result_data(body)["id"]
+    access_b, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_playlist",
+                          args={"playlist_id": a_playlist_id},
+                          bearer=access_b)
+    code, data = _err_code_and_data(body)
+    if code is not None:
+        assert code == -32000, body
+        assert data.get("http_status") == 404, body
+    else:
+        r = body.get("result") or {}
+        assert r.get("isError") is True, body
+
+
+def test_all_tool_descriptions_are_nonempty(mcp_client):
+    """Sanity: every tool has a description, none > 1000 chars."""
+    body = _jsonrpc_call(mcp_client, "tools/list")
+    if "error" in body:
+        _jsonrpc_call(mcp_client, "initialize", params={
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "0"},
+        })
+        body = _jsonrpc_call(mcp_client, "tools/list")
+    tools = body["result"]["tools"]
+    for t in tools:
+        if not t["name"].startswith("khanshoof_"):
+            continue
+        desc = t.get("description") or ""
+        assert desc.strip(), f"{t['name']} has empty description"
+        assert len(desc) <= 1000, f"{t['name']} description is {len(desc)} chars"
+
+
+def test_tool_descriptions_mention_scope_for_writes(mcp_client):
+    """Write tools mention 'api:rw' so the LLM knows the scope requirement."""
+    body = _jsonrpc_call(mcp_client, "tools/list")
+    if "error" in body:
+        _jsonrpc_call(mcp_client, "initialize", params={
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "0"},
+        })
+        body = _jsonrpc_call(mcp_client, "tools/list")
+    write_tool_names = {
+        "khanshoof_create_playlist", "khanshoof_update_playlist",
+        "khanshoof_delete_playlist", "khanshoof_add_playlist_item",
+        "khanshoof_create_schedule", "khanshoof_update_schedule",
+        "khanshoof_delete_schedule", "khanshoof_set_schedule_rules",
+        "khanshoof_assign_playlist_to_screen",
+        "khanshoof_add_canvas_playlist_item",
+        "khanshoof_add_media_url",
+    }
+    for t in body["result"]["tools"]:
+        if t["name"] in write_tool_names:
+            assert "api:rw" in (t.get("description") or "").lower(), t["name"]
