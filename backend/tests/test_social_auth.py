@@ -710,3 +710,114 @@ def test_apple_complete_signup(client, apple_env):
         "WHERE provider = 'apple' AND subject_id = ?", (sub,)
     )
     assert identity is not None
+
+
+# ── Cross-cutting ──────────────────────────────────────────────────────
+
+
+def test_provider_not_configured_returns_503(client, monkeypatch):
+    """If GOOGLE_CLIENT_ID is missing, /auth/google/start 503s with
+    provider_not_configured."""
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+    r = client.get("/auth/google/start",
+                   params={"intent": "signup", "return_to": "/"})
+    assert r.status_code == 503, r.text
+    detail = r.json().get("detail", {})
+    assert detail.get("code") == "provider_not_configured"
+
+
+def test_password_login_still_works_after_social_link(client, google_env,
+                                                     respx_mock):
+    """Existing password user signs in via Google → identity linked.
+    Then they can still log in via /auth/login with their password."""
+    import respx, uuid
+    sfx = uuid.uuid4().hex[:8]
+    email = f"hybrid-{sfx}@example.com"
+    password = "Khanshoof2026Test"
+
+    # 1. Sign up via password
+    r = client.post("/auth/signup/request",
+                    json={"business_name": f"Hybrid {sfx}", "email": email})
+    otp = r.json()["dev_otp"]
+    r = client.post("/auth/signup/verify",
+                    json={"email": email, "otp": otp})
+    vt = r.json()["verification_token"]
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt, "password": password})
+    assert r.status_code == 200
+
+    # 2. Sign in via Google with the same email → auto-link
+    sub = f"g-hybrid-{sfx}"
+    id_token = _sign_google_id_token(google_env, sub=sub, email=email)
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+    r = client.get("/auth/google/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    import urllib.parse
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    r = client.get("/auth/google/callback",
+                   params={"code": "any", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302
+
+    # 3. Password login still works
+    r = client.post("/auth/login",
+                    json={"username": email, "password": password})
+    assert r.status_code == 200, r.text
+    assert "token" in r.json()
+
+
+def test_stash_expired_rejected(client, google_env):
+    """A stash token older than 10min is rejected at complete-signup."""
+    # Manually craft a stash with exp in the past
+    import jwt as _jwt, time, os
+    os.environ.setdefault("SECRET_KEY", "test-secret-key-fixed")
+    past_payload = {
+        "kind": "social_stash",
+        "provider": "google",
+        "subject_id": "g-stale",
+        "email": "stale@example.com",
+        "name": "Stale",
+        "iat": int(time.time()) - 1000,
+        "exp": int(time.time()) - 1,  # expired 1s ago
+    }
+    stash = _jwt.encode(past_payload, os.environ["SECRET_KEY"],
+                        algorithm="HS256")
+    r = client.post("/auth/google/complete-signup", json={
+        "stash_token": stash,
+        "business_name": "Stale Biz",
+    })
+    assert r.status_code == 400, r.text
+    detail = r.json().get("detail", {})
+    assert detail.get("code") == "stash_invalid"
+
+
+def test_complete_signup_provider_mismatch(client, google_env, monkeypatch):
+    """A stash signed for Google can't be POSTed to /auth/apple/complete-signup."""
+    from social_auth import _sign_stash
+    stash = _sign_stash(provider="google", subject_id="g-x",
+                        email="x@example.com", name=None)
+    # Apple needs to be configured so the endpoint doesn't 503 first.
+    monkeypatch.setenv("APPLE_CLIENT_ID", "com.test.khanshoof")
+    monkeypatch.setenv("APPLE_TEAM_ID", "TESTTEAMID")
+    monkeypatch.setenv("APPLE_KEY_ID", "apple-test-kid")
+    monkeypatch.setenv("APPLE_PRIVATE_KEY_PATH", "/tmp/nonexistent.p8")
+    r = client.post("/auth/apple/complete-signup", json={
+        "stash_token": stash,
+        "business_name": "Mismatch Biz",
+    })
+    assert r.status_code == 400, r.text
+    detail = r.json().get("detail", {})
+    assert detail.get("code") == "stash_provider_mismatch"
