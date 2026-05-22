@@ -565,3 +565,148 @@ def test_google_callback_user_cancels_redirects_gracefully(client, google_env):
     loc = r.headers["location"]
     assert "/auth-bounce" in loc
     assert "error=access_denied" in loc
+
+
+# ── Apple flow ────────────────────────────────────────────────────────
+
+
+def test_apple_start_redirects_with_state_cookie(client, apple_env):
+    r = client.get("/auth/apple/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    assert "auth_csrf" in r.headers.get("set-cookie", "")
+    loc = r.headers["location"]
+    assert loc.startswith("https://appleid.apple.com/auth/authorize?")
+    assert "client_id=com.test.khanshoof" in loc
+    assert "response_mode=form_post" in loc
+
+
+def test_apple_callback_post_form_new_user(client, apple_env, respx_mock):
+    """Apple POSTs the callback (not GETs). First sign-in includes `user` JSON."""
+    import respx, uuid
+    sfx = uuid.uuid4().hex[:8]
+    sub = f"a-new-{sfx}"
+    email = f"apple-new-{sfx}@privaterelay.appleid.com"
+    id_token = _sign_apple_id_token(apple_env, sub=sub, email=email)
+
+    respx_mock.get("https://appleid.apple.com/auth/keys").mock(
+        return_value=respx.MockResponse(200, json=apple_env["jwks"])
+    )
+    respx_mock.post("https://appleid.apple.com/auth/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    r = client.get("/auth/apple/start",
+                   params={"intent": "signup", "return_to": "/"},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    import urllib.parse
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+
+    # Apple POSTs form-encoded
+    user_json = json.dumps({"name": {"firstName": "Apple",
+                                     "lastName": "Tester"},
+                            "email": email})
+    r = client.post("/auth/apple/callback",
+                    data={"code": "any-code", "state": state,
+                          "id_token": id_token, "user": user_json},
+                    cookies={"auth_csrf": cookie},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = r.headers["location"]
+    assert "/auth-bounce" in loc
+    assert "complete_signup=" in loc
+    assert "Apple+Tester" in loc or "Apple%20Tester" in loc
+
+
+def test_apple_callback_subsequent_signin_without_user_field(client, apple_env,
+                                                              respx_mock):
+    """Second sign-in: Apple doesn't send `user`. Still works because we
+    look up by subject_id, not by re-reading the name."""
+    import respx, uuid
+    sfx = uuid.uuid4().hex[:8]
+    sub = f"a-second-{sfx}"
+
+    # Pre-create user + identity (simulating an earlier first sign-in)
+    from db import query_one, execute
+    execute(
+        "INSERT INTO organizations (name, slug, plan, screen_limit, "
+        "subscription_status, locale, created_at) "
+        "VALUES (?, ?, 'starter', 5, 'trialing', 'en', now())",
+        (f"AppleSec {sfx}", f"applesec-{sfx}"),
+    )
+    org = query_one("SELECT id FROM organizations WHERE slug = ?",
+                    (f"applesec-{sfx}",))
+    email = f"apple-sec-{sfx}@privaterelay.appleid.com"
+    execute(
+        "INSERT INTO users (organization_id, username, password_hash, "
+        "is_admin, role, created_at) "
+        "VALUES (?, ?, NULL, 1, 'admin', now())",
+        (org["id"], email),
+    )
+    user = query_one("SELECT id FROM users WHERE username = ?", (email,))
+    execute(
+        "INSERT INTO auth_identities (user_id, provider, subject_id, "
+        "email_at_link, name_at_link) "
+        "VALUES (?, 'apple', ?, ?, 'Apple Tester')",
+        (user["id"], sub, email),
+    )
+
+    # Apple sign-in without `user` field
+    id_token = _sign_apple_id_token(apple_env, sub=sub, email=email)
+    respx_mock.get("https://appleid.apple.com/auth/keys").mock(
+        return_value=respx.MockResponse(200, json=apple_env["jwks"])
+    )
+    respx_mock.post("https://appleid.apple.com/auth/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    r = client.get("/auth/apple/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    import urllib.parse
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    r = client.post("/auth/apple/callback",
+                    data={"code": "any", "state": state,
+                          "id_token": id_token},   # no `user`
+                    cookies={"auth_csrf": cookie},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    assert "token=" in r.headers["location"]
+
+
+def test_apple_complete_signup(client, apple_env):
+    """POST /auth/apple/complete-signup creates org + user + identity."""
+    import uuid
+    from social_auth import _sign_stash
+    sfx = uuid.uuid4().hex[:8]
+    email = f"apple-completer-{sfx}@privaterelay.appleid.com"
+    sub = f"a-complete-{sfx}"
+    stash = _sign_stash(provider="apple", subject_id=sub, email=email,
+                        name="Apple Completer")
+
+    r = client.post("/auth/apple/complete-signup", json={
+        "stash_token": stash,
+        "business_name": f"AppleCompleterBiz {sfx}",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "token" in body
+    assert body["user"]["username"] == email
+
+    from db import query_one
+    identity = query_one(
+        "SELECT * FROM auth_identities "
+        "WHERE provider = 'apple' AND subject_id = ?", (sub,)
+    )
+    assert identity is not None

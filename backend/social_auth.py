@@ -470,6 +470,63 @@ async def google_callback(request: Request,
     )
 
 
+@router.post("/auth/apple/callback")
+async def apple_callback(request: Request,
+                         code: str = Form(...),
+                         state: str = Form(...),
+                         id_token: str = Form(...),
+                         user: Optional[str] = Form(None)):
+    """Apple POSTs the callback (response_mode=form_post)."""
+    if not _provider_configured("apple"):
+        raise _provider_not_configured()
+    state_payload = _validate_csrf(request, state)
+    return_to = state_payload.get("return_to", "/")
+
+    # Verify the inline id_token first
+    audience = os.getenv("APPLE_CLIENT_ID")
+    payload = await verify_apple_id_token(id_token, audience)
+
+    # Exchange code at Apple's token endpoint
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.post("https://appleid.apple.com/auth/token", data={
+            "code": code,
+            "client_id": audience,
+            "client_secret": _apple_client_secret_jwt(),
+            "redirect_uri": _apple_redirect_uri(),
+            "grant_type": "authorization_code",
+        })
+    if r.status_code >= 400:
+        logger.warning("apple_token_exchange_failed status=%d body=%r",
+                       r.status_code, r.text[:200])
+        raise HTTPException(status_code=400, detail={
+            "code": "provider_unavailable",
+            "message": "Apple rejected the authorization code.",
+        })
+    canonical_id_token = r.json().get("id_token")
+    if canonical_id_token:
+        payload = await verify_apple_id_token(canonical_id_token, audience)
+
+    # Capture name on first sign-in (Apple only sends it once)
+    name = None
+    if user:
+        try:
+            user_data = json.loads(user)
+            n = user_data.get("name", {})
+            parts = [n.get("firstName", ""), n.get("lastName", "")]
+            name = " ".join(p for p in parts if p).strip() or None
+        except (json.JSONDecodeError, AttributeError):
+            name = None
+
+    return _finalize_social_signin(
+        request,
+        provider="apple",
+        subject_id=payload["sub"],
+        email=payload["email"],
+        name=name,
+        return_to=return_to,
+    )
+
+
 # ── Complete-signup (shared between providers) ─────────────────────────
 
 
