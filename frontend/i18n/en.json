@@ -403,5 +403,12 @@
   "api_keys.revoked_toast": "API key revoked.",
   "api_keys.error.fetch": "Failed to load API keys.",
   "api_keys.error.create": "Failed to create key.",
-  "api_keys.error.revoke": "Failed to revoke."
+  "api_keys.error.revoke": "Failed to revoke.",
+
+  "auth.social.google": "Sign in with Google",
+  "auth.social.apple": "Sign in with Apple",
+  "auth.social.divider": "or",
+  "auth.social.complete_signup.title": "Welcome to Khanshoof!",
+  "auth.social.complete_signup.business_name": "Business name",
+  "auth.social.complete_signup.continue": "Continue"
 }

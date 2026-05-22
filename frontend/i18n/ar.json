@@ -403,5 +403,12 @@
   "api_keys.revoked_toast": "تم إلغاء المفتاح.",
   "api_keys.error.fetch": "تعذّر تحميل مفاتيح API.",
   "api_keys.error.create": "تعذّر إنشاء المفتاح.",
-  "api_keys.error.revoke": "تعذّر الإلغاء."
+  "api_keys.error.revoke": "تعذّر الإلغاء.",
+
+  "auth.social.google": "تسجيل الدخول باستخدام جوجل",
+  "auth.social.apple": "تسجيل الدخول باستخدام Apple",
+  "auth.social.divider": "أو",
+  "auth.social.complete_signup.title": "أهلاً بك في خانشوف!",
+  "auth.social.complete_signup.business_name": "اسم الشركة",
+  "auth.social.complete_signup.continue": "متابعة"
 }

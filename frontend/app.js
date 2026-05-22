@@ -1322,6 +1322,98 @@ function showAuthTab(which) {
 document.getElementById("auth-tab-login") .addEventListener("click", () => showAuthTab("login"));
 document.getElementById("auth-tab-signup").addEventListener("click", () => showAuthTab("signup"));
 
+/* ── Phase 2.5j: Social auth (Google + Apple) ───────────────── */
+function startSocialAuth(provider) {
+  const intent = document.getElementById("auth-tab-signup")
+                   .classList.contains("active") ? "signup" : "signin";
+  const returnTo = window.location.pathname + window.location.search;
+  const params = new URLSearchParams({ intent, return_to: returnTo });
+  window.location = `${API_BASE}/auth/${provider}/start?${params}`;
+}
+const googleBtn = document.getElementById("btn-social-google");
+const appleBtn  = document.getElementById("btn-social-apple");
+if (googleBtn) googleBtn.addEventListener("click", () => startSocialAuth("google"));
+if (appleBtn)  appleBtn.addEventListener("click",  () => startSocialAuth("apple"));
+
+function _escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    {"&": "&amp;", "<": "&lt;", ">": "&gt;",
+     '"': "&quot;", "'": "&#39;"}[c]
+  ));
+}
+
+function handleAuthBounce() {
+  const params = new URLSearchParams(window.location.search);
+  const token   = params.get("token");
+  const stash   = params.get("complete_signup");
+  const error   = params.get("error");
+  const returnTo      = params.get("return_to") || "/";
+  const suggestedName = params.get("suggested_name") || "";
+
+  if (error) {
+    alert("Sign-in cancelled or failed: " + error);
+    window.location = "/";
+    return;
+  }
+  if (token) {
+    localStorage.setItem(AUTH_STORAGE_KEY, token);
+    window.location = returnTo;
+    return;
+  }
+  if (stash) {
+    let provider = "google";
+    try {
+      const payload = JSON.parse(atob(stash.split(".")[1]));
+      provider = payload.provider || "google";
+    } catch (e) { /* fall through with default */ }
+
+    const html = `
+      <div class="modal-overlay" id="complete-signup-overlay">
+        <div class="modal-card">
+          <h2 data-i18n="auth.social.complete_signup.title">Welcome to Khanshoof!</h2>
+          <form id="complete-signup-form">
+            <label data-i18n="auth.social.complete_signup.business_name">Business name</label>
+            <input type="text" name="business_name" required
+                   value="${_escapeHtml(suggestedName)}" autofocus dir="auto" />
+            <button type="submit" class="btn-primary"
+                    data-i18n="auth.social.complete_signup.continue">Continue</button>
+          </form>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML("beforeend", html);
+    if (typeof Khan !== "undefined" && Khan.applyTranslations) {
+      Khan.applyTranslations(document.getElementById("complete-signup-overlay"));
+    }
+
+    document.getElementById("complete-signup-form")
+            .addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const businessName = e.target.business_name.value.trim();
+      if (!businessName) return;
+      const r = await fetch(`${API_BASE}/auth/${provider}/complete-signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stash_token: stash,
+                               business_name: businessName }),
+      });
+      const body = await r.json();
+      if (r.ok) {
+        localStorage.setItem(AUTH_STORAGE_KEY, body.token);
+        window.location = "/";
+      } else {
+        const msg = (body.detail && body.detail.message)
+                    || "Failed to complete signup";
+        alert(msg);
+      }
+    });
+  }
+}
+
+if (window.location.pathname === "/auth-bounce") {
+  handleAuthBounce();
+}
+
 /* ── Signup (3-step OTP wizard) ──────────────────────────────── */
 const signupState = { email: "", business_name: "", verification_token: "" };
 
