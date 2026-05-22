@@ -8,3 +8,5 @@ slowapi==0.1.9
 pypdfium2==4.30.0
 Pillow==11.2.1
 requests==2.32.3
+PyJWT[crypto]>=2.8,<3
+respx>=0.20
