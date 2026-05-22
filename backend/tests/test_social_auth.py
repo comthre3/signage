@@ -317,3 +317,215 @@ def test_verify_google_id_token_rejects_unverified_email(google_env, respx_mock)
     detail = exc_info.value.detail
     code = detail.get("code") if isinstance(detail, dict) else None
     assert code == "email_not_verified"
+
+
+# ── Google flow ───────────────────────────────────────────────────────
+
+
+def test_google_start_redirects_with_state_cookie(client, google_env):
+    r = client.get("/auth/google/start",
+                   params={"intent": "signup", "return_to": "/"},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    assert "auth_csrf" in r.headers.get("set-cookie", "")
+    loc = r.headers["location"]
+    assert loc.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert "client_id=test-google-client-id" in loc
+    assert "state=" in loc
+    assert "scope=openid" in loc and "email" in loc
+
+
+def test_google_callback_new_user_returns_stash(client, google_env,
+                                                respx_mock):
+    """No existing user with this email → stash token in /auth-bounce URL."""
+    import respx, uuid
+    sub = f"g-newuser-{uuid.uuid4().hex[:8]}"
+    email = f"newuser-{uuid.uuid4().hex[:8]}@example.com"
+    id_token = _sign_google_id_token(google_env, sub=sub, email=email,
+                                     name="New User")
+
+    # Mock Google's JWKS + token endpoints
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token,
+                                                    "access_token": "x"})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    # First /start to get the state cookie
+    r = client.get("/auth/google/start",
+                   params={"intent": "signup", "return_to": "/"},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    # Extract the state from the redirect URL
+    import urllib.parse
+    parsed = urllib.parse.urlparse(r.headers["location"])
+    state = dict(urllib.parse.parse_qsl(parsed.query))["state"]
+
+    # Callback
+    r = client.get("/auth/google/callback",
+                   params={"code": "any-code", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = r.headers["location"]
+    assert "/auth-bounce" in loc
+    assert "complete_signup=" in loc
+
+
+def test_google_callback_existing_user_auto_links(client, google_env,
+                                                  respx_mock):
+    """Existing user with matching email → identity created, redirected with token."""
+    import respx, uuid
+
+    # Pre-create a user with a password
+    sfx = uuid.uuid4().hex[:8]
+    email = f"existing-{sfx}@example.com"
+    r = client.post("/auth/signup/request",
+                    json={"business_name": f"ExBiz {sfx}", "email": email})
+    otp = r.json()["dev_otp"]
+    r = client.post("/auth/signup/verify",
+                    json={"email": email, "otp": otp})
+    vt = r.json()["verification_token"]
+    r = client.post("/auth/signup/complete",
+                    json={"verification_token": vt,
+                          "password": "Khanshoof2026Test"})
+    assert r.status_code == 200
+
+    # Now sign in via Google with the same email
+    sub = f"g-existing-{sfx}"
+    id_token = _sign_google_id_token(google_env, sub=sub, email=email)
+
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    r = client.get("/auth/google/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    import urllib.parse
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+
+    r = client.get("/auth/google/callback",
+                   params={"code": "any", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = r.headers["location"]
+    assert "/auth-bounce" in loc
+    assert "token=" in loc
+    # Identity row must exist
+    from db import query_one
+    identity = query_one(
+        "SELECT * FROM auth_identities "
+        "WHERE provider = 'google' AND subject_id = ?", (sub,)
+    )
+    assert identity is not None
+    assert identity["email_at_link"] == email
+
+
+def test_google_callback_existing_identity_logs_in(client, google_env,
+                                                   respx_mock):
+    """Existing auth_identities row → log in directly, update last_used_at."""
+    import respx, uuid
+    sfx = uuid.uuid4().hex[:8]
+
+    # Build a user + pre-existing identity
+    from db import query_one, execute
+    execute(
+        "INSERT INTO organizations (name, slug, plan, screen_limit, "
+        "subscription_status, locale, created_at) "
+        "VALUES (?, ?, 'starter', 5, 'trialing', 'en', now())",
+        (f"PreExist {sfx}", f"preexist-{sfx}"),
+    )
+    org = query_one(
+        "SELECT id FROM organizations WHERE slug = ?", (f"preexist-{sfx}",)
+    )
+    execute(
+        "INSERT INTO users (organization_id, username, password_hash, "
+        "is_admin, role, created_at) "
+        "VALUES (?, ?, NULL, 1, 'admin', now())",
+        (org["id"], f"preexist-{sfx}@example.com"),
+    )
+    user = query_one(
+        "SELECT id FROM users WHERE username = ?",
+        (f"preexist-{sfx}@example.com",),
+    )
+    sub = f"g-preexist-{sfx}"
+    execute(
+        "INSERT INTO auth_identities (user_id, provider, subject_id, "
+        "email_at_link) VALUES (?, 'google', ?, ?)",
+        (user["id"], sub, f"preexist-{sfx}@example.com"),
+    )
+
+    # Sign in
+    id_token = _sign_google_id_token(google_env, sub=sub,
+                                     email=f"preexist-{sfx}@example.com")
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    r = client.get("/auth/google/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    import urllib.parse
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    r = client.get("/auth/google/callback",
+                   params={"code": "any", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    assert "token=" in r.headers["location"]
+
+    row = query_one(
+        "SELECT last_used_at FROM auth_identities "
+        "WHERE provider = 'google' AND subject_id = ?", (sub,)
+    )
+    assert row["last_used_at"] is not None
+
+
+def test_complete_signup_creates_org_user_identity(client, google_env):
+    """POST /auth/google/complete-signup with a valid stash creates everything."""
+    import uuid
+    from social_auth import _sign_stash
+    sfx = uuid.uuid4().hex[:8]
+    email = f"completer-{sfx}@example.com"
+    sub = f"g-complete-{sfx}"
+    stash = _sign_stash(provider="google", subject_id=sub, email=email,
+                        name="C Ompleter")
+
+    r = client.post("/auth/google/complete-signup", json={
+        "stash_token": stash,
+        "business_name": f"CompleterBiz {sfx}",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "token" in body
+    assert body["user"]["username"] == email
+    assert body["organization"]["name"] == f"CompleterBiz {sfx}"
+
+    from db import query_one
+    identity = query_one(
+        "SELECT * FROM auth_identities "
+        "WHERE provider = 'google' AND subject_id = ?", (sub,)
+    )
+    assert identity is not None

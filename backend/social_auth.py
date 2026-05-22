@@ -205,3 +205,374 @@ def verify_apple_id_token(id_token: str, audience: str) -> dict:
         audience=audience,
         issuer="https://appleid.apple.com",
     )
+
+
+# ── Endpoint mounting ──────────────────────────────────────────────────
+
+
+from fastapi import APIRouter, Request, Form, Query
+
+router = APIRouter()
+
+
+_STATE_COOKIE = "auth_csrf"
+_STATE_TTL = 300
+_STASH_TTL = 600
+
+
+def _provider_configured(provider: str) -> bool:
+    if provider == "google":
+        return bool(os.getenv("GOOGLE_CLIENT_ID")
+                    and os.getenv("GOOGLE_CLIENT_SECRET"))
+    if provider == "apple":
+        return bool(os.getenv("APPLE_CLIENT_ID")
+                    and os.getenv("APPLE_TEAM_ID")
+                    and os.getenv("APPLE_KEY_ID")
+                    and os.getenv("APPLE_PRIVATE_KEY_PATH"))
+    return False
+
+
+def _provider_not_configured() -> HTTPException:
+    return HTTPException(status_code=503, detail={
+        "code": "provider_not_configured",
+        "message": "This sign-in provider is not configured on the server.",
+    })
+
+
+def _google_redirect_uri() -> str:
+    return os.getenv("GOOGLE_REDIRECT_URI",
+                     f"{_api_base_url()}/auth/google/callback")
+
+
+def _apple_redirect_uri() -> str:
+    return os.getenv("APPLE_REDIRECT_URI",
+                     f"{_api_base_url()}/auth/apple/callback")
+
+
+def _build_google_authorize_url(state: str) -> str:
+    import urllib.parse
+    params = urllib.parse.urlencode({
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    })
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
+
+
+def _build_apple_authorize_url(state: str) -> str:
+    import urllib.parse
+    params = urllib.parse.urlencode({
+        "client_id": os.getenv("APPLE_CLIENT_ID"),
+        "redirect_uri": _apple_redirect_uri(),
+        "response_type": "code id_token",
+        "response_mode": "form_post",
+        "scope": "name email",
+        "state": state,
+    })
+    return f"https://appleid.apple.com/auth/authorize?{params}"
+
+
+@router.get("/auth/google/start")
+def google_start(intent: str = Query("signup"),
+                 return_to: str = Query("/")):
+    if not _provider_configured("google"):
+        raise _provider_not_configured()
+    state = _sign_state(provider="google", intent=intent,
+                        return_to=return_to, ttl_seconds=_STATE_TTL)
+    resp = RedirectResponse(_build_google_authorize_url(state),
+                            status_code=302)
+    resp.set_cookie(
+        _STATE_COOKIE, state,
+        httponly=True, samesite="lax", max_age=_STATE_TTL,
+        secure=_api_base_url().startswith("https://"),
+    )
+    return resp
+
+
+@router.get("/auth/apple/start")
+def apple_start(intent: str = Query("signup"),
+                return_to: str = Query("/")):
+    if not _provider_configured("apple"):
+        raise _provider_not_configured()
+    state = _sign_state(provider="apple", intent=intent,
+                        return_to=return_to, ttl_seconds=_STATE_TTL)
+    resp = RedirectResponse(_build_apple_authorize_url(state),
+                            status_code=302)
+    resp.set_cookie(
+        _STATE_COOKIE, state,
+        httponly=True, samesite="lax", max_age=_STATE_TTL,
+        secure=_api_base_url().startswith("https://"),
+    )
+    return resp
+
+
+def _validate_csrf(request: Request, state: str) -> dict:
+    cookie_state = request.cookies.get(_STATE_COOKIE)
+    if not cookie_state or cookie_state != state:
+        raise HTTPException(status_code=400, detail={
+            "code": "invalid_state",
+            "message": "CSRF state cookie missing or mismatched.",
+        })
+    try:
+        return _verify_state(state)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": "invalid_state",
+            "message": f"State token invalid: {exc}",
+        })
+
+
+def _issue_session(user_id: int) -> str:
+    """Mirror /auth/login's session-issue pattern."""
+    import uuid
+    from db import execute, utc_now_iso
+    token = uuid.uuid4().hex
+    now = utc_now_iso()
+    execute(
+        "INSERT INTO sessions (user_id, token, created_at, last_used) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, token, now, now),
+    )
+    return token
+
+
+def _finalize_social_signin(request: Request, provider: str,
+                            subject_id: str, email: str,
+                            name: Optional[str], return_to: str
+                            ) -> RedirectResponse:
+    """Decide between log-in (existing identity), auto-link, or stash."""
+    from db import query_one, execute
+    audit = _audit_or_noop()
+
+    email = email.lower().strip()
+    identity = query_one(
+        "SELECT id, user_id FROM auth_identities "
+        "WHERE provider = ? AND subject_id = ?",
+        (provider, subject_id),
+    )
+    if identity:
+        execute(
+            "UPDATE auth_identities SET last_used_at = now() WHERE id = ?",
+            (identity["id"],),
+        )
+        token = _issue_session(identity["user_id"])
+        audit(request, action="auth.social.signin",
+              actor={"id": identity["user_id"]},
+              details={"provider": provider})
+        return RedirectResponse(_bounce_with_token(token, return_to),
+                                status_code=302)
+
+    user = query_one("SELECT id FROM users WHERE username = ?", (email,))
+    if user:
+        execute(
+            "INSERT INTO auth_identities (user_id, provider, subject_id, "
+            "email_at_link, name_at_link, last_used_at) "
+            "VALUES (?, ?, ?, ?, ?, now())",
+            (user["id"], provider, subject_id, email, name),
+        )
+        token = _issue_session(user["id"])
+        audit(request, action="auth.social.linked",
+              actor={"id": user["id"]},
+              details={"provider": provider})
+        return RedirectResponse(_bounce_with_token(token, return_to),
+                                status_code=302)
+
+    stash = _sign_stash(provider=provider, subject_id=subject_id,
+                        email=email, name=name, ttl_seconds=_STASH_TTL)
+    return RedirectResponse(
+        _bounce_with_stash(stash, suggested_name=name or ""),
+        status_code=302,
+    )
+
+
+def _audit_or_noop():
+    """Return main.audit or a no-op if main can't be imported (e.g., tests)."""
+    try:
+        from main import audit
+        return audit
+    except Exception:
+        def _noop(*a, **kw): pass
+        return _noop
+
+
+def _bounce_with_token(token: str, return_to: str) -> str:
+    import urllib.parse
+    qs = urllib.parse.urlencode({"token": token, "return_to": return_to})
+    return f"{_app_url()}/auth-bounce?{qs}"
+
+
+def _bounce_with_stash(stash: str, suggested_name: str) -> str:
+    import urllib.parse
+    qs = urllib.parse.urlencode({
+        "complete_signup": stash,
+        "suggested_name": suggested_name,
+    })
+    return f"{_app_url()}/auth-bounce?{qs}"
+
+
+@router.get("/auth/google/callback")
+async def google_callback(request: Request,
+                          code: str = Query(...),
+                          state: str = Query(...)):
+    if not _provider_configured("google"):
+        raise _provider_not_configured()
+    state_payload = _validate_csrf(request, state)
+    return_to = state_payload.get("return_to", "/")
+
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+            "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+            "redirect_uri": _google_redirect_uri(),
+            "grant_type": "authorization_code",
+        })
+    if r.status_code >= 400:
+        logger.warning("google_token_exchange_failed status=%d body=%r",
+                       r.status_code, r.text[:200])
+        raise HTTPException(status_code=400, detail={
+            "code": "provider_unavailable",
+            "message": "Google rejected the authorization code.",
+        })
+    id_token = r.json().get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=400, detail={
+            "code": "no_id_token",
+            "message": "Google did not return an id_token.",
+        })
+
+    payload = verify_google_id_token(id_token, os.getenv("GOOGLE_CLIENT_ID"))
+    return _finalize_social_signin(
+        request,
+        provider="google",
+        subject_id=payload["sub"],
+        email=payload["email"],
+        name=payload.get("name"),
+        return_to=return_to,
+    )
+
+
+# ── Complete-signup (shared between providers) ─────────────────────────
+
+
+from pydantic import BaseModel, Field
+
+
+class CompleteSocialSignup(BaseModel):
+    stash_token: str
+    business_name: str = Field(..., min_length=1, max_length=200)
+
+
+def _slug(name: str) -> str:
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "org"
+
+
+def _unique_slug(base: str) -> str:
+    """Append -N until the slug is unused."""
+    from db import query_one
+    slug = base
+    n = 1
+    while query_one("SELECT id FROM organizations WHERE slug = ?", (slug,)):
+        n += 1
+        slug = f"{base}-{n}"
+    return slug
+
+
+@router.post("/auth/{provider}/complete-signup")
+def complete_social_signup(provider: str, payload: CompleteSocialSignup,
+                           request: Request):
+    if provider not in ("google", "apple"):
+        raise HTTPException(status_code=404, detail={
+            "code": "unknown_provider",
+            "message": f"Unknown provider: {provider}",
+        })
+    if not _provider_configured(provider):
+        raise _provider_not_configured()
+    try:
+        stash = _verify_stash(payload.stash_token)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=400, detail={
+            "code": "stash_invalid",
+            "message": f"Stash token invalid or expired: {exc}",
+        })
+    if stash["provider"] != provider:
+        raise HTTPException(status_code=400, detail={
+            "code": "stash_provider_mismatch",
+            "message": "Stash token was issued for a different provider.",
+        })
+
+    from db import query_one, execute, utc_now_iso
+    email = stash["email"]
+    subject_id = stash["subject_id"]
+    name = stash.get("name")
+
+    if query_one("SELECT id FROM users WHERE username = ?", (email,)):
+        raise HTTPException(status_code=409, detail={
+            "code": "email_taken",
+            "message": "An account with this email already exists.",
+        })
+    if query_one(
+        "SELECT id FROM auth_identities WHERE provider = ? AND subject_id = ?",
+        (provider, subject_id),
+    ):
+        raise HTTPException(status_code=409, detail={
+            "code": "identity_taken",
+            "message": "This identity is already linked to another account.",
+        })
+
+    slug = _unique_slug(_slug(payload.business_name))
+    execute(
+        "INSERT INTO organizations (name, slug, plan, screen_limit, "
+        "subscription_status, locale, created_at) "
+        "VALUES (?, ?, 'starter', 5, 'trialing', 'en', now())",
+        (payload.business_name, slug),
+    )
+    org = query_one("SELECT * FROM organizations WHERE slug = ?", (slug,))
+    execute(
+        "INSERT INTO users (organization_id, username, password_hash, "
+        "is_admin, role, created_at) "
+        "VALUES (?, ?, NULL, 1, 'admin', ?)",
+        (org["id"], email, utc_now_iso()),
+    )
+    user = query_one("SELECT * FROM users WHERE username = ?", (email,))
+    execute(
+        "INSERT INTO auth_identities (user_id, provider, subject_id, "
+        "email_at_link, name_at_link, last_used_at) "
+        "VALUES (?, ?, ?, ?, ?, now())",
+        (user["id"], provider, subject_id, email, name),
+    )
+
+    token = _issue_session(user["id"])
+    audit = _audit_or_noop()
+    audit(request, action="auth.social.signup",
+          actor={"id": user["id"]},
+          details={"provider": provider,
+                   "business_name": payload.business_name})
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "is_admin": bool(user["is_admin"]),
+        },
+        "organization": {
+            "id": org["id"],
+            "name": org["name"],
+            "slug": org["slug"],
+            "plan": org["plan"],
+            "screen_limit": org["screen_limit"],
+            "subscription_status": org["subscription_status"],
+        },
+    }
+
+
+def attach_social_auth(app) -> None:
+    """Mount the social auth router on the main FastAPI app."""
+    app.include_router(router)
