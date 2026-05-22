@@ -285,6 +285,7 @@ def test_apple_client_secret_jwt(apple_env):
 
 def test_verify_google_id_token_happy_path(google_env, respx_mock):
     """Valid Google ID token verifies and returns the payload."""
+    import asyncio
     import respx
     respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
         return_value=respx.MockResponse(200, json=google_env["jwks"])
@@ -293,7 +294,7 @@ def test_verify_google_id_token_happy_path(google_env, respx_mock):
                                      email="alice@example.com")
     from social_auth import verify_google_id_token, _clear_jwks_cache
     _clear_jwks_cache()
-    payload = verify_google_id_token(id_token, "test-google-client-id")
+    payload = asyncio.run(verify_google_id_token(id_token, "test-google-client-id"))
     assert payload["sub"] == "g-123"
     assert payload["email"] == "alice@example.com"
     assert payload["email_verified"] is True
@@ -301,6 +302,7 @@ def test_verify_google_id_token_happy_path(google_env, respx_mock):
 
 def test_verify_google_id_token_rejects_unverified_email(google_env, respx_mock):
     """email_verified=False is rejected with 400 email_not_verified."""
+    import asyncio
     import respx
     respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
         return_value=respx.MockResponse(200, json=google_env["jwks"])
@@ -312,7 +314,7 @@ def test_verify_google_id_token_rejects_unverified_email(google_env, respx_mock)
     from fastapi import HTTPException
     _clear_jwks_cache()
     with pytest.raises(HTTPException) as exc_info:
-        verify_google_id_token(id_token, "test-google-client-id")
+        asyncio.run(verify_google_id_token(id_token, "test-google-client-id"))
     assert exc_info.value.status_code == 400
     detail = exc_info.value.detail
     code = detail.get("code") if isinstance(detail, dict) else None
@@ -529,3 +531,37 @@ def test_complete_signup_creates_org_user_identity(client, google_env):
         "WHERE provider = 'google' AND subject_id = ?", (sub,)
     )
     assert identity is not None
+
+
+def test_complete_signup_returns_trial_fields(client, google_env):
+    """complete_signup response must include trial_ends_at + can_write etc."""
+    import uuid
+    from social_auth import _sign_stash
+    sfx = uuid.uuid4().hex[:8]
+    stash = _sign_stash(provider="google",
+                        subject_id=f"g-trial-{sfx}",
+                        email=f"trial-{sfx}@example.com",
+                        name="Trial Test")
+    r = client.post("/auth/google/complete-signup", json={
+        "stash_token": stash,
+        "business_name": f"TrialBiz {sfx}",
+    })
+    assert r.status_code == 200, r.text
+    org = r.json()["organization"]
+    # Must match /auth/signup/complete shape:
+    for key in ("trial_ends_at", "locale", "state", "can_write",
+                "days_remaining", "expires_at"):
+        assert key in org, f"Missing {key} in response.organization"
+    assert org["trial_ends_at"] is not None
+    assert org["can_write"] is True  # trial should be active
+
+
+def test_google_callback_user_cancels_redirects_gracefully(client, google_env):
+    """Google sends ?error=access_denied when user cancels → 302 to auth-bounce."""
+    r = client.get("/auth/google/callback",
+                   params={"error": "access_denied"},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = r.headers["location"]
+    assert "/auth-bounce" in loc
+    assert "error=access_denied" in loc

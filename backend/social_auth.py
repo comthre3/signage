@@ -53,8 +53,11 @@ def _sign_state(provider: str, intent: str, return_to: str,
 
 def _verify_state(state: str) -> dict:
     """Verify and decode a state token. Raises on invalid/expired."""
-    return jwt.decode(state, _secret_key(), algorithms=["HS256"],
-                      options={"require": ["exp", "iat", "kind"]})
+    payload = jwt.decode(state, _secret_key(), algorithms=["HS256"],
+                         options={"require": ["exp", "iat", "kind"]})
+    if payload.get("kind") != "social_state":
+        raise jwt.InvalidTokenError("Wrong state token kind")
+    return payload
 
 
 # ── Signed stash for "complete signup" handoff ─────────────────────────
@@ -143,22 +146,22 @@ def _clear_jwks_cache() -> None:
     _apple_secret_cache["exp"] = 0
 
 
-def _fetch_jwks(url: str) -> dict:
+async def _fetch_jwks(url: str) -> dict:
     now = time.time()
     cached = _jwks_cache.get(url)
     if cached and cached["fetched_at"] + _JWKS_TTL_SECONDS > now:
         return cached["jwks"]
-    with httpx.Client(timeout=10.0) as c:
-        r = c.get(url)
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.get(url)
         r.raise_for_status()
         jwks = r.json()
     _jwks_cache[url] = {"jwks": jwks, "fetched_at": now}
     return jwks
 
 
-def _verify_id_token(id_token: str, *, jwks_url: str, algorithm: str,
-                     audience: str, issuer: list[str] | str) -> dict:
-    jwks = _fetch_jwks(jwks_url)
+async def _verify_id_token(id_token: str, *, jwks_url: str, algorithm: str,
+                            audience: str, issuer: list[str] | str) -> dict:
+    jwks = await _fetch_jwks(jwks_url)
     header = jwt.get_unverified_header(id_token)
     key = next((k for k in jwks["keys"] if k.get("kid") == header.get("kid")),
                None)
@@ -180,8 +183,8 @@ def _verify_id_token(id_token: str, *, jwks_url: str, algorithm: str,
     return payload
 
 
-def verify_google_id_token(id_token: str, audience: str) -> dict:
-    payload = _verify_id_token(
+async def verify_google_id_token(id_token: str, audience: str) -> dict:
+    payload = await _verify_id_token(
         id_token,
         jwks_url="https://www.googleapis.com/oauth2/v3/certs",
         algorithm="RS256",
@@ -196,9 +199,9 @@ def verify_google_id_token(id_token: str, audience: str) -> dict:
     return payload
 
 
-def verify_apple_id_token(id_token: str, audience: str) -> dict:
+async def verify_apple_id_token(id_token: str, audience: str) -> dict:
     # Apple always sets email_verified=true (they own the email)
-    return _verify_id_token(
+    return await _verify_id_token(
         id_token,
         jwks_url="https://appleid.apple.com/auth/keys",
         algorithm="ES256",
@@ -416,10 +419,21 @@ def _bounce_with_stash(stash: str, suggested_name: str) -> str:
 
 @router.get("/auth/google/callback")
 async def google_callback(request: Request,
-                          code: str = Query(...),
-                          state: str = Query(...)):
+                          code: Optional[str] = Query(None),
+                          state: Optional[str] = Query(None),
+                          error: Optional[str] = Query(None)):
     if not _provider_configured("google"):
         raise _provider_not_configured()
+    if error:
+        import urllib.parse
+        qs = urllib.parse.urlencode({"error": error})
+        return RedirectResponse(f"{_app_url()}/auth-bounce?{qs}",
+                                status_code=302)
+    if not code or not state:
+        raise HTTPException(status_code=400, detail={
+            "code": "missing_params",
+            "message": "Missing code or state query parameter.",
+        })
     state_payload = _validate_csrf(request, state)
     return_to = state_payload.get("return_to", "/")
 
@@ -445,7 +459,7 @@ async def google_callback(request: Request,
             "message": "Google did not return an id_token.",
         })
 
-    payload = verify_google_id_token(id_token, os.getenv("GOOGLE_CLIENT_ID"))
+    payload = await verify_google_id_token(id_token, os.getenv("GOOGLE_CLIENT_ID"))
     return _finalize_social_signin(
         request,
         provider="google",
@@ -507,6 +521,7 @@ def complete_social_signup(provider: str, payload: CompleteSocialSignup,
             "message": "Stash token was issued for a different provider.",
         })
 
+    from datetime import datetime, timedelta, timezone
     from db import query_one, execute, utc_now_iso
     email = stash["email"]
     subject_id = stash["subject_id"]
@@ -527,11 +542,12 @@ def complete_social_signup(provider: str, payload: CompleteSocialSignup,
         })
 
     slug = _unique_slug(_slug(payload.business_name))
+    trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
     execute(
         "INSERT INTO organizations (name, slug, plan, screen_limit, "
-        "subscription_status, locale, created_at) "
-        "VALUES (?, ?, 'starter', 5, 'trialing', 'en', now())",
-        (payload.business_name, slug),
+        "subscription_status, trial_ends_at, locale, created_at) "
+        "VALUES (?, ?, 'starter', 5, 'trialing', ?, 'en', now())",
+        (payload.business_name, slug, trial_ends_at),
     )
     org = query_one("SELECT * FROM organizations WHERE slug = ?", (slug,))
     execute(
@@ -547,6 +563,11 @@ def complete_social_signup(provider: str, payload: CompleteSocialSignup,
         "VALUES (?, ?, ?, ?, ?, now())",
         (user["id"], provider, subject_id, email, name),
     )
+
+    # Re-SELECT org to get the just-inserted trial_ends_at from the DB
+    org = query_one("SELECT * FROM organizations WHERE id = ?", (org["id"],))
+    from main import subscription_state
+    sub_state = subscription_state(org)
 
     token = _issue_session(user["id"])
     audit = _audit_or_noop()
@@ -569,6 +590,13 @@ def complete_social_signup(provider: str, payload: CompleteSocialSignup,
             "plan": org["plan"],
             "screen_limit": org["screen_limit"],
             "subscription_status": org["subscription_status"],
+            "trial_ends_at": trial_ends_at,
+            "locale": org.get("locale", "en"),
+            # Phase 2.5f derived fields:
+            "state": sub_state["state"],
+            "can_write": sub_state["can_write"],
+            "days_remaining": sub_state["days_remaining"],
+            "expires_at": sub_state["expires_at"],
         },
     }
 
