@@ -522,3 +522,26 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_api_keys_prefix "
             "ON api_keys (key_prefix)"
         )
+
+        # ── Phase 2.5j: Social auth (Google + Apple) ────────────────────
+        cursor.execute(
+            "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS auth_identities (
+              id             SERIAL PRIMARY KEY,
+              user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              provider       TEXT NOT NULL CHECK (provider IN ('google', 'apple')),
+              subject_id     TEXT NOT NULL,
+              email_at_link  TEXT NOT NULL,
+              name_at_link   TEXT,
+              created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+              last_used_at   TIMESTAMPTZ,
+              UNIQUE (provider, subject_id)
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_identities_user "
+            "ON auth_identities (user_id)"
+        )
