@@ -2443,3 +2443,83 @@ code, kbd, samp, pre,
   font-weight: normal;
 }
 .muted { color: var(--muted, #8b6f5e); }
+
+/* Phase 2.5j — Social auth (Google + Apple) */
+.social-auth-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-block: 8px 16px;
+}
+.btn-social {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  background: #fff;
+  color: #3c4043;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+}
+.btn-social:hover { filter: brightness(0.97); }
+.btn-social:focus-visible { outline: 2px solid var(--accent, #6b8e6b); outline-offset: 2px; }
+.btn-apple { background: #000; color: #fff; border-color: #000; }
+.social-icon { width: 18px; height: 18px; flex-shrink: 0; }
+.social-auth-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  color: var(--muted, #999);
+  font-size: 13px;
+  margin-block: 4px;
+}
+.social-auth-divider::before,
+.social-auth-divider::after {
+  content: "";
+  flex: 1;
+  border-block-start: 1px solid var(--border, #eee);
+  margin-inline: 8px;
+}
+
+/* Complete-signup modal overlay */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+.modal-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+}
+.modal-card h2 { margin: 0 0 16px; }
+.modal-card form { display: flex; flex-direction: column; gap: 12px; }
+.modal-card label { font-size: 13px; color: var(--muted, #8b6f5e); }
+.modal-card input {
+  padding: 10px 12px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  font: inherit;
+}
+.modal-card .btn-primary {
+  padding: 10px 16px;
+  background: var(--accent, #6b8e6b);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
