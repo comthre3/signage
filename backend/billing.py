@@ -42,6 +42,8 @@ def create_knet_request(
         "successUrl":  success_url,
         "errorUrl":    error_url,
     }
-    res = httpx.post(NIUPAY_URL, json=payload, timeout=15.0)
+    # NiuPay expects application/x-www-form-urlencoded, NOT application/json.
+    # Sending JSON returns {"status": false, "message": "The apikey field is required."}
+    res = httpx.post(NIUPAY_URL, data=payload, timeout=15.0)
     res.raise_for_status()
     return res.json()
