@@ -279,6 +279,16 @@ def _build_apple_authorize_url(state: str) -> str:
     return f"https://appleid.apple.com/auth/authorize?{params}"
 
 
+@router.get("/auth/providers")
+def auth_providers() -> dict:
+    """Report which social-auth providers have env vars configured.
+    Frontend uses this to hide buttons for disabled providers."""
+    return {
+        "google": _provider_configured("google"),
+        "apple":  _provider_configured("apple"),
+    }
+
+
 @router.get("/auth/google/start")
 def google_start(intent: str = Query("signup"),
                  return_to: str = Query("/")):

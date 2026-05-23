@@ -1335,6 +1335,20 @@ const appleBtn  = document.getElementById("btn-social-apple");
 if (googleBtn) googleBtn.addEventListener("click", () => startSocialAuth("google"));
 if (appleBtn)  appleBtn.addEventListener("click",  () => startSocialAuth("apple"));
 
+// Hide buttons for providers that aren't configured on the backend.
+// If /auth/providers itself 404s (e.g., older backend), keep both visible.
+fetch(`${API_BASE}/auth/providers`)
+  .then((r) => r.ok ? r.json() : null)
+  .then((cfg) => {
+    if (!cfg) return;
+    if (!cfg.google && googleBtn) googleBtn.classList.add("hidden");
+    if (!cfg.apple  && appleBtn)  appleBtn.classList.add("hidden");
+    // Hide the divider too if no providers are configured at all
+    const wrap = document.getElementById("social-auth-buttons");
+    if (wrap && !cfg.google && !cfg.apple) wrap.classList.add("hidden");
+  })
+  .catch(() => { /* network noise; leave buttons visible */ });
+
 function _escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => (
     {"&": "&amp;", "<": "&lt;", ">": "&gt;",
