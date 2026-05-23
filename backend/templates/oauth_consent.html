@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Authorize {{ client_name }}</title>
+    <link rel="stylesheet" href="https://app.khanshoof.com/oauth-consent.css">
+  </head>
+  <body class="oauth-page">
+    <main class="oauth-card">
+      <h1>Authorize <strong>{{ client_name }}</strong>?</h1>
+      <p>
+        <strong>{{ client_name }}</strong> is requesting access to your Khanshoof organization
+        <strong>{{ organization_name }}</strong> as <strong>{{ user_email }}</strong>.
+      </p>
+
+      <form method="POST" action="/oauth/authorize/decision">
+        <input type="hidden" name="request_id" value="{{ request_id }}">
+
+        <fieldset class="scope-choice">
+          <legend>Choose access level:</legend>
+          <label>
+            <input type="radio" name="scope" value="api:read"
+                   {% if requested_scope == 'api:read' %}checked{% endif %}>
+            <strong>Read only</strong> — browse playlists, screens, schedules. No changes.
+          </label>
+          <label>
+            <input type="radio" name="scope" value="api:rw"
+                   {% if requested_scope == 'api:rw' %}checked{% endif %}>
+            <strong>Read + write</strong> — full content management.
+          </label>
+        </fieldset>
+
+        <div class="actions">
+          <button type="submit" name="decision" value="deny"  class="btn">Deny</button>
+          <button type="submit" name="decision" value="allow" class="btn btn-primary">Allow</button>
+        </div>
+      </form>
+
+      <p class="muted">
+        You can revoke this access anytime from the Khanshoof dashboard.
+      </p>
+    </main>
+  </body>
+</html>
