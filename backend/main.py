@@ -3940,7 +3940,8 @@ def billing_checkout(
     payment_id   = resp.get("paymentID")
     if not resp.get("status") or not payment_link:
         execute("UPDATE payments SET status='failed', niupay_result=? WHERE trackid=?",
-                ("niupay_bad_response", trackid))
+                (f"niupay_bad_response: {resp.get('message') or str(resp)[:200]}",
+                 trackid))
         raise HTTPException(status_code=502, detail="Payment gateway rejected the request")
 
     execute(
