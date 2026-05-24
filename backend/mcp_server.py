@@ -166,7 +166,10 @@ def attach_mcp(app) -> None:
         "khanshoof",
         instructions=(
             "Khanshoof signage MCP server. Use these tools to list, create, "
-            "update, and delete playlists, schedules, screens, walls, and media."
+            "update, and delete playlists, schedules, screens, walls, and media. "
+            "For recipes (images→playlist, website→menu, dayparting) and v1 "
+            "limitations, fetch https://app.khanshoof.com/AGENTS.md before "
+            "tackling anything non-trivial."
         ),
         stateless_http=True,
         json_response=True,
