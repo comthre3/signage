@@ -1,0 +1,30 @@
+# Khanshoof
+
+> Khanshoof is a multi-tenant digital signage SaaS built for the Kuwait and GCC market. Businesses manage TVs, kiosks, and video walls across multiple locations from a single dashboard, with payment in KWD via KNET, bilingual English/Arabic UI with full RTL support, and agent-friendly integration via OAuth 2.1, REST API, and MCP for Claude / Cursor / Zed.
+
+The product is aimed at restaurants, retail, offices, and showrooms that need centralized control of display content — playlists of images and videos, dayparting (different content at different times), multi-screen video walls, and per-screen access controls for staff. Pricing is a ladder of monthly plans (Starter, Growth, Pro, Enterprise) billed via KNET, with a 5-day free trial that requires no credit card. Customers can also drive everything programmatically: API keys for scripts, OAuth 2.1 + PKCE for SaaS integrations, and an MCP server so AI assistants like Claude Desktop, Cursor, and Zed can be granted scoped access and become content operators on the customer's behalf.
+
+## Product
+
+- [Marketing site](https://khanshoof.com): Public-facing product overview, features, pricing
+- [Customer dashboard](https://app.khanshoof.com): Where signed-up customers manage their content
+- [Screen pairing kiosk](https://player.khanshoof.com): URL physical TVs and kiosks load to enter their pair-code
+
+## Documentation
+
+- [Agent integration guide](https://app.khanshoof.com/AGENTS.md): Practical recipes for AI agents — images-to-playlist, website-to-menu, dayparting — across MCP, API key, and OAuth paths
+- [HTTP API reference](https://app.khanshoof.com/api-docs.html): REST endpoints, scopes (api:read / api:rw), rate limits, error codes
+- [OAuth 2.1 discovery](https://api.khanshoof.com/.well-known/oauth-authorization-server): RFC 8414 metadata — authorization, token, revocation, dynamic client registration endpoints
+- [OAuth protected-resource metadata](https://api.khanshoof.com/.well-known/oauth-protected-resource): RFC 9728 resource metadata
+- [MCP server](https://api.khanshoof.com/mcp): Streamable HTTP MCP endpoint exposing 23 tools for read + content management across playlists, schedules, screens, walls, and media
+
+## Integrations
+
+- [Claude Desktop config](https://app.khanshoof.com/AGENTS.md#mcp-recommended-for-ai-assistants): MCP server URL + transport for AI assistant clients
+- [Sign in with Google](https://app.khanshoof.com): Available on the auth modal (also works for signup)
+
+## Optional
+
+- [Privacy policy](https://khanshoof.com/privacy): Data handling, GDPR-like protections, Kuwait-specific notes
+- [Terms of service](https://khanshoof.com/terms): Customer agreement
+- [Support](mailto:support@khanshoof.com): Email for billing, technical, account questions

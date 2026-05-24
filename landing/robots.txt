@@ -1,0 +1,23 @@
+# Khanshoof — robots policy
+# Marketing site is fully crawlable; LLM-discoverability via /llms.txt
+
+User-agent: *
+Allow: /
+
+# Common AI/LLM crawlers — explicitly allowed.
+# Remove these blocks (or set Disallow: /) if you ever want to opt out.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+# Canonical home for the LLM-discoverability summary
+# (linked here as a non-standard hint; AI clients may also fetch /llms.txt directly)
+# See: https://llmstxt.org
