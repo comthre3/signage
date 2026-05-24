@@ -21,3 +21,5 @@ Allow: /
 # Canonical home for the LLM-discoverability summary
 # (linked here as a non-standard hint; AI clients may also fetch /llms.txt directly)
 # See: https://llmstxt.org
+
+Sitemap: https://khanshoof.com/sitemap.xml
