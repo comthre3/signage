@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Khanshoof — UI Redesign Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<style>
+/* ═══════════════ Design tokens ═══════════════ */
+:root {
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+
+  /* brand */
+  --accent:        #E8794A;
+  --accent-strong: #D96835;
+  --accent-soft:   rgba(232, 121, 74, 0.12);
+
+  --green:  #2FB344;
+  --amber:  #E8A33D;
+  --red:    #E5484D;
+
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px;
+  --sidebar-w: 232px;
+  --t: 150ms cubic-bezier(.3,.7,.3,1);
+}
+[dir="rtl"] { --font: 'IBM Plex Sans Arabic', 'Inter', system-ui, sans-serif; }
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:          #0C0E12;
+  --bg-sidebar:  #0F1218;
+  --surface:     #14171E;
+  --surface-2:   #1A1E27;
+  --border:      rgba(255,255,255,0.07);
+  --border-2:    rgba(255,255,255,0.12);
+  --text:        #E7EAF0;
+  --text-2:      #9BA3B2;
+  --text-3:      #626B7B;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.3);
+  --shadow-pop:  0 8px 32px rgba(0,0,0,.5);
+  --thumb-a: #1E2430; --thumb-b: #262E3E;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --bg:          #F7F8FA;
+  --bg-sidebar:  #FFFFFF;
+  --surface:     #FFFFFF;
+  --surface-2:   #F2F3F6;
+  --border:      #E6E8EC;
+  --border-2:    #D5D8DF;
+  --text:        #16181D;
+  --text-2:      #5C6470;
+  --text-3:      #9AA1AC;
+  --shadow-card: 0 1px 2px rgba(16,18,23,.05);
+  --shadow-pop:  0 12px 40px rgba(16,18,23,.14);
+  --thumb-a: #E9ECF1; --thumb-b: #DDE2EA;
+}
+
+/* ═══════════════ Base ═══════════════ */
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+html { height:100%; }
+body {
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  min-height: 100%;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+}
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+::selection { background: var(--accent-soft); }
+
+/* ═══════════════ Sidebar ═══════════════ */
+.sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+  border-inline-end: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  position: sticky; top: 0; height: 100vh;
+}
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 18px 16px 14px;
+}
+.brand-face {
+  width: 34px; height: 30px; object-fit: cover; object-position: center 38%;
+  transform: scale(1.25);
+  image-rendering: pixelated;
+  transition: transform var(--t);
+}
+.brand:hover .brand-face { transform: scale(1.25) rotate(-4deg); }
+.brand-name { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
+.brand-env {
+  margin-inline-start: auto;
+  font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent);
+  padding: 2px 7px; border-radius: 99px;
+}
+
+.nav { flex: 1; overflow-y: auto; padding: 4px 8px 8px; }
+.nav-group { margin-top: 14px; }
+.nav-group-label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-3);
+  padding: 0 10px 5px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-weight: 480;
+  transition: background var(--t), color var(--t);
+  text-align: start;
+}
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 570;
+}
+.nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .85; }
+.nav-badge {
+  margin-inline-start: auto;
+  font-size: 10.5px; font-weight: 600;
+  background: var(--surface-2); color: var(--text-2);
+  border: 1px solid var(--border);
+  padding: 0 6px; border-radius: 99px; line-height: 17px;
+}
+.nav-item.active .nav-badge { background: transparent; border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent); }
+
+.sidebar-foot {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex; align-items: center; gap: 10px;
+}
+.avatar {
+  width: 28px; height: 28px; border-radius: 99px;
+  background: linear-gradient(135deg, #7C8AF0, #5A66D6);
+  display: grid; place-items: center;
+  color: #fff; font-size: 11px; font-weight: 650;
+}
+.foot-meta { line-height: 1.25; min-width: 0; }
+.foot-name { font-size: 12.5px; font-weight: 570; }
+.foot-org  { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ═══════════════ Main column ═══════════════ */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  height: 52px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  backdrop-filter: blur(10px);
+  position: sticky; top: 0; z-index: 30;
+}
+.search {
+  display: flex; align-items: center; gap: 8px;
+  width: 300px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text-3);
+  font-size: 12.5px;
+  transition: border-color var(--t);
+}
+.search:hover { border-color: var(--border-2); }
+.search kbd {
+  margin-inline-start: auto;
+  font-family: var(--mono); font-size: 10px;
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 5px; color: var(--text-3);
+}
+.topbar-actions { margin-inline-start: auto; display: flex; align-items: center; gap: 6px; }
+.icon-btn {
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  transition: background var(--t), color var(--t);
+}
+.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn svg { width: 16px; height: 16px; }
+.pill-btn {
+  font-size: 12px; font-weight: 570;
+  padding: 5px 10px; border-radius: var(--r-sm);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  transition: all var(--t);
+}
+.pill-btn:hover { border-color: var(--border-2); color: var(--text); }
+
+/* ═══════════════ Page ═══════════════ */
+.page { padding: 24px 24px 48px; max-width: 1200px; width: 100%; margin: 0 auto; }
+
+.page-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+.page-title { font-size: 20px; font-weight: 650; letter-spacing: -0.015em; }
+.page-sub { color: var(--text-2); font-size: 13px; margin-top: 2px; }
+.page-actions { margin-inline-start: auto; display: flex; gap: 8px; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 570;
+  padding: 7px 14px;
+  border-radius: var(--r-md);
+  transition: all var(--t);
+}
+.btn svg { width: 15px; height: 15px; }
+.btn-primary {
+  background: var(--accent); color: #fff;
+  box-shadow: 0 1px 2px rgba(217,104,53,.4);
+}
+.btn-primary:hover { background: var(--accent-strong); }
+.btn-ghost {
+  border: 1px solid var(--border);
+  background: var(--surface); color: var(--text);
+  box-shadow: var(--shadow-card);
+}
+.btn-ghost:hover { border-color: var(--border-2); }
+
+/* ═══════════════ Stat cards ═══════════════ */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-card);
+}
+.stat-label { font-size: 12px; color: var(--text-2); font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.stat-label svg { width: 14px; height: 14px; opacity: .7; }
+.stat-value { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.stat-delta { font-size: 11.5px; margin-top: 2px; font-weight: 500; }
+.stat-delta.up   { color: var(--green); }
+.stat-delta.down { color: var(--red); }
+.stat-delta.flat { color: var(--text-3); }
+
+/* ═══════════════ Toolbar / filters ═══════════════ */
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.seg {
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 2px;
+}
+.seg button {
+  font-size: 12px; font-weight: 550;
+  padding: 4px 12px; border-radius: 7px;
+  color: var(--text-2);
+  transition: all var(--t);
+}
+.seg button.active { background: var(--surface-2); color: var(--text); box-shadow: var(--shadow-card); }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500;
+  border: 1px dashed var(--border-2);
+  color: var(--text-2);
+  padding: 4px 10px; border-radius: 99px;
+  transition: all var(--t);
+}
+.chip:hover { color: var(--text); border-color: var(--text-3); }
+.toolbar-end { margin-inline-start: auto; display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 12px; }
+
+/* ═══════════════ Screens grid ═══════════════ */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--t), transform var(--t), box-shadow var(--t);
+  cursor: pointer;
+}
+.card:hover { border-color: var(--border-2); transform: translateY(-1px); box-shadow: var(--shadow-pop); }
+.thumb {
+  aspect-ratio: 16/9;
+  background: linear-gradient(135deg, var(--thumb-a), var(--thumb-b));
+  position: relative;
+  display: grid; place-items: center;
+}
+.thumb svg { width: 28px; height: 28px; color: var(--text-3); opacity: .6; }
+.thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.live-tag {
+  position: absolute; top: 8px; inset-inline-start: 8px;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 650; letter-spacing: .05em;
+  background: rgba(12,14,18,.72); color: #fff;
+  backdrop-filter: blur(6px);
+  padding: 3px 8px; border-radius: 99px;
+}
+.live-dot { width: 6px; height: 6px; border-radius: 99px; background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+@keyframes pulse { 50% { opacity: .45; } }
+.thumb-res {
+  position: absolute; bottom: 8px; inset-inline-end: 8px;
+  font-family: var(--mono); font-size: 10px;
+  background: rgba(12,14,18,.72); color: rgba(255,255,255,.85);
+  backdrop-filter: blur(6px);
+  padding: 2px 7px; border-radius: 5px;
+}
+.card-body { padding: 12px 14px; }
+.card-title-row { display: flex; align-items: center; gap: 8px; }
+.status-dot { width: 8px; height: 8px; border-radius: 99px; flex-shrink: 0; }
+.status-dot.online  { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 18%, transparent); }
+.status-dot.stale   { background: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 18%, transparent); }
+.status-dot.offline { background: var(--red);   box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent); }
+.card-title { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-menu { margin-inline-start: auto; color: var(--text-3); width: 24px; height: 24px; border-radius: 5px; display: grid; place-items: center; transition: all var(--t); }
+.card-menu:hover { background: var(--surface-2); color: var(--text); }
+.card-meta { display: flex; align-items: center; gap: 6px; color: var(--text-3); font-size: 11.5px; margin-top: 4px; }
+.card-meta svg { width: 12px; height: 12px; }
+.card-foot {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--text-2);
+}
+.card-foot .playlist-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 2px 8px; border-radius: 99px;
+  font-weight: 500;
+  max-width: 100%; overflow: hidden;
+}
+.card-foot .playlist-chip svg { width: 11px; height: 11px; color: var(--accent); flex-shrink: 0; }
+.card-foot time { margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* offline card treatment */
+.card.is-offline .thumb { filter: grayscale(.5); opacity: .75; }
+
+/* ═══════════════ Add-screen ghost card ═══════════════ */
+.card-add {
+  border: 1.5px dashed var(--border-2);
+  border-radius: var(--r-lg);
+  display: grid; place-items: center;
+  min-height: 100%;
+  color: var(--text-3);
+  font-weight: 550; font-size: 13px;
+  gap: 0;
+  transition: all var(--t);
+  background: transparent;
+}
+.card-add:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.card-add-inner { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 32px 0; }
+.card-add-inner svg { width: 22px; height: 22px; }
+.card-add-face {
+  width: 56px; height: auto;
+  image-rendering: pixelated;
+  filter: grayscale(1) opacity(.45);
+  transition: filter var(--t), transform var(--t);
+}
+.card-add:hover .card-add-face { filter: none; transform: translateY(-3px); }
+
+/* ═══════════════ Footer note ═══════════════ */
+.preview-note {
+  margin-top: 40px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 14px 18px;
+  font-size: 12.5px; color: var(--text-2);
+  display: flex; gap: 10px; align-items: flex-start;
+}
+.preview-note svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--accent); margin-top: 1px; }
+
+/* ═══════════════ Responsive ═══════════════ */
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ Sidebar ═══════════ -->
+<aside class="sidebar">
+  <div class="brand">
+    <img class="brand-face" src="assets/faces/v1_kawaii.png" alt="" width="34" height="30" />
+    <div class="brand-name" data-i18n="brand">Khanshoof</div>
+    <span class="brand-env" data-i18n="env">LIVE</span>
+  </div>
+
+  <nav class="nav">
+    <div class="nav-group">
+      <div class="nav-group-label" data-i18n="g_displays">Displays</div>
+      <button class="nav-item active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        <span data-i18n="n_screens">Screens</span><span class="nav-badge">12</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
+        <span data-i18n="n_walls">Walls</span><span class="nav-badge">2</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        <span data-i18n="n_sites">Sites</span><span class="nav-badge">4</span>
+      </button>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label" data-i18n="g_content">Content</div>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+        <span data-i18n="n_media">Media</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        <span data-i18n="n_playlists">Playlists</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        <span data-i18n="n_schedules">Schedules</span>
+      </button>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-label" data-i18n="g_org">Organization</div>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span data-i18n="n_users">Users</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        <span data-i18n="n_apikeys">API Keys</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+        <span data-i18n="n_audit">Audit log</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><path d="M1 10h22"/></svg>
+        <span data-i18n="n_billing">Billing</span>
+      </button>
+    </div>
+  </nav>
+
+  <div class="sidebar-foot">
+    <div class="avatar">A</div>
+    <div class="foot-meta">
+      <div class="foot-name">ahmed</div>
+      <div class="foot-org" data-i18n="f_org">Ahmed · Pro plan</div>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ Main ═══════════ -->
+<div class="main">
+  <div class="topbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <span data-i18n="search">Search screens, media, playlists…</span>
+      <kbd>⌘K</kbd>
+    </div>
+    <div class="topbar-actions">
+      <button class="pill-btn" id="lang-toggle">عربي</button>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme">
+        <svg id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </button>
+      <button class="icon-btn" title="Notifications">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title" data-i18n="title">Screens</h1>
+        <p class="page-sub" data-i18n="sub">12 screens across 4 sites — 9 online, 1 stale, 2 offline</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn btn-ghost">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9M3 3v6h6"/></svg>
+          <span data-i18n="refresh">Refresh</span>
+        </button>
+        <button class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+          <span data-i18n="pair">Pair screen</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          <span data-i18n="s_online">Screens online</span>
+        </div>
+        <div class="stat-value">9<span style="color:var(--text-3);font-size:15px;font-weight:500"> / 12</span></div>
+        <div class="stat-delta up" data-i18n="s_online_d">↑ 2 recovered this hour</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <span data-i18n="s_playing">Playing now</span>
+        </div>
+        <div class="stat-value">7</div>
+        <div class="stat-delta flat" data-i18n="s_playing_d">across 5 playlists</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          <span data-i18n="s_media">Media items</span>
+        </div>
+        <div class="stat-value">148</div>
+        <div class="stat-delta up" data-i18n="s_media_d">+6 this week</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          <span data-i18n="s_uptime">Fleet uptime · 7d</span>
+        </div>
+        <div class="stat-value">99.2%</div>
+        <div class="stat-delta down" data-i18n="s_uptime_d">↓ 0.3% vs last week</div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="seg">
+        <button class="active" data-i18n="f_all">All</button>
+        <button data-i18n="f_online">Online</button>
+        <button data-i18n="f_offline">Offline</button>
+      </div>
+      <button class="chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        <span data-i18n="f_site">Site: All</span>
+      </button>
+      <button class="chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        <span data-i18n="f_playlist">Playlist: Any</span>
+      </button>
+      <div class="toolbar-end">
+        <span data-i18n="sorted">Sorted by status</span>
+      </div>
+    </div>
+
+    <!-- Grid -->
+    <div class="grid">
+
+      <div class="card">
+        <div class="thumb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          <span class="live-tag"><span class="live-dot"></span><span data-i18n="live">LIVE</span></span>
+          <span class="thumb-res">1080×1920</span>
+        </div>
+        <div class="card-body">
+          <div class="card-title-row">
+            <span class="status-dot online"></span>
+            <span class="card-title" data-i18n="c1_t">Mall Entrance — Portrait</span>
+            <button class="card-menu">⋯</button>
+          </div>
+          <div class="card-meta">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span data-i18n="c1_s">The Avenues · Ground floor</span>
+          </div>
+          <div class="card-foot">
+            <span class="playlist-chip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <span data-i18n="c1_p">Ramadan Promos</span>
+            </span>
+            <time data-i18n="now">now</time>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="thumb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          <span class="live-tag"><span class="live-dot"></span><span data-i18n="live">LIVE</span></span>
+          <span class="thumb-res">3840×2160</span>
+        </div>
+        <div class="card-body">
+          <div class="card-title-row">
+            <span class="status-dot online"></span>
+            <span class="card-title" data-i18n="c2_t">Food Court Menu Board</span>
+            <button class="card-menu">⋯</button>
+          </div>
+          <div class="card-meta">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span data-i18n="c2_s">The Avenues · Food court</span>
+          </div>
+          <div class="card-foot">
+            <span class="playlist-chip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <span data-i18n="c2_p">Menu — Lunch</span>
+            </span>
+            <time data-i18n="now">now</time>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="thumb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          <span class="live-tag"><span class="live-dot"></span><span data-i18n="live">LIVE</span></span>
+          <span class="thumb-res">1920×1080</span>
+        </div>
+        <div class="card-body">
+          <div class="card-title-row">
+            <span class="status-dot online"></span>
+            <span class="card-title" data-i18n="c3_t">Reception Display</span>
+            <button class="card-menu">⋯</button>
+          </div>
+          <div class="card-meta">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span data-i18n="c3_s">Salmiya HQ · Lobby</span>
+          </div>
+          <div class="card-foot">
+            <span class="playlist-chip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <span data-i18n="c3_p">Corporate Welcome</span>
+            </span>
+            <time data-i18n="now">now</time>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="thumb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          <span class="thumb-res">1920×1080</span>
+        </div>
+        <div class="card-body">
+          <div class="card-title-row">
+            <span class="status-dot stale"></span>
+            <span class="card-title" data-i18n="c4_t">Drive-Thru Lane 2</span>
+            <button class="card-menu">⋯</button>
+          </div>
+          <div class="card-meta">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span data-i18n="c4_s">Fahaheel Branch · Exterior</span>
+          </div>
+          <div class="card-foot">
+            <span class="playlist-chip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <span data-i18n="c4_p">Menu — Drive-Thru</span>
+            </span>
+            <time data-i18n="c4_time">4 min ago</time>
+          </div>
+        </div>
+      </div>
+
+      <div class="card is-offline">
+        <div class="thumb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 1l22 22M9 9a3 3 0 0 0 4.2 4.2M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.58 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg>
+          <span class="thumb-res">1080×1920</span>
+        </div>
+        <div class="card-body">
+          <div class="card-title-row">
+            <span class="status-dot offline"></span>
+            <span class="card-title" data-i18n="c5_t">Parking Kiosk A</span>
+            <button class="card-menu">⋯</button>
+          </div>
+          <div class="card-meta">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span data-i18n="c5_s">The Avenues · Parking P2</span>
+          </div>
+          <div class="card-foot">
+            <span class="playlist-chip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <span data-i18n="c5_p">Wayfinding Loop</span>
+            </span>
+            <time data-i18n="c5_time">2 h ago</time>
+          </div>
+        </div>
+      </div>
+
+      <button class="card-add">
+        <span class="card-add-inner">
+          <img class="card-add-face" src="assets/faces/v1_star.png" alt="" />
+          <span data-i18n="add">Pair a new screen</span>
+        </span>
+      </button>
+
+    </div>
+
+    <div class="preview-note">
+      <img src="assets/faces/v1_wink.png" alt="" style="width:34px;height:auto;image-rendering:pixelated;flex-shrink:0" />
+      <div data-i18n="note">
+        <strong>Design preview — not wired to real data.</strong> Try the theme toggle (sun icon) and the عربي button for the RTL layout. This one page defines the design system for the whole overhaul: sidebar navigation, tokens, cards, stats, filters.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ─── Theme toggle ─── */
+const root = document.documentElement;
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+});
+
+/* ─── EN/AR toggle (chrome strings only — full i18n exists in the real app) ─── */
+const AR = {
+  brand:'خنشوف', env:'مباشر',
+  g_displays:'الشاشات', n_screens:'الشاشات', n_walls:'الجدران', n_sites:'المواقع',
+  g_content:'المحتوى', n_media:'الوسائط', n_playlists:'قوائم التشغيل', n_schedules:'الجداول',
+  g_org:'المؤسسة', n_users:'المستخدمون', n_apikeys:'مفاتيح API', n_audit:'سجل التدقيق', n_billing:'الفوترة',
+  f_org:'أحمد · باقة برو',
+  search:'ابحث في الشاشات والوسائط وقوائم التشغيل…',
+  title:'الشاشات', sub:'١٢ شاشة في ٤ مواقع — ٩ متصلة، ١ متأخرة، ٢ غير متصلة',
+  refresh:'تحديث', pair:'إقران شاشة',
+  s_online:'الشاشات المتصلة', s_online_d:'↑ استعادت شاشتان الاتصال هذه الساعة',
+  s_playing:'قيد التشغيل الآن', s_playing_d:'عبر ٥ قوائم تشغيل',
+  s_media:'عناصر الوسائط', s_media_d:'+٦ هذا الأسبوع',
+  s_uptime:'وقت التشغيل · ٧ أيام', s_uptime_d:'↓ ٠.٣٪ عن الأسبوع الماضي',
+  f_all:'الكل', f_online:'متصلة', f_offline:'غير متصلة', f_site:'الموقع: الكل', f_playlist:'قائمة التشغيل: أي',
+  sorted:'مرتبة حسب الحالة', live:'مباشر', now:'الآن', add:'إقران شاشة جديدة',
+  c1_t:'مدخل المجمع — عمودي', c1_s:'الأڤنيوز · الطابق الأرضي', c1_p:'عروض رمضان',
+  c2_t:'لوحة قائمة المطاعم', c2_s:'الأڤنيوز · ساحة المطاعم', c2_p:'القائمة — الغداء',
+  c3_t:'شاشة الاستقبال', c3_s:'المقر الرئيسي السالمية · البهو', c3_p:'ترحيب الشركة',
+  c4_t:'مسار السيارات ٢', c4_s:'فرع الفحيحيل · خارجي', c4_p:'القائمة — السيارات', c4_time:'قبل ٤ دقائق',
+  c5_t:'كشك المواقف أ', c5_s:'الأڤنيوز · مواقف P2', c5_p:'حلقة الإرشاد', c5_time:'قبل ساعتين',
+  note:'معاينة تصميم — غير مرتبطة ببيانات حقيقية. جرّب تبديل السمة (أيقونة الشمس) وزر English للتخطيط من اليسار إلى اليمين.'
+};
+const EN = {};
+document.querySelectorAll('[data-i18n]').forEach(el => { EN[el.dataset.i18n] = el.innerHTML; });
+
+let lang = 'en';
+document.getElementById('lang-toggle').addEventListener('click', function () {
+  lang = lang === 'en' ? 'ar' : 'en';
+  const dict = lang === 'ar' ? AR : EN;
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+  this.textContent = lang === 'ar' ? 'English' : 'عربي';
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const v = dict[el.dataset.i18n];
+    if (v !== undefined) el.innerHTML = v;
+  });
+});
+
+/* ─── Segmented filter is display-only in the preview ─── */
+document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', function () {
+  this.parentElement.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+  this.classList.add('active');
+}));
+</script>
+</body>
+</html>
