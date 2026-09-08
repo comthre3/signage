@@ -144,3 +144,54 @@ def test_list_and_delete_menu(client):
     assert delete_menu(org_id, menu_id) is True
     assert get_menu_tree(org_id, menu_id) is None
     assert query_all("SELECT id FROM menu_categories WHERE menu_id = ?", (menu_id,)) == []
+
+
+def _auth(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_capabilities_reports_renderer(client, monkeypatch):
+    import main
+    monkeypatch.setattr(main, "RENDERER_URL", "")
+    assert client.get("/ai/capabilities").json() == {"menus": False, "menu_import": False}
+    monkeypatch.setattr(main, "RENDERER_URL", "http://renderer:8080")
+    assert client.get("/ai/capabilities").json()["menus"] is True
+
+
+def test_menu_crud_and_isolation(client):
+    tok, _ = _org_id(client)
+    tok2, _ = _org_id(client)
+    r = client.post("/menus", json={"name": "FORNO", "template": "dark-classic"}, headers=_auth(tok))
+    assert r.status_code == 201, r.text
+    menu_id = r.json()["id"]
+
+    r = client.get("/menus/templates", headers=_auth(tok))
+    assert {t["id"] for t in r.json()["items"]} == {"dark-classic", "cream-cafe", "luxe"}
+
+    body = {
+        "name": "FORNO", "template": "cream-cafe",
+        "brand": {"name_en": "FORNO", "name_ar": "فورنو", "primary": "#D9483B", "accent": "#F0A177",
+                  "background": "#1B2026", "currency": "KWD"},
+        "categories": [{"name_en": "Classics", "name_ar": "الكلاسيكية",
+                        "items": [{"name_en": "Margherita", "name_ar": "مارغريتا", "price": "2.750"}]}],
+    }
+    r = client.put(f"/menus/{menu_id}", json=body, headers=_auth(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["template"] == "cream-cafe"
+    assert r.json()["categories"][0]["items"][0]["price"] == "2.750"
+
+    r = client.get("/menus", headers=_auth(tok))
+    assert r.json()["items"][0]["item_count"] == 1
+
+    # validation error surfaces as menu.invalid
+    bad = dict(body); bad["brand"] = dict(body["brand"], primary="red")
+    r = client.put(f"/menus/{menu_id}", json=bad, headers=_auth(tok))
+    assert r.status_code == 422
+
+    # other org: 404 on read, update, delete
+    assert client.get(f"/menus/{menu_id}", headers=_auth(tok2)).status_code == 404
+    assert client.put(f"/menus/{menu_id}", json=body, headers=_auth(tok2)).status_code == 404
+    assert client.delete(f"/menus/{menu_id}", headers=_auth(tok2)).status_code == 404
+
+    assert client.delete(f"/menus/{menu_id}", headers=_auth(tok)).status_code == 204
+    assert client.get(f"/menus/{menu_id}", headers=_auth(tok)).status_code == 404
