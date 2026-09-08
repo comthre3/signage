@@ -101,6 +101,8 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 RENDERER_URL   = os.getenv("RENDERER_URL", "").rstrip("/")
 RENDERER_TOKEN = os.getenv("RENDERER_TOKEN", "")
 
+MAX_BOARDS_PER_REQUEST = 60
+
 DOCS_ENABLED = os.getenv("DOCS_ENABLED", "0").lower() in ("1", "true", "yes")
 
 app = FastAPI(
@@ -3838,6 +3840,10 @@ async def render_menu_endpoint(
         specs = plan_renders(tree, tree["template"], payload.languages, payload.aspects, payload.kinds)
     except ValueError as exc:
         raise http_error(400, "menu.bad_render_request", str(exc))
+    if len(specs) > MAX_BOARDS_PER_REQUEST:
+        raise http_error(400, "menu.too_many_boards",
+                         f"That would render {len(specs)} boards; narrow the languages, aspects or kinds "
+                         f"(max {MAX_BOARDS_PER_REQUEST}).")
     background_tasks.add_task(run_render_job, principal.organization_id, menu_id, specs,
                               renderer_url=RENDERER_URL, renderer_token=RENDERER_TOKEN, upload_dir=UPLOAD_DIR)
     audit(request, action="menu.render", actor=principal.user, target_type="menu",

@@ -491,5 +491,6 @@
   "error.menu.bad_template": "Unknown template.",
   "error.menu.renderer_unavailable": "Rendering isn't configured on this server.",
   "error.menu.bad_render_request": "Invalid render options.",
+  "error.menu.too_many_boards": "That would render too many boards. Narrow the languages, aspects or kinds and try again.",
   "error.menu.no_boards": "Render the boards first."
 }

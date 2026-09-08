@@ -126,6 +126,8 @@ def build_html(tree: dict, template_id: str, kind: str, language: str, aspect: s
 
 
 # ── render jobs ─────────────────────────────────────────────────────────────
+import asyncio
+import logging
 import os
 import uuid
 from dataclasses import dataclass
@@ -134,6 +136,8 @@ import httpx
 
 from db import execute, query_one, utc_now_iso
 from menus import render_hash
+
+MAX_LOGO_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -192,16 +196,34 @@ async def run_render_job(org_id: int, menu_id: int, specs: list[RenderSpec], *, 
     tree = get_menu_tree(org_id, menu_id)
     if not tree:
         return
+    logger = logging.getLogger(__name__)
     logo_url = None
     if tree["brand"].get("logo_media_id"):
-        row = query_one("SELECT filename FROM media WHERE id = ? AND organization_id = ?",
-                        (tree["brand"]["logo_media_id"], org_id))
-        if row:
-            p = os.path.join(upload_dir, row["filename"])
-            if os.path.exists(p):
-                import base64, mimetypes
-                mime = mimetypes.guess_type(p)[0] or "image/png"
-                logo_url = f"data:{mime};base64," + base64.b64encode(open(p, "rb").read()).decode()
+        logo_media_id = tree["brand"]["logo_media_id"]
+        row = query_one("SELECT filename, mime_type FROM media WHERE id = ? AND organization_id = ?",
+                        (logo_media_id, org_id))
+        if not row:
+            logger.warning("menu %s logo %s: media row not found", menu_id, logo_media_id)
+        elif not (row["mime_type"] or "").startswith("image/"):
+            logger.warning("menu %s logo %s: mime_type %r is not an image, skipping",
+                            menu_id, logo_media_id, row["mime_type"])
+        else:
+            real_upload_dir = os.path.realpath(upload_dir)
+            p = os.path.realpath(os.path.join(upload_dir, row["filename"]))
+            if not p.startswith(real_upload_dir + os.sep):
+                logger.warning("menu %s logo %s: filename %r resolves outside upload_dir, skipping",
+                                menu_id, logo_media_id, row["filename"])
+            elif not os.path.exists(p):
+                logger.warning("menu %s logo %s: file %s does not exist, skipping",
+                                menu_id, logo_media_id, p)
+            elif os.path.getsize(p) > MAX_LOGO_BYTES:
+                logger.warning("menu %s logo %s: file %s is %d bytes, exceeds MAX_LOGO_BYTES=%d, skipping",
+                                menu_id, logo_media_id, p, os.path.getsize(p), MAX_LOGO_BYTES)
+            else:
+                import base64
+                with open(p, "rb") as f:
+                    data = f.read()
+                logo_url = f"data:{row['mime_type']};base64," + base64.b64encode(data).decode()
     async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as http:
         for spec in specs:
             existing = query_one(
@@ -218,9 +240,17 @@ async def run_render_job(org_id: int, menu_id: int, specs: list[RenderSpec], *, 
                 html = build_html(tree, tree["template"], spec.kind, spec.language, spec.aspect,
                                   category_id=spec.category_id, item_id=spec.item_id, logo_url=logo_url)
                 width, height = ASPECT_SIZES[spec.aspect]
-                resp = await http.post(f"{renderer_url}/render",
-                                       json={"html": html, "width": width, "height": height, "scale": 1},
-                                       headers={"X-Renderer-Token": renderer_token})
+                retry_delays = [2, 5]  # extra attempts after a 503 (renderer busy), then give up
+                attempt = 0
+                while True:
+                    resp = await http.post(f"{renderer_url}/render",
+                                           json={"html": html, "width": width, "height": height, "scale": 1},
+                                           headers={"X-Renderer-Token": renderer_token})
+                    if resp.status_code == 503 and attempt < len(retry_delays):
+                        await asyncio.sleep(retry_delays[attempt])
+                        attempt += 1
+                        continue
+                    break
                 if resp.status_code != 200:
                     raise RuntimeError(f"renderer returned {resp.status_code}: {resp.text[:200]}")
                 filename = f"{uuid.uuid4().hex}.png"

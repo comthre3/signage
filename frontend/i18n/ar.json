@@ -491,5 +491,6 @@
   "error.menu.bad_template": "قالب غير معروف.",
   "error.menu.renderer_unavailable": "التصيير غير مُعدّ على هذا الخادم.",
   "error.menu.bad_render_request": "خيارات تصيير غير صالحة.",
+  "error.menu.too_many_boards": "سيؤدي هذا إلى تصيير عدد كبير جدًا من اللوحات. قلّص اللغات أو الأبعاد أو الأنواع وحاول مرة أخرى.",
   "error.menu.no_boards": "صيّر اللوحات أولًا."
 }
