@@ -1,5 +1,5 @@
 """Smoke test: render a bilingual board and check the PNG size. Run inside the container."""
-import os, struct, sys, urllib.request
+import os, struct, urllib.request
 
 html = """<!doctype html><html dir="rtl"><body style="margin:0;width:1920px;height:1080px;background:#111;color:#fff;font:64px 'IBM Plex Sans Arabic'"><div style="padding:80px">قائمة الطعام — Menu 2.750</div></body></html>"""
 req = urllib.request.Request(

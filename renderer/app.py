@@ -1,5 +1,6 @@
 """Khanshoof renderer: HTML → PNG with headless Chromium. Internal service only."""
 import asyncio
+import logging
 import os
 
 from fastapi import FastAPI, Header, HTTPException, Response
@@ -52,9 +53,13 @@ async def health():
 @app.post("/render")
 async def render(body: RenderIn, x_renderer_token: str | None = Header(None)):
     _check_token(x_renderer_token)
+    # Permit safety under cancellation (no leaked semaphore slot if this task
+    # is cancelled right after being woken) relies on CPython >= 3.11.1
+    # semantics for asyncio.Semaphore.acquire(); this image runs 3.12.
     try:
-        await asyncio.wait_for(_sem.acquire(), timeout=QUEUE_WAIT_SECONDS)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(QUEUE_WAIT_SECONDS):
+            await _sem.acquire()
+    except TimeoutError:
         raise HTTPException(status_code=503, detail="renderer busy")
     try:
         context = await _browser.new_context(
@@ -63,12 +68,22 @@ async def render(body: RenderIn, x_renderer_token: str | None = Header(None)):
             java_script_enabled=False,      # templates are static; no scripts needed
             offline=True,                   # never reach the network from generated HTML
         )
-        page = await context.new_page()
-        page.set_default_timeout(RENDER_TIMEOUT_MS)
-        await page.set_content(body.html, wait_until="load")
-        await page.evaluate("document.fonts.ready")
-        png = await page.screenshot(type="png", full_page=False)
-        await context.close()
-        return Response(content=png, media_type="image/png")
+        try:
+            page = await context.new_page()
+            page.set_default_timeout(RENDER_TIMEOUT_MS)
+            await page.set_content(body.html, wait_until="load")
+            await asyncio.wait_for(
+                page.evaluate("document.fonts.ready"),
+                timeout=RENDER_TIMEOUT_MS / 1000,
+            )
+            png = await page.screenshot(type="png", full_page=False)
+            return Response(content=png, media_type="image/png")
+        except HTTPException:
+            raise
+        except Exception:
+            logging.exception("render failed")
+            raise HTTPException(status_code=500, detail="render failed")
+        finally:
+            await context.close()
     finally:
         _sem.release()
