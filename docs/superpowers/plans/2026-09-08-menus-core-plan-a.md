@@ -26,7 +26,7 @@
 - **Renderer:** internal only (no `ports:`), every request carries `X-Renderer-Token: $RENDERER_TOKEN`, max 2 concurrent renders, 60 s queue wait → 503.
 - **Env vars:** `RENDERER_URL` (e.g. `http://renderer:8080`), `RENDERER_TOKEN`. Both unset ⇒ `/ai/capabilities` returns `{"menus": false, "menu_import": false}` and the dashboard hides the Menus section.
 - **i18n:** every new user-visible string has a key in BOTH `frontend/i18n/en.json` and `ar.json`. Arabic UI uses logical CSS properties; the AR data column is `dir="rtl"` in both UI languages.
-- **Tests:** `cd backend && python -m pytest -q` green after every task. Tests run against the `sawwii_test` database via `backend/tests/conftest.py`.
+- **Tests:** run them ONLY with `bash scripts/test-backend-in-docker.sh [pytest args]` from the repo root — it runs pytest inside the built `signage_backend` image against the `sawwii_test` database (the host has no Python deps; `docker compose exec backend` would point at production). Baseline on this branch: 399 passed. The full suite takes ~10 minutes, so iterate with focused files (`bash scripts/test-backend-in-docker.sh tests/test_menus.py -v`) and run the full suite once before each commit. Never run tests any other way.
 - **Commits:** end every commit message with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ---
@@ -91,7 +91,7 @@ def test_menu_tables_exist():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && python -m pytest tests/test_menus.py::test_menu_tables_exist -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menus.py::test_menu_tables_exist -v`
 Expected: FAIL — `assert {...} <= set()` (columns empty because tables don't exist)
 
 - [ ] **Step 3: Add the tables**
@@ -179,7 +179,7 @@ In `backend/db.py`, immediately after the line
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd backend && python -m pytest tests/test_menus.py::test_menu_tables_exist -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menus.py::test_menu_tables_exist -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -287,7 +287,7 @@ def test_render_hash_is_stable_and_sensitive():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd backend && python -m pytest tests/test_menus.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menus.py -v`
 Expected: the four new tests FAIL with `ModuleNotFoundError: No module named 'menus'`
 
 - [ ] **Step 3: Write `backend/menus.py`**
@@ -552,7 +552,7 @@ def render_hash(tree: dict, template_id: str, template_version: str, kind: str, 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd backend && python -m pytest tests/test_menus.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menus.py -v`
 Expected: 5 passed
 
 - [ ] **Step 5: Commit**
@@ -635,7 +635,7 @@ def test_menu_crud_and_isolation(client):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd backend && python -m pytest tests/test_menus.py -k "capabilities or crud" -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menus.py -k "capabilities or crud" -v`
 Expected: FAIL — `AttributeError: module 'main' has no attribute 'RENDERER_URL'` and 404s
 
 - [ ] **Step 3: Add constants, dependency and endpoints**
@@ -782,7 +782,7 @@ def list_templates() -> list[dict]:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd backend && python -m pytest tests/test_menus.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menus.py -v`
 Expected: 7 passed
 
 - [ ] **Step 5: Commit**
@@ -867,7 +867,7 @@ def test_category_and_promo_kinds():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd backend && python -m pytest tests/test_menu_render.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menu_render.py -v`
 Expected: FAIL — `ImportError: cannot import name 'get_template'`
 
 - [ ] **Step 3: Write the shared HTML skeletons**
@@ -1180,7 +1180,7 @@ def build_html(tree: dict, template_id: str, kind: str, language: str, aspect: s
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `cd backend && python -m pytest tests/test_menu_render.py tests/test_menus.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menu_render.py tests/test_menus.py -v`
 Expected: all pass (the `test_menus.py` template test still sees three ids, now from manifests)
 
 - [ ] **Step 7: Commit**
@@ -1488,7 +1488,7 @@ def test_render_requires_renderer(client, monkeypatch):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd backend && python -m pytest tests/test_menu_render.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menu_render.py -v`
 Expected: the three new tests FAIL (`ImportError: plan_renders`, 404s)
 
 - [ ] **Step 3: Append the job half to `backend/menu_render.py`**
@@ -1656,7 +1656,7 @@ Note `run_render_job` reads `renderer_url` etc. from its arguments, which the en
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd backend && python -m pytest tests/test_menu_render.py tests/test_menus.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menu_render.py tests/test_menus.py -v`
 Expected: all pass (TestClient runs the background task before returning, so the renders are `ready` by the time the test reads them)
 
 - [ ] **Step 6: Commit**
@@ -1717,7 +1717,7 @@ def test_playlist_is_created_then_updated(client, monkeypatch, tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && python -m pytest tests/test_menu_playlist.py -v`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menu_playlist.py -v`
 Expected: FAIL with 404 (route missing)
 
 - [ ] **Step 3: Add the endpoint (after `list_menu_renders_endpoint`)**
@@ -1772,7 +1772,7 @@ def menu_playlist_endpoint(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd backend && python -m pytest tests/test_menu_playlist.py -v && python -m pytest -q`
+Run: `bash scripts/test-backend-in-docker.sh tests/test_menu_playlist.py -v`, then `bash scripts/test-backend-in-docker.sh`
 Expected: PASS, and the full suite green
 
 - [ ] **Step 5: Commit**
@@ -1858,9 +1858,16 @@ After `<script src="app.js"></script>` add `<script src="menus.js"></script>`.
 - [ ] **Step 3: `frontend/menus.js` — list, create, delete**
 
 ```javascript
-/* Menus section (Plan A). Depends on api(), toast(), confirmDialog(), escHtml(), Khan.t() from app.js. */
+/* Menus section (Plan A). Depends on api(), toast(), confirmDialog(), escHtml(), escAttr(), Khan.t() from app.js. */
 const Menus = (() => {
   const st = { menus: [], current: null, templates: [] };
+
+  // app.js's formatDate is private to the ApiKeys module, so define our own.
+  function formatDate(iso) {
+    if (!iso) return "";
+    const locale = document.documentElement.lang === "ar" ? "ar-KW" : "en-GB";
+    return new Date(iso).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+  }
 
   async function show() {
     document.getElementById("menu-editor").classList.add("hidden");
@@ -2154,7 +2161,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
       }
     }));
     ed.querySelector("#menu-logo-pick").addEventListener("click", async () => {
-      const picks = await MediaPicker.open({ allowedTypes: ["image"] });
+      let picks;
+      try { picks = await MediaPicker.open({ allowedTypes: ["image"] }); }   // rejects with {cancelled:true} on cancel
+      catch (_) { return; }
       if (picks && picks.length) { m.brand.logo_media_id = picks[0].media_id; ed.querySelector("#menu-logo-preview").textContent = `#${picks[0].media_id}`; }
     });
     ed.querySelector("#menu-logo-clear").addEventListener("click", () => { m.brand.logo_media_id = null; ed.querySelector("#menu-logo-preview").textContent = "—"; });
@@ -2426,7 +2435,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ```bash
 bash scripts/check_ui_contract.sh                      # UI contract OK
-cd backend && python -m pytest -q && cd ..            # all green
+bash scripts/test-backend-in-docker.sh                        # all green
 docker compose exec renderer python smoke.py          # OK 1920x1080
 ```
 
