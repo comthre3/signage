@@ -1,6 +1,8 @@
 /* Menus section (Plan A). Depends on api(), toast(), confirmDialog(), escHtml(), escAttr(), Khan.t() from app.js. */
 const Menus = (() => {
   const st = { menus: [], current: null, templates: [] };
+  let rendering = false; // Task 10 fix: in-flight guard so double-clicking Render can't start two jobs.
+  let playlistCreated = false; // Task 10 fix: dispatch #menu-playlist-btn on state instead of double-binding it.
 
   // app.js's formatDate is private to the ApiKeys module, so define our own.
   function formatDate(iso) {
@@ -279,24 +281,42 @@ const Menus = (() => {
       <div class="editor-actions"><button class="btn btn-primary" id="menu-playlist-btn">${escHtml(Khan.t("menus.render.playlist", "Create playlist"))}</button></div>`;
     box.querySelector("#menu-renders-back").addEventListener("click", () => { box.classList.add("hidden"); document.getElementById("menu-editor").classList.remove("hidden"); });
     box.querySelector("#menu-render-go").addEventListener("click", startRender);
-    box.querySelector("#menu-playlist-btn").addEventListener("click", createPlaylist);
+    playlistCreated = false;
+    box.querySelector("#menu-playlist-btn").addEventListener("click", async () => {
+      if (playlistCreated) { showSection("playlists"); return; }
+      await createPlaylist();
+    });
     await refreshRenders();
   }
 
   function picked(name) { return [...document.querySelectorAll(`#menu-renders input[name="${name}"]:checked`)].map((i) => i.value); }
 
   async function startRender() {
-    const body = { languages: picked("lang"), aspects: picked("aspect"), kinds: picked("kind") };
+    if (rendering) return;
+    rendering = true;
+    const btn = document.getElementById("menu-render-go");
+    if (btn) btn.disabled = true;
     try {
+      const body = { languages: picked("lang"), aspects: picked("aspect"), kinds: picked("kind") };
       const r = await api(`/menus/${st.current.id}/render`, { method: "POST", body: JSON.stringify(body) });
       document.getElementById("menu-renders-status").textContent = Khan.t("menus.render.queued", "Rendering {n} boards…").replace("{n}", r.queued);
       await pollRenders();
-    } catch (err) { toast(err.message, "error"); }
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      rendering = false;
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function pollRenders() {
     for (let i = 0; i < 45; i++) {
       const items = await refreshRenders();
+      if (items === null) {
+        // Transient API failure: keep polling instead of declaring success or giving up.
+        await new Promise((res) => setTimeout(res, 2000));
+        continue;
+      }
       if (!items.some((x) => x.status === "pending")) {
         document.getElementById("menu-renders-status").textContent = Khan.t("menus.render.done", "Boards ready.");
         return;
@@ -308,7 +328,7 @@ const Menus = (() => {
   async function refreshRenders() {
     const grid = document.getElementById("menu-renders-grid");
     let items = [];
-    try { items = (await api(`/menus/${st.current.id}/renders`)).items || []; } catch (err) { toast(err.message, "error"); return []; }
+    try { items = (await api(`/menus/${st.current.id}/renders`)).items || []; } catch (err) { toast(err.message, "error"); return null; }
     grid.innerHTML = items.length ? "" : `<p class="empty-state">${escHtml(Khan.t("menus.render.empty", "No boards yet."))}</p>`;
     const stale = st.current.last_rendered_at && st.current.updated_at > st.current.last_rendered_at;
     document.getElementById("menu-renders-stale")?.remove();
@@ -330,8 +350,8 @@ const Menus = (() => {
       const pl = await api(`/menus/${st.current.id}/playlist`, { method: "POST" });
       st.current.playlist_id = pl.id;
       toast(Khan.t("menus.render.playlist_done", 'Playlist "{name}" updated.').replace("{name}", pl.name), "success");
+      playlistCreated = true;
       document.getElementById("menu-playlist-btn").textContent = Khan.t("menus.render.playlist_open", "Open playlist");
-      document.getElementById("menu-playlist-btn").onclick = () => { showSection("playlists"); };
     } catch (err) { toast(err.message, "error"); }
   }
 
