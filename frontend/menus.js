@@ -252,9 +252,90 @@ const Menus = (() => {
     } catch (err) { toast(err.message, "error"); return null; }
   }
 
-  async function renderBoards() { await save(); } // Task 10 replaces this
+  function renderOptionsHtml() {
+    const cb = (name, val, key, fb, checked) => `<label><input type="checkbox" name="${name}" value="${val}"${checked ? " checked" : ""}/> ${escHtml(Khan.t(key, fb))}</label>`;
+    return `<div class="render-options">
+      <strong>${escHtml(Khan.t("menus.render.options", "What to render"))}</strong>
+      <div>${cb("lang", "en", "menus.render.lang.en", "English", true)}${cb("lang", "ar", "menus.render.lang.ar", "Arabic", true)}${cb("lang", "bi", "menus.render.lang.bi", "Bilingual", false)}</div>
+      <div>${cb("aspect", "16:9", "menus.render.aspect.landscape", "Landscape 16:9", true)}${cb("aspect", "9:16", "menus.render.aspect.portrait", "Portrait 9:16", false)}</div>
+      <div>${cb("kind", "board", "menus.render.kind.board", "Full menu", true)}${cb("kind", "category", "menus.render.kind.category", "One board per category", false)}${cb("kind", "promo", "menus.render.kind.promo", "Promos (new / popular items)", false)}</div>
+      <button class="btn btn-primary" id="menu-render-go">${escHtml(Khan.t("menus.render.go", "Render"))}</button>
+    </div>`;
+  }
+
+  async function renderBoards() {
+    const saved = await save();
+    if (!saved) return;
+    showRenders();
+  }
+
+  async function showRenders() {
+    document.getElementById("menu-editor").classList.add("hidden");
+    const box = document.getElementById("menu-renders");
+    box.classList.remove("hidden");
+    box.innerHTML = `<button class="btn btn-ghost" id="menu-renders-back">${escHtml(Khan.t("menus.render.back", "← Editor"))}</button>
+      <h3>${escHtml(Khan.t("menus.render.title", "Boards"))}</h3>${renderOptionsHtml()}
+      <p id="menu-renders-status" class="muted"></p><div id="menu-renders-grid" class="renders-grid"></div>
+      <div class="editor-actions"><button class="btn btn-primary" id="menu-playlist-btn">${escHtml(Khan.t("menus.render.playlist", "Create playlist"))}</button></div>`;
+    box.querySelector("#menu-renders-back").addEventListener("click", () => { box.classList.add("hidden"); document.getElementById("menu-editor").classList.remove("hidden"); });
+    box.querySelector("#menu-render-go").addEventListener("click", startRender);
+    box.querySelector("#menu-playlist-btn").addEventListener("click", createPlaylist);
+    await refreshRenders();
+  }
+
+  function picked(name) { return [...document.querySelectorAll(`#menu-renders input[name="${name}"]:checked`)].map((i) => i.value); }
+
+  async function startRender() {
+    const body = { languages: picked("lang"), aspects: picked("aspect"), kinds: picked("kind") };
+    try {
+      const r = await api(`/menus/${st.current.id}/render`, { method: "POST", body: JSON.stringify(body) });
+      document.getElementById("menu-renders-status").textContent = Khan.t("menus.render.queued", "Rendering {n} boards…").replace("{n}", r.queued);
+      await pollRenders();
+    } catch (err) { toast(err.message, "error"); }
+  }
+
+  async function pollRenders() {
+    for (let i = 0; i < 45; i++) {
+      const items = await refreshRenders();
+      if (!items.some((x) => x.status === "pending")) {
+        document.getElementById("menu-renders-status").textContent = Khan.t("menus.render.done", "Boards ready.");
+        return;
+      }
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+  }
+
+  async function refreshRenders() {
+    const grid = document.getElementById("menu-renders-grid");
+    let items = [];
+    try { items = (await api(`/menus/${st.current.id}/renders`)).items || []; } catch (err) { toast(err.message, "error"); return []; }
+    grid.innerHTML = items.length ? "" : `<p class="empty-state">${escHtml(Khan.t("menus.render.empty", "No boards yet."))}</p>`;
+    const stale = st.current.last_rendered_at && st.current.updated_at > st.current.last_rendered_at;
+    document.getElementById("menu-renders-stale")?.remove();
+    if (stale) grid.insertAdjacentHTML("beforebegin", `<p id="menu-renders-stale" class="muted stale-note">${escHtml(Khan.t("menus.render.stale", "The menu changed after these boards were rendered."))}</p>`);
+    items.forEach((x) => {
+      const card = document.createElement("div");
+      card.className = `render-card status-${x.status}`;
+      card.innerHTML = `${x.url ? `<img src="${escAttr(API_BASE + x.url)}" alt="" loading="lazy" />` : `<div class="render-ph">${x.status === "failed" ? escHtml(Khan.t("menus.render.failed", "Failed")) : "…"}</div>`}
+        <div class="render-meta"><span class="badge">${escHtml(x.kind)}</span><span class="badge">${escHtml(x.language.toUpperCase())}</span><span class="badge">${escHtml(x.aspect)}</span>
+        ${x.url ? `<a class="btn btn-ghost" href="${escAttr(API_BASE + x.url)}" download>${escHtml(Khan.t("menus.render.download", "Download"))}</a>` : ""}</div>
+        ${x.error ? `<p class="muted">${escHtml(x.error)}</p>` : ""}`;
+      grid.appendChild(card);
+    });
+    return items;
+  }
+
+  async function createPlaylist() {
+    try {
+      const pl = await api(`/menus/${st.current.id}/playlist`, { method: "POST" });
+      st.current.playlist_id = pl.id;
+      toast(Khan.t("menus.render.playlist_done", 'Playlist "{name}" updated.').replace("{name}", pl.name), "success");
+      document.getElementById("menu-playlist-btn").textContent = Khan.t("menus.render.playlist_open", "Open playlist");
+      document.getElementById("menu-playlist-btn").onclick = () => { showSection("playlists"); };
+    } catch (err) { toast(err.message, "error"); }
+  }
 
   document.getElementById("menu-new-btn")?.addEventListener("click", createMenu);
 
-  return { show, refreshList, openEditor, save, renderBoards, _st: st };
+  return { show, refreshList, openEditor, save, renderBoards, showRenders, _st: st };
 })();

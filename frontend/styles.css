@@ -2556,3 +2556,12 @@ code, kbd, samp, pre,
 .badges-cell { white-space: nowrap; }
 .badges-cell label { margin-inline-end: 6px; font-size: 12px; }
 .editor-actions { display: flex; gap: 8px; margin-top: 16px; }
+.render-options { display: grid; gap: 6px; margin: 8px 0 12px; }
+.render-options label { margin-inline-end: 12px; }
+.renders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.render-card { border: 1px solid var(--cream-border, #E8DCC6); border-radius: 12px; overflow: hidden; background: #000; }
+.render-card img { width: 100%; display: block; }
+.render-ph { aspect-ratio: 16 / 9; display: grid; place-items: center; color: #fff; }
+.render-card.status-failed .render-ph { background: #5A1F1F; }
+.render-meta { display: flex; gap: 6px; align-items: center; padding: 8px; background: var(--bg-card, #fff); flex-wrap: wrap; }
+.stale-note { grid-column: 1 / -1; }
