@@ -85,3 +85,62 @@ def test_render_hash_is_stable_and_sensitive():
     h2 = render_hash(dict(tree), "dark-classic", "1", "board", "en", "16:9")
     h3 = render_hash(tree, "dark-classic", "1", "board", "ar", "16:9")
     assert h1 == h2 and h1 != h3 and len(h1) == 64
+
+
+def test_tree_rejects_duplicate_ids():
+    from menus import MenuTreeIn, Brand, CategoryIn, ItemIn
+
+    with pytest.raises(ValidationError):
+        MenuTreeIn(
+            name="FORNO", template="dark-classic", brand=Brand(name_en="FORNO"),
+            categories=[CategoryIn(name_en="Classics", items=[
+                ItemIn(id=1, name_en="Margherita"),
+                ItemIn(id=1, name_en="Marinara"),
+            ])],
+        )
+
+    with pytest.raises(ValidationError):
+        MenuTreeIn(
+            name="FORNO", template="dark-classic", brand=Brand(name_en="FORNO"),
+            categories=[
+                CategoryIn(id=1, name_en="Classics"),
+                CategoryIn(id=1, name_en="Drinks"),
+            ],
+        )
+
+
+def test_list_and_delete_menu(client):
+    from menus import (
+        MenuTreeIn, Brand, CategoryIn, ItemIn,
+        create_menu, list_menus, delete_menu, get_menu_tree, replace_menu_tree,
+    )
+
+    _, org_id = _org_id(client)
+    _, other_org_id = _org_id(client)
+
+    with pytest.raises(ValueError):
+        create_menu(org_id, "X", "nope")
+
+    menu_id = create_menu(org_id, "FORNO", "dark-classic")
+    other_menu_id = create_menu(org_id, "EMPTY", "dark-classic")
+
+    replace_menu_tree(org_id, menu_id, MenuTreeIn(
+        name="FORNO", template="dark-classic", brand=Brand(name_en="FORNO"),
+        categories=[CategoryIn(name_en="Classics", items=[
+            ItemIn(name_en="Margherita"),
+            ItemIn(name_en="Marinara"),
+        ])],
+    ))
+
+    menus = {m["id"]: m for m in list_menus(org_id)}
+    assert set(menus) == {menu_id, other_menu_id}
+    assert menus[menu_id]["category_count"] == 1
+    assert menus[menu_id]["item_count"] == 2
+    assert menus[other_menu_id]["category_count"] == 0
+    assert menus[other_menu_id]["item_count"] == 0
+
+    assert delete_menu(other_org_id, menu_id) is False
+
+    assert delete_menu(org_id, menu_id) is True
+    assert get_menu_tree(org_id, menu_id) is None
+    assert query_all("SELECT id FROM menu_categories WHERE menu_id = ?", (menu_id,)) == []

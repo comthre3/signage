@@ -12,7 +12,7 @@ import re
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from db import execute, query_all, query_one, utc_now_iso
 
@@ -95,6 +95,22 @@ class MenuTreeIn(BaseModel):
         if sum(len(c.items) for c in v) > MAX_ITEMS:
             raise ValueError(f"at most {MAX_ITEMS} items")
         return v
+
+    @model_validator(mode="after")
+    def _no_duplicate_ids(self) -> "MenuTreeIn":
+        seen_cats: set[int] = set()
+        seen_items: set[int] = set()
+        for cat in self.categories:
+            if cat.id is not None:
+                if cat.id in seen_cats:
+                    raise ValueError(f"duplicate category id {cat.id}")
+                seen_cats.add(cat.id)
+            for item in cat.items:
+                if item.id is not None:
+                    if item.id in seen_items:
+                        raise ValueError(f"duplicate item id {item.id}")
+                    seen_items.add(item.id)
+        return self
 
 
 # ── persistence ────────────────────────────────────────────────────────────
