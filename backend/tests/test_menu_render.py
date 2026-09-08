@@ -49,3 +49,79 @@ def test_category_and_promo_kinds():
     assert "Margherita" in html_p and "2.750" in html_p
     with pytest.raises(ValueError):
         build_html(TREE, "luxe", "promo", "en", "16:9", item_id=999)
+
+
+import base64, uuid
+import httpx, respx
+
+# 1x1 transparent PNG
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+
+
+def _org(client):
+    sfx = uuid.uuid4().hex[:8]
+    r = client.post("/auth/signup/request", json={"business_name": f"Biz {sfx}", "email": f"r-{sfx}@example.com"})
+    otp = r.json()["dev_otp"]
+    r = client.post("/auth/signup/verify", json={"email": f"r-{sfx}@example.com", "otp": otp})
+    r = client.post("/auth/signup/complete", json={"verification_token": r.json()["verification_token"], "password": "Khanshoof2026Test"})
+    return {"Authorization": f"Bearer {r.json()['token']}"}, r.json()["organization"]["id"]
+
+
+def _menu_with_items(client, headers):
+    menu_id = client.post("/menus", json={"name": "FORNO"}, headers=headers).json()["id"]
+    body = {"name": "FORNO", "template": "dark-classic", "brand": {"name_en": "FORNO", "name_ar": "فورنو"},
+            "categories": [{"name_en": "Classics", "name_ar": "الكلاسيكية", "items": [
+                {"name_en": "Margherita", "name_ar": "مارغريتا", "price": "2.750", "badges": ["popular"]}]}]}
+    assert client.put(f"/menus/{menu_id}", json=body, headers=headers).status_code == 200
+    return menu_id
+
+
+def test_plan_renders_counts_and_hashes():
+    from menu_render import plan_renders
+    from tests.test_menu_render import TREE
+    specs = plan_renders(TREE, "dark-classic", ["en", "ar"], ["16:9"], ["board", "category", "promo"])
+    kinds = sorted((s.kind, s.language) for s in specs)
+    assert kinds == sorted([("board", "en"), ("board", "ar"), ("category", "en"), ("category", "ar"),
+                            ("promo", "en"), ("promo", "ar")])
+    assert len({s.render_hash for s in specs}) == 6
+
+
+@respx.mock
+def test_render_endpoint_creates_media_and_skips_unchanged(client, monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(main, "RENDERER_URL", "http://renderer.test")
+    monkeypatch.setattr(main, "RENDERER_TOKEN", "t")
+    monkeypatch.setattr(main, "UPLOAD_DIR", str(tmp_path))
+    route = respx.post("http://renderer.test/render").mock(return_value=httpx.Response(200, content=PNG, headers={"content-type": "image/png"}))
+    headers, _ = _org(client)
+    menu_id = _menu_with_items(client, headers)
+
+    r = client.post(f"/menus/{menu_id}/render", json={"languages": ["en", "ar"], "aspects": ["16:9"], "kinds": ["board"]}, headers=headers)
+    assert r.status_code == 202, r.text
+    renders = client.get(f"/menus/{menu_id}/renders", headers=headers).json()["items"]
+    assert {(x["language"], x["status"]) for x in renders} == {("en", "ready"), ("ar", "ready")}
+    assert all(x["url"].startswith("/uploads/") and x["media_id"] for x in renders)
+    assert route.call_count == 2
+    assert route.calls[0].request.headers["x-renderer-token"] == "t"
+    media_names = [m["name"] for m in client.get("/media", headers=headers).json()]
+    assert any("FORNO" in n and "(EN" in n for n in media_names)
+
+    # unchanged menu → nothing re-rendered
+    client.post(f"/menus/{menu_id}/render", json={"languages": ["en", "ar"], "aspects": ["16:9"], "kinds": ["board"]}, headers=headers)
+    assert route.call_count == 2
+
+    # renderer failure → failed row with error, menu untouched
+    route.mock(return_value=httpx.Response(503, text="busy"))
+    client.post(f"/menus/{menu_id}/render", json={"languages": ["bi"], "aspects": ["9:16"], "kinds": ["board"]}, headers=headers)
+    renders = client.get(f"/menus/{menu_id}/renders", headers=headers).json()["items"]
+    failed = [x for x in renders if x["language"] == "bi"]
+    assert failed and failed[0]["status"] == "failed" and "503" in failed[0]["error"]
+
+
+def test_render_requires_renderer(client, monkeypatch):
+    import main
+    monkeypatch.setattr(main, "RENDERER_URL", "")
+    headers, _ = _org(client)
+    menu_id = _menu_with_items(client, headers)
+    r = client.post(f"/menus/{menu_id}/render", json={}, headers=headers)
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "menu.renderer_unavailable"

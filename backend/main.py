@@ -3813,6 +3813,49 @@ def delete_menu_endpoint(
     return Response(status_code=204)
 
 
+class RenderRequest(BaseModel):
+    languages: list[str] = Field(default_factory=lambda: ["en", "ar"])
+    aspects:   list[str] = Field(default_factory=lambda: ["16:9"])
+    kinds:     list[str] = Field(default_factory=lambda: ["board"])
+
+
+@app.post("/menus/{menu_id}/render", status_code=202)
+async def render_menu_endpoint(
+    menu_id: int,
+    payload: RenderRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:rw", session_roles=("admin", "editor"))),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    from menu_render import plan_renders, run_render_job
+    if not RENDERER_URL:
+        raise http_error(503, "menu.renderer_unavailable", "Rendering is not configured on this server")
+    tree = menus_domain.get_menu_tree(principal.organization_id, menu_id)
+    if not tree:
+        raise http_error(404, "menu.not_found", "Menu not found")
+    try:
+        specs = plan_renders(tree, tree["template"], payload.languages, payload.aspects, payload.kinds)
+    except ValueError as exc:
+        raise http_error(400, "menu.bad_render_request", str(exc))
+    background_tasks.add_task(run_render_job, principal.organization_id, menu_id, specs,
+                              renderer_url=RENDERER_URL, renderer_token=RENDERER_TOKEN, upload_dir=UPLOAD_DIR)
+    audit(request, action="menu.render", actor=principal.user, target_type="menu",
+          target_id=menu_id, organization_id=principal.organization_id,
+          details={"boards": len(specs)})
+    return {"queued": len(specs)}
+
+
+@app.get("/menus/{menu_id}/renders")
+def list_menu_renders_endpoint(
+    menu_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    if not menus_domain.get_menu_tree(principal.organization_id, menu_id):
+        raise http_error(404, "menu.not_found", "Menu not found")
+    return {"items": _current_renders(menu_id)}
+
+
 def _current_renders(menu_id: int) -> list[dict]:
     """Latest render per (kind, category, item, language, aspect). Populated by Task 6."""
     rows = query_all(

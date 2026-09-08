@@ -123,3 +123,115 @@ def build_html(tree: dict, template_id: str, kind: str, language: str, aspect: s
     if kind == "promo" and item_id is None:
         raise ValueError("item_id required")
     return _env.get_template(f"{kind}.html").render(**ctx)
+
+
+# ── render jobs ─────────────────────────────────────────────────────────────
+import os
+import uuid
+from dataclasses import dataclass
+
+import httpx
+
+from db import execute, query_one, utc_now_iso
+from menus import render_hash
+
+
+@dataclass(frozen=True)
+class RenderSpec:
+    kind: str
+    language: str
+    aspect: str
+    category_id: Optional[int]
+    item_id: Optional[int]
+    render_hash: str
+
+
+def plan_renders(tree: dict, template_id: str, languages: list[str], aspects: list[str],
+                 kinds: list[str]) -> list[RenderSpec]:
+    tpl = get_template(template_id)
+    specs: list[RenderSpec] = []
+    for kind in kinds:
+        if kind not in KINDS:
+            raise ValueError(f"bad kind {kind}")
+        targets: list[tuple[Optional[int], Optional[int]]]
+        if kind == "board":
+            targets = [(None, None)]
+        elif kind == "category":
+            targets = [(c["id"], None) for c in tree.get("categories", [])]
+        else:
+            targets = [(None, it["id"]) for it in featured_items(tree)]
+        for language in languages:
+            if language not in LANGUAGES:
+                raise ValueError(f"bad language {language}")
+            for aspect in aspects:
+                if aspect not in ASPECT_SIZES:
+                    raise ValueError(f"bad aspect {aspect}")
+                for category_id, item_id in targets:
+                    specs.append(RenderSpec(kind, language, aspect, category_id, item_id,
+                                            render_hash(tree, template_id, tpl["version"], kind, language,
+                                                        aspect, category_id, item_id)))
+    return specs
+
+
+def _media_name(tree: dict, spec: RenderSpec) -> str:
+    brand = tree.get("brand", {}).get("name_en") or tree.get("name")
+    lang = spec.language.upper()
+    if spec.kind == "board":
+        what = "Menu"
+    elif spec.kind == "category":
+        what = _find_category(tree, spec.category_id)["name_en"]
+    else:
+        what = "Promo · " + _find_item(tree, spec.item_id)["name_en"]
+    return f"{brand} — {what} ({lang}, {spec.aspect})"
+
+
+async def run_render_job(org_id: int, menu_id: int, specs: list[RenderSpec], *, renderer_url: str,
+                         renderer_token: str, upload_dir: str) -> None:
+    """Render each spec whose hash isn't already 'ready'. Rows go pending → ready/failed."""
+    from menus import get_menu_tree
+    tree = get_menu_tree(org_id, menu_id)
+    if not tree:
+        return
+    logo_url = None
+    if tree["brand"].get("logo_media_id"):
+        row = query_one("SELECT filename FROM media WHERE id = ? AND organization_id = ?",
+                        (tree["brand"]["logo_media_id"], org_id))
+        if row:
+            p = os.path.join(upload_dir, row["filename"])
+            if os.path.exists(p):
+                import base64, mimetypes
+                mime = mimetypes.guess_type(p)[0] or "image/png"
+                logo_url = f"data:{mime};base64," + base64.b64encode(open(p, "rb").read()).decode()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as http:
+        for spec in specs:
+            existing = query_one(
+                "SELECT id FROM menu_renders WHERE menu_id = ? AND render_hash = ? AND status = 'ready'",
+                (menu_id, spec.render_hash))
+            if existing:
+                continue
+            row_id = execute(
+                "INSERT INTO menu_renders (menu_id, kind, category_id, item_id, language, aspect, status, "
+                "render_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (menu_id, spec.kind, spec.category_id, spec.item_id, spec.language, spec.aspect,
+                 spec.render_hash, utc_now_iso()))
+            try:
+                html = build_html(tree, tree["template"], spec.kind, spec.language, spec.aspect,
+                                  category_id=spec.category_id, item_id=spec.item_id, logo_url=logo_url)
+                width, height = ASPECT_SIZES[spec.aspect]
+                resp = await http.post(f"{renderer_url}/render",
+                                       json={"html": html, "width": width, "height": height, "scale": 1},
+                                       headers={"X-Renderer-Token": renderer_token})
+                if resp.status_code != 200:
+                    raise RuntimeError(f"renderer returned {resp.status_code}: {resp.text[:200]}")
+                filename = f"{uuid.uuid4().hex}.png"
+                with open(os.path.join(upload_dir, filename), "wb") as f:
+                    f.write(resp.content)
+                media_id = execute(
+                    "INSERT INTO media (organization_id, name, filename, mime_type, size, created_at) "
+                    "VALUES (?, ?, ?, 'image/png', ?, ?)",
+                    (org_id, _media_name(tree, spec), filename, len(resp.content), utc_now_iso()))
+                execute("UPDATE menu_renders SET status = 'ready', media_id = ? WHERE id = ?", (media_id, row_id))
+            except Exception as exc:  # noqa: BLE001 — recorded on the row, never raised into the job
+                execute("UPDATE menu_renders SET status = 'failed', error = ? WHERE id = ?",
+                        (str(exc)[:500], row_id))
+    execute("UPDATE menus SET last_rendered_at = ? WHERE id = ?", (utc_now_iso(), menu_id))
