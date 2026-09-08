@@ -410,5 +410,27 @@
   "auth.social.divider": "أو",
   "auth.social.complete_signup.title": "أهلاً بك في خانشوف!",
   "auth.social.complete_signup.business_name": "اسم الشركة",
-  "auth.social.complete_signup.continue": "متابعة"
+  "auth.social.complete_signup.continue": "متابعة",
+
+  "confirm_dialog.ok": "موافق",
+  "confirm_dialog.cancel": "إلغاء",
+  "nav.menus": "القوائم",
+  "menus.title": "القوائم",
+  "menus.intro": "لوحات قوائم ثنائية اللغة تُرسم من بيانات قائمتك. عدّل السعر، أعد التصيير، وانتهى.",
+  "menus.new": "+ قائمة جديدة",
+  "menus.import": "استيراد بالذكاء الاصطناعي",
+  "menus.empty": "لا توجد قوائم بعد. أنشئ واحدة للبدء.",
+  "menus.new_prompt_name": "اسم القائمة",
+  "menus.card.items": "{n} عنصر",
+  "menus.card.never_rendered": "لم تُصيَّر بعد",
+  "menus.card.rendered": "صُيِّرت {when}",
+  "menus.card.edit": "تعديل",
+  "menus.card.delete": "حذف",
+  "menus.confirm_delete": "حذف هذه القائمة؟ ستبقى اللوحات المصيَّرة في مكتبة الوسائط.",
+  "menus.error.fetch": "تعذّر تحميل القوائم.",
+  "error.menu.not_found": "القائمة غير موجودة.",
+  "error.menu.bad_template": "قالب غير معروف.",
+  "error.menu.renderer_unavailable": "التصيير غير مُعدّ على هذا الخادم.",
+  "error.menu.bad_render_request": "خيارات تصيير غير صالحة.",
+  "error.menu.no_boards": "صيّر اللوحات أولًا."
 }

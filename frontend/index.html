@@ -31,6 +31,7 @@
           <button data-section="screens" data-i18n="nav.screens">Screens</button>
           <button data-section="media" data-i18n="nav.media">Media</button>
           <button data-section="playlists" data-i18n="nav.playlists">Playlists</button>
+          <button data-section="menus" data-i18n="nav.menus" class="hidden" id="nav-menus-btn">Menus</button>
           <button data-section="schedules" data-i18n="nav.schedules">Schedules</button>
           <button data-section="users" data-i18n="nav.users">Users</button>
           <button data-section="walls" data-i18n="nav.walls">Walls</button>
@@ -533,6 +534,20 @@
           </div>
         </section>
 
+        <section id="menus" class="panel hidden">
+          <header class="panel-header">
+            <h2 data-i18n="menus.title">Menus</h2>
+            <div class="panel-actions">
+              <button id="menu-import-btn" class="btn hidden" data-i18n="menus.import">Import with AI</button>
+              <button id="menu-new-btn" class="btn" data-i18n="menus.new">+ New menu</button>
+            </div>
+          </header>
+          <p class="muted" data-i18n="menus.intro">Bilingual menu boards rendered from your menu data. Edit a price, re-render, done.</p>
+          <div id="menus-list" class="menus-list"></div>
+          <div id="menu-editor" class="hidden"></div>
+          <div id="menu-renders" class="hidden"></div>
+        </section>
+
         <section id="api-keys" class="panel hidden">
           <header class="panel-header">
             <h2 data-i18n="api_keys.title">API Keys</h2>
@@ -587,5 +602,6 @@
 
     <script src="i18n.js"></script>
     <script src="app.js"></script>
+    <script src="menus.js"></script>
   </body>
 </html>

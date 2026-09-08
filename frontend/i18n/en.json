@@ -410,5 +410,27 @@
   "auth.social.divider": "or",
   "auth.social.complete_signup.title": "Welcome to Khanshoof!",
   "auth.social.complete_signup.business_name": "Business name",
-  "auth.social.complete_signup.continue": "Continue"
+  "auth.social.complete_signup.continue": "Continue",
+
+  "confirm_dialog.ok": "OK",
+  "confirm_dialog.cancel": "Cancel",
+  "nav.menus": "Menus",
+  "menus.title": "Menus",
+  "menus.intro": "Bilingual menu boards rendered from your menu data. Edit a price, re-render, done.",
+  "menus.new": "+ New menu",
+  "menus.import": "Import with AI",
+  "menus.empty": "No menus yet. Create one to get started.",
+  "menus.new_prompt_name": "Menu name",
+  "menus.card.items": "{n} items",
+  "menus.card.never_rendered": "Not rendered yet",
+  "menus.card.rendered": "Rendered {when}",
+  "menus.card.edit": "Edit",
+  "menus.card.delete": "Delete",
+  "menus.confirm_delete": "Delete this menu? Rendered boards stay in your media library.",
+  "menus.error.fetch": "Failed to load menus.",
+  "error.menu.not_found": "Menu not found.",
+  "error.menu.bad_template": "Unknown template.",
+  "error.menu.renderer_unavailable": "Rendering isn't configured on this server.",
+  "error.menu.bad_render_request": "Invalid render options.",
+  "error.menu.no_boards": "Render the boards first."
 }

@@ -128,6 +128,7 @@ function withLoading(btn, fn) {
 const state = {
   sites: [], screens: [], playlists: [], schedules: [], media: [], users: [], groups: [],
   org: null,
+  capabilities: { menus: false, menu_import: false },
 };
 
 const zonesState = {
@@ -166,6 +167,7 @@ function showSection(id) {
   if (id === "schedules") Schedules.show();
   if (id === "audit-log") AuditLog.show();
   if (id === "api-keys") ApiKeys.show();
+  if (id === "menus") Menus.show();
 }
 
 function buildPlayerUrl(base, params) {
@@ -1641,6 +1643,12 @@ async function bootData() {
   populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
   await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadSchedules(), loadMedia(), loadUsers()]);
   await loadScreens();
+  try {
+    const caps = await fetch(`${API_BASE}/ai/capabilities`).then((r) => r.json());
+    state.capabilities = caps;
+    document.getElementById("nav-menus-btn")?.classList.toggle("hidden", !caps.menus);
+    document.getElementById("menu-import-btn")?.classList.toggle("hidden", !caps.menu_import);
+  } catch (_) { state.capabilities = { menus: false, menu_import: false }; }
   showSection("sites");
 }
 
