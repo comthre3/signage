@@ -50,8 +50,8 @@ const Menus = (() => {
           <span class="muted">${escHtml(rendered)}</span>
         </div>
         <div class="menu-card-actions">
-          <button class="btn" data-edit="${m.id}">${escHtml(Khan.t("menus.card.edit", "Edit"))}</button>
-          <button class="btn btn-ghost delete-btn" data-delete="${m.id}">${escHtml(Khan.t("menus.card.delete", "Delete"))}</button>
+          <button class="btn" data-edit="${escAttr(m.id)}">${escHtml(Khan.t("menus.card.edit", "Edit"))}</button>
+          <button class="btn btn-ghost delete-btn" data-delete="${escAttr(m.id)}">${escHtml(Khan.t("menus.card.delete", "Delete"))}</button>
         </div>`;
       card.querySelector("[data-edit]").addEventListener("click", () => openEditor(m.id));
       card.querySelector("[data-delete]").addEventListener("click", () => removeMenu(m.id));
