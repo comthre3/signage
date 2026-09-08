@@ -1,0 +1,2 @@
+{ "id": "dark-classic", "name_en": "Dark classic", "name_ar": "كلاسيكي داكن", "version": "1",
+  "aspects": ["16:9", "9:16"], "kinds": ["board", "category", "promo"] }

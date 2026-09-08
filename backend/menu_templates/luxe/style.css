@@ -1,0 +1,29 @@
+body { font-family: 'Inter', 'IBM Plex Sans Arabic', sans-serif; background: radial-gradient(90% 60% at 50% 20%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%), linear-gradient(180deg, #16111D, #07060A); color: #fff; }
+body.lang-ar { font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; }
+.board { box-sizing: border-box; height: 100%; padding: 80px 96px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 48px; }
+.head { text-align: center; }
+.brand { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.logo { height: 88px; width: auto; }
+.brand-name { font-weight: 300; font-size: 72px; letter-spacing: .28em; text-transform: uppercase; line-height: 1; }
+.tagline { font-size: 24px; letter-spacing: .3em; text-transform: uppercase; color: var(--accent); font-weight: 500; }
+.cols { display: grid; gap: 80px; align-content: start; }
+.cols-1 { grid-template-columns: 1fr; } .cols-2 { grid-template-columns: 1fr 1fr; } .cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+.aspect-916 .cols { grid-template-columns: 1fr; }
+.cat-name { font-size: 26px; font-weight: 600; letter-spacing: .28em; text-transform: uppercase; color: var(--accent); border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); padding-bottom: 16px; margin: 0 0 24px; }
+.item { padding: 14px 0; }
+.item-main { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; font-size: 38px; font-weight: 400; }
+.item-desc { font-size: 24px; color: rgba(255,255,255,.55); margin-top: 6px; }
+.dots { display: none; }
+.price { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.price small { font-size: .6em; color: rgba(255,255,255,.5); }
+.badge { font-size: 16px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; padding: 4px 12px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); margin-inline-start: 12px; }
+.foot { font-size: 22px; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.45); text-align: center; }
+.single .cat-name { font-size: 40px; } .single .item-main { font-size: 54px; } .single .item-desc { font-size: 30px; }
+.promo { display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-start; text-align: start; gap: 20px; padding: 120px; }
+.promo-kicker { font-size: 28px; letter-spacing: .3em; text-transform: uppercase; color: rgba(255,255,255,.6); }
+.promo-name { font-size: 132px; font-weight: 300; letter-spacing: .02em; line-height: 1; }
+.promo-desc { font-size: 36px; color: rgba(255,255,255,.65); }
+.promo-price { font-family: 'JetBrains Mono', monospace; font-size: 84px; font-weight: 600; color: var(--accent); }
+.promo-price small { font-size: .4em; }
+.promo-brand { position: absolute; top: 96px; font-size: 26px; letter-spacing: .3em; text-transform: uppercase; opacity: .6; }
+.ar { display: block; font-family: 'IBM Plex Sans Arabic', sans-serif; direction: rtl; font-size: .8em; opacity: .85; }

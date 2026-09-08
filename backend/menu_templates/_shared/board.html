@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="{{ 'ar' if lang == 'ar' else 'en' }}" dir="{{ dir }}">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --primary: {{ brand.primary }}; --accent: {{ brand.accent }}; --bg: {{ brand.background }}; }
+  html, body { margin: 0; padding: 0; }
+  body { width: {{ width }}px; height: {{ height }}px; overflow: hidden; }
+  {{ css | safe }}
+</style>
+</head>
+<body class="kind-board aspect-{{ '169' if aspect == '16:9' else '916' }} lang-{{ lang }}">
+<div class="board">
+  <header class="head">
+    <div class="brand">
+      {% if logo_url %}<img class="logo" src="{{ logo_url }}" alt="">{% endif %}
+      <div class="brand-name">{{ t(brand.name_en, brand.name_ar) }}</div>
+      {% if brand.tagline_en or brand.tagline_ar %}<div class="tagline">{{ t(brand.tagline_en, brand.tagline_ar) }}</div>{% endif %}
+    </div>
+  </header>
+  <main class="cols cols-{{ [menu.categories | length, 3] | min }}">
+    {% for c in menu.categories %}
+    <section class="cat">
+      <h2 class="cat-name">{{ t(c.name_en, c.name_ar) }}</h2>
+      {% for it in c.items if it.is_available %}
+      <div class="item{% if 'popular' in it.badges %} popular{% endif %}">
+        <div class="item-main">
+          <span class="item-name">{{ t(it.name_en, it.name_ar) }}</span>
+          {% for b in it.badges %}<span class="badge badge-{{ b }}">{{ badge_label(b) }}</span>{% endfor %}
+          <span class="dots"></span>
+          <span class="price">{{ money(it.price) }}{% if it.price_note %} <small>{{ it.price_note }}</small>{% endif %}</span>
+        </div>
+        {% if it.description_en or it.description_ar %}<div class="item-desc">{{ t(it.description_en, it.description_ar) }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  </main>
+  <footer class="foot">{{ t('Prices in ' ~ brand.currency, 'الأسعار بـ' ~ brand.currency) }}</footer>
+</div>
+</body>
+</html>
