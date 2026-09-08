@@ -3856,6 +3856,53 @@ def list_menu_renders_endpoint(
     return {"items": _current_renders(menu_id)}
 
 
+_KIND_ORDER = {"board": 0, "category": 1, "promo": 2}
+_LANG_ORDER = {"en": 0, "ar": 1, "bi": 2}
+
+
+@app.post("/menus/{menu_id}/playlist")
+def menu_playlist_endpoint(
+    menu_id: int,
+    request: Request,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:rw", session_roles=("admin", "editor"))),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    oid = principal.organization_id
+    tree = menus_domain.get_menu_tree(oid, menu_id)
+    if not tree:
+        raise http_error(404, "menu.not_found", "Menu not found")
+    renders = [r for r in _current_renders(menu_id) if r["status"] == "ready" and r["media_id"]]
+    if not renders:
+        raise http_error(409, "menu.no_boards", "Render the boards before creating a playlist")
+    cat_pos = {c["id"]: i for i, c in enumerate(tree["categories"])}
+    renders.sort(key=lambda r: (_KIND_ORDER[r["kind"]], cat_pos.get(r["category_id"], 0),
+                                r["item_id"] or 0, _LANG_ORDER[r["language"]], r["aspect"]))
+    name = f"Menu — {tree['name']}"
+    playlist = None
+    if tree.get("playlist_id"):
+        playlist = query_one("SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
+                             (tree["playlist_id"], oid))
+    if not playlist:
+        pid = execute("INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
+                      (oid, name, utc_now_iso()))
+        execute("UPDATE menus SET playlist_id = ? WHERE id = ?", (pid, menu_id))
+    else:
+        pid = playlist["id"]
+        execute("UPDATE playlists SET name = ? WHERE id = ?", (name, pid))
+        execute("DELETE FROM playlist_items WHERE playlist_id = ?", (pid,))
+    for pos, r in enumerate(renders, start=1):
+        execute("INSERT INTO playlist_items (playlist_id, media_id, duration_seconds, position, created_at) "
+                "VALUES (?, ?, 10, ?, ?)", (pid, r["media_id"], pos, utc_now_iso()))
+    audit(request, action="menu.playlist", actor=principal.user, target_type="playlist",
+          target_id=pid, organization_id=oid, details={"menu_id": menu_id, "boards": len(renders)})
+    out = query_one("SELECT * FROM playlists WHERE id = ?", (pid,))
+    out["items"] = query_all(
+        "SELECT pi.id, pi.duration_seconds, pi.position, m.id AS media_id, m.name, m.filename "
+        "FROM playlist_items pi JOIN media m ON m.id = pi.media_id WHERE pi.playlist_id = ? ORDER BY pi.position",
+        (pid,))
+    return out
+
+
 def _current_renders(menu_id: int) -> list[dict]:
     """Latest render per (kind, category, item, language, aspect). Populated by Task 6."""
     rows = query_all(
