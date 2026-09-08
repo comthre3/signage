@@ -38,6 +38,7 @@ chmod +x scripts/backup.sh
 - Per-zone media carousels with independent durations.
 - Website URLs as media (rendered in player via iframe).
 - Offline-friendly player caching (app shell + uploads).
+- Menus content type (menus → categories → items, bilingual EN/AR) rendered to PNG boards via an internal renderer service, then dropped straight into a playlist.
 
 ## Zone behavior
 
@@ -65,6 +66,31 @@ In **Media Library**, use **Add Website**:
 
 - `https://` or `http://` only.
 - Website entries render in the player as iframes.
+
+## Menus + renderer service
+
+Menus (menus → categories → items, bilingual EN/AR) are turned into PNG boards by an internal
+`renderer` service (headless Chromium), which the backend calls over HTTP. It's built from
+`renderer/` in `docker-compose.yml`, runs alongside `backend`, and has no published host port —
+only the backend can reach it, on the compose network.
+
+Set these in `.env` before rendering will work:
+
+```
+RENDERER_URL=http://renderer:8080
+RENDERER_TOKEN=<a-shared-secret>
+```
+
+- `RENDERER_URL` — internal URL of the `renderer` service. Leave unset to disable menu rendering
+  (`GET /ai/capabilities` reports `"menus": false` and the dashboard hides the Menus section).
+- `RENDERER_TOKEN` — shared secret the backend sends to the renderer on every request; must match
+  the `RENDERER_TOKEN` the `renderer` service itself is started with.
+
+Then rebuild:
+
+```bash
+sudo docker-compose up -d --build backend renderer
+```
 
 ## Tailscale / remote access
 
