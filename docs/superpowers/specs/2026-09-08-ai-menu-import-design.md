@@ -195,7 +195,7 @@ shape.
 
 | Method & path | Notes |
 |---|---|
-| `GET /ai/capabilities` | `{ "menu_import": bool }` — false when `ANTHROPIC_API_KEY` or `RENDERER_URL` is unset; the dashboard hides the feature (same pattern as `/auth/providers`) |
+| `GET /ai/capabilities` | `{ "menus": bool, "menu_import": bool }` — `menus` is true when `RENDERER_URL` is set; `menu_import` additionally requires `ANTHROPIC_API_KEY`. The dashboard hides what isn't available (same pattern as `/auth/providers`) |
 | `GET /ai/quota` | `{ used, limit, resets_at }` for the calling org |
 | `POST /menus/import` | body = `source`; 202 `{ import_id }`; 402 `ai.quota_exceeded` when the month's limit is reached; 400 `ai.bad_source` |
 | `GET /menus/imports/{id}` | `{ status, step, error, menu_id, created_at }` |
@@ -207,7 +207,7 @@ shape.
 | `POST /menus/{id}/render` | 202 `{ job_id }`; progress via `GET /menus/{id}/renders` (`status` per board) |
 | `GET /menus/{id}/renders` | current boards with `media_id`, `url`, `language`, `aspect`, `kind`, `status` |
 | `POST /menus/{id}/playlist` | creates/updates the draft playlist; returns it |
-| `GET /menus/templates` | ids, names, aspects, thumbnail URLs |
+| `GET /menus/templates` | ids, names (EN/AR), version, supported aspects and kinds; previews are drawn client-side as tinted CSS cards, no thumbnail files |
 
 Every write is audited with the existing `audit()` helper (`menu.import`, `menu.update`,
 `menu.render`, `menu.playlist`). Rate limits follow the existing `slowapi` pattern:
@@ -224,7 +224,9 @@ must pass).
 
 1. **Menus list** — cards with name, item count, template, last rendered; buttons
    **Import with AI** and **New blank menu**; a quota pill ("3 of 5 AI imports left this
-   month"). Hidden entirely when `/ai/capabilities.menu_import` is false.
+   month"). The section is shown when `/ai/capabilities.menus` is true (renderer
+   configured); the **Import with AI** button and quota pill are shown only when
+   `menu_import` is also true, so Plan A is fully usable without an Anthropic key.
 2. **Import modal** — tabs *Website URL* / *Upload PDF or photos* (reuses the media
    picker for already-uploaded files and the dropzone for new ones). After submit, a
    three-step progress view (Fetching → Reading → Drafting) polled every 2 s, with the
