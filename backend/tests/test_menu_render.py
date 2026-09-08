@@ -101,6 +101,13 @@ def test_render_endpoint_creates_media_and_skips_unchanged(client, monkeypatch, 
     renders = client.get(f"/menus/{menu_id}/renders", headers=headers).json()["items"]
     assert {(x["language"], x["status"]) for x in renders} == {("en", "ready"), ("ar", "ready")}
     assert all(x["url"].startswith("/uploads/") and x["media_id"] for x in renders)
+    # the PNG must really be on disk under UPLOAD_DIR, with the bytes the renderer returned
+    import os
+    for x in renders:
+        path = os.path.join(str(tmp_path), x["url"].split("/uploads/")[1])
+        assert os.path.exists(path), path
+        with open(path, "rb") as f:
+            assert f.read() == PNG
     assert route.call_count == 2
     assert route.calls[0].request.headers["x-renderer-token"] == "t"
     media_names = [m["name"] for m in client.get("/media", headers=headers).json()]
