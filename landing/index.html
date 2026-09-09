@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" dir="ltr">
   <head>
+    <script src="theme.js"></script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="assets/faces/v1_smile.png" />
@@ -95,7 +96,7 @@
     <link rel="stylesheet" href="styles.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,500;0,700;1,500&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700;800&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" />
     <script src="config.js"></script>
   </head>
   <body>
@@ -103,7 +104,7 @@
     <header class="nav" id="nav">
       <div class="container nav-inner">
         <a href="#" class="nav-logo">
-          <img class="nav-face" src="assets/faces/v1_smile.png" alt="" width="32" height="32" />
+          <img class="nav-face" src="assets/faces/v1_kawaii.png" alt="" width="34" height="30" />
           <span>Khanshoof</span>
         </a>
 
@@ -119,6 +120,10 @@
           <button id="lang-toggle" class="lang-toggle" data-i18n-aria-label="nav.lang_toggle_aria" aria-label="Switch language">
             <span data-i18n="lang.toggle_label">عربي</span>
           </button>
+          <button id="theme-toggle" class="theme-toggle" data-i18n-aria-label="nav.theme_toggle_aria" aria-label="Toggle dark / light theme">
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
           <a class="btn btn-ghost btn-sm" id="cta-signin" href="#" data-i18n="nav.signin">Sign in</a>
           <a class="btn btn-primary btn-sm" id="cta-signup" href="#" data-i18n="nav.signup">Start free trial</a>
         </nav>
@@ -127,7 +132,7 @@
 
     <!-- ── Hero ─────────────────────────────────────────────── -->
     <section class="hero">
-      <div class="container hero-grid">
+      <div class="container">
         <div class="hero-copy">
           <span class="pill" data-i18n="hero.pill">5-day free trial · no card</span>
           <h1 class="hero-title"><span data-i18n="hero.title">Digital signage that </span><em data-i18n="hero.title_em">just works</em>.</h1>
@@ -143,9 +148,252 @@
             <span data-i18n="hero.proof">Starter plan from <strong>3 KWD/month</strong> — up to 3 screens.</span>
           </div>
         </div>
+      </div>
 
-        <div class="hero-art">
-          <img class="hero-face" src="assets/faces/v1_smile.png" alt="Khanshoof — cute artichoke mascot cycling through expressions" width="520" height="440" />
+      <!-- Product frame: the dashboard, drawn in CSS, with the mascot peeking over it -->
+      <div class="hero-art">
+        <div class="hero-frame-inner">
+          <img class="hero-face" src="assets/faces/v1_smile.png" alt="Khanshoof — cute artichoke mascot peeking over the dashboard" width="132" height="116" />
+          <div class="hero-frame">
+            <div class="frame-chrome">
+              <span></span><span></span><span></span>
+              <div class="frame-url">app.khanshoof.com</div>
+            </div>
+            <div class="frame-body">
+              <div class="frame-side">
+                <div class="fs-group" data-i18n="hero.frame.group_displays">Displays</div>
+                <div class="fs-item active"><i></i><span data-i18n="hero.frame.screens">Screens</span></div>
+                <div class="fs-item"><i></i><span data-i18n="hero.frame.walls">Walls</span></div>
+                <div class="fs-item"><i></i><span data-i18n="hero.frame.sites">Sites</span></div>
+                <div class="fs-group" data-i18n="hero.frame.group_content">Content</div>
+                <div class="fs-item"><i></i><span data-i18n="hero.frame.media">Media</span></div>
+                <div class="fs-item"><i></i><span data-i18n="hero.frame.playlists">Playlists</span></div>
+                <div class="fs-item"><i></i><span data-i18n="hero.frame.schedules">Schedules</span></div>
+              </div>
+              <div class="frame-main">
+                <div class="fm-head">
+                  <div class="fm-title" data-i18n="hero.frame.title">Screens</div>
+                  <span class="fm-btn" data-i18n="hero.frame.pair_btn">+ Pair screen</span>
+                </div>
+                <div class="fm-stats">
+                  <div class="fm-stat"><b>9 / 12</b><span data-i18n="hero.frame.stat_online">Screens online</span></div>
+                  <div class="fm-stat"><b>7</b><span data-i18n="hero.frame.stat_playing">Playing now</span></div>
+                  <div class="fm-stat"><b>148</b><span data-i18n="hero.frame.stat_media">Media items</span></div>
+                  <div class="fm-stat"><b>99.2%</b><span data-i18n="hero.frame.stat_uptime">Uptime · 7d</span></div>
+                </div>
+                <div class="fm-grid">
+                  <div class="fm-card">
+                    <div class="fm-thumb"><span class="fm-live"><i></i><span data-i18n="hero.frame.live">LIVE</span></span></div>
+                    <div class="fm-body"><span class="fm-dot g"></span><span data-i18n="hero.frame.screen_1">Mall Entrance</span></div>
+                  </div>
+                  <div class="fm-card">
+                    <div class="fm-thumb"><span class="fm-live"><i></i><span data-i18n="hero.frame.live">LIVE</span></span></div>
+                    <div class="fm-body"><span class="fm-dot g"></span><span data-i18n="hero.frame.screen_2">Food Court Menu</span></div>
+                  </div>
+                  <div class="fm-card">
+                    <div class="fm-thumb"></div>
+                    <div class="fm-body"><span class="fm-dot a"></span><span data-i18n="hero.frame.screen_3">Drive-Thru Lane 2</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Showcase: three real zone layouts, rendered the way the player shows them ── -->
+    <section class="section showcase" id="showcase">
+      <div class="container">
+        <div class="section-head">
+          <span class="pill" data-i18n="showcase.pill">Built in Khanshoof</span>
+          <h2 class="section-title" data-i18n="showcase.title">Pick a layout. Drop in your menu.</h2>
+          <p class="section-sub" data-i18n="showcase.sub">Three real zone layouts from the dashboard, showing exactly what the player puts on the TV — menus, promo rotations and price lists.</p>
+        </div>
+        <div class="showcase-tools">
+          <button type="button" class="zones-toggle" id="showcase-zones-toggle" aria-pressed="false" aria-controls="showcase-grid">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16M3 12h12"/></svg>
+            <span data-i18n="showcase.toggle_zones">Show zones</span>
+          </button>
+        </div>
+
+        <div class="showcase-grid" id="showcase-grid">
+
+          <!-- ① Pizza — "Hero + Side" preset: hero zone plays the menu board, side zone rotates 3 promo images -->
+          <figure class="tv tv-landscape">
+            <div class="tv-screen">
+              <div class="scene layout-hero-side">
+                <div class="zone zone-hero">
+                  <span class="zone-tag" data-i18n="showcase.zone.hero">Hero</span>
+                  <div class="media mb-pizza">
+                    <img class="mb-photo" src="assets/showcase/pizza-board.webp" alt="" loading="lazy" />
+                    <div class="mb-body">
+                    <div class="mb-head">
+                      <div class="mb-brand" data-i18n="showcase.pizza.brand">FORNO</div>
+                      <div class="mb-brand-sub" data-i18n="showcase.pizza.tagline">Wood-fired pizza · Salmiya</div>
+                    </div>
+                    <div class="mb-cols">
+                      <div>
+                        <div class="mb-cat" data-i18n="showcase.pizza.cat1">Classics</div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c1i1">Margherita</span><span class="dots"></span><b data-i18n="showcase.pizza.c1p1">2.750</b></div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c1i2">Marinara</span><span class="dots"></span><b data-i18n="showcase.pizza.c1p2">2.250</b></div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c1i3">Pepperoni</span><span class="dots"></span><b data-i18n="showcase.pizza.c1p3">3.250</b></div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c1i4">Diavola</span><span class="dots"></span><b data-i18n="showcase.pizza.c1p4">3.750</b></div>
+                      </div>
+                      <div>
+                        <div class="mb-cat" data-i18n="showcase.pizza.cat2">Signature</div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c2i1">Truffle &amp; mushroom</span><span class="dots"></span><b data-i18n="showcase.pizza.c2p1">4.500</b></div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c2i2">Burrata &amp; prosciutto</span><span class="dots"></span><b data-i18n="showcase.pizza.c2p2">4.750</b></div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c2i3">Chili &amp; honey</span><span class="dots"></span><b data-i18n="showcase.pizza.c2p3">3.900</b></div>
+                        <div class="mb-item"><span data-i18n="showcase.pizza.c2i4">Four cheese</span><span class="dots"></span><b data-i18n="showcase.pizza.c2p4">3.500</b></div>
+                      </div>
+                    </div>
+                    <div class="mb-foot" data-i18n="showcase.pizza.foot">Prices in KD · 12-inch sourdough base · extra toppings +0.500 · halal</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="zone zone-side">
+                  <span class="zone-tag" data-i18n="showcase.zone.side">Side</span>
+                  <div class="rot">
+                    <div class="slide promo promo-1">
+                      <div class="promo-kicker" data-i18n="showcase.pizza.p1k">Tonight after 9pm</div>
+                      <div class="promo-big" data-i18n="showcase.pizza.p1b">2 for 1</div>
+                      <div class="promo-sub" data-i18n="showcase.pizza.p1s">Any two pizzas</div>
+                      <div class="promo-price" data-i18n="showcase.pizza.p1p">5.000 KD</div>
+                    </div>
+                    <div class="slide promo promo-2">
+                      <div class="promo-kicker" data-i18n="showcase.pizza.p2k">Family deal</div>
+                      <div class="promo-big" data-i18n="showcase.pizza.p2b">2 large</div>
+                      <div class="promo-sub" data-i18n="showcase.pizza.p2s">+ 4 soft drinks</div>
+                      <div class="promo-price" data-i18n="showcase.pizza.p2p">8.500 KD</div>
+                    </div>
+                    <div class="slide promo promo-3">
+                      <img class="promo-bg" src="assets/showcase/pizza-promo.webp" alt="" loading="lazy" />
+                      <div class="promo-kicker" data-i18n="showcase.pizza.p3k">New this month</div>
+                      <div class="promo-big" data-i18n="showcase.pizza.p3b">Truffle</div>
+                      <div class="promo-sub" data-i18n="showcase.pizza.p3s">Black truffle &amp; wild mushroom</div>
+                      <div class="promo-price" data-i18n="showcase.pizza.p3p">4.500 KD</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <figcaption>
+              <span class="tv-status" aria-hidden="true"></span><span class="tv-title" data-i18n="showcase.pizza.caption">Pizza menu board</span>
+              <span class="tv-meta" data-i18n="showcase.pizza.meta">Hero + Side preset · Hero: menu board (1 image) · Side: 3 promo images, 8 s each</span>
+            </figcaption>
+          </figure>
+
+          <!-- ② Perfume stand — "2 Row" preset on a portrait totem: top rotates 3 product slides, bottom holds the price list -->
+          <figure class="tv tv-portrait">
+            <div class="tv-screen">
+              <div class="scene layout-rows-2">
+                <div class="zone zone-top">
+                  <span class="zone-tag" data-i18n="showcase.zone.top">Top</span>
+                  <div class="rot">
+                    <div class="slide pf-slide pf-slide-1">
+                      <div class="pf-photo"><img src="assets/showcase/perfume-1.webp" alt="" loading="lazy" /></div>
+                      <div class="pf-text">
+                      <div class="pf-house" data-i18n="showcase.perfume.brand">Maison Noor</div>
+                      <div class="pf-title" data-i18n="showcase.perfume.s1n">Oud Royale</div>
+                      <div class="pf-notes" data-i18n="showcase.perfume.s1d">Oud · amber · saffron · 100 ml EDP</div>
+                      <div class="pf-cost" data-i18n="showcase.perfume.s1p">24.000 KD</div>
+                      </div>
+                    </div>
+                    <div class="slide pf-slide pf-slide-2">
+                      <div class="pf-photo"><img src="assets/showcase/perfume-2.webp" alt="" loading="lazy" /></div>
+                      <div class="pf-text">
+                      <div class="pf-house" data-i18n="showcase.perfume.brand">Maison Noor</div>
+                      <div class="pf-title" data-i18n="showcase.perfume.s2n">Amber Noir</div>
+                      <div class="pf-notes" data-i18n="showcase.perfume.s2d">Amber · vanilla · tonka · 100 ml EDP</div>
+                      <div class="pf-cost" data-i18n="showcase.perfume.s2p">19.500 KD</div>
+                      </div>
+                    </div>
+                    <div class="slide pf-slide pf-slide-3">
+                      <div class="pf-photo"><img src="assets/showcase/perfume-3.webp" alt="" loading="lazy" /></div>
+                      <div class="pf-text">
+                      <div class="pf-house" data-i18n="showcase.perfume.brand">Maison Noor</div>
+                      <div class="pf-title" data-i18n="showcase.perfume.s3n">Rose Taif</div>
+                      <div class="pf-notes" data-i18n="showcase.perfume.s3d">Taif rose · musk · pink pepper · 50 ml EDP</div>
+                      <div class="pf-cost" data-i18n="showcase.perfume.s3p">21.000 KD</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="zone zone-bottom">
+                  <span class="zone-tag" data-i18n="showcase.zone.bottom">Bottom</span>
+                  <div class="media pf-list">
+                    <div class="pf-list-head" data-i18n="showcase.perfume.list_head">The collection</div>
+                    <div class="pf-row"><span data-i18n="showcase.perfume.l1n">Oud Royale · 100 ml</span><b data-i18n="showcase.perfume.l1p">24.000</b></div>
+                    <div class="pf-row"><span data-i18n="showcase.perfume.l2n">Rose Taif · 50 ml</span><b data-i18n="showcase.perfume.l2p">21.000</b></div>
+                    <div class="pf-row"><span data-i18n="showcase.perfume.l3n">Amber Noir · 100 ml</span><b data-i18n="showcase.perfume.l3p">19.500</b></div>
+                    <div class="pf-row"><span data-i18n="showcase.perfume.l4n">Musk Tahara · 50 ml</span><b data-i18n="showcase.perfume.l4p">12.000</b></div>
+                    <div class="pf-row"><span data-i18n="showcase.perfume.l5n">Discovery set · 3 × 10 ml</span><b data-i18n="showcase.perfume.l5p">15.000</b></div>
+                    <div class="pf-list-foot" data-i18n="showcase.perfume.list_foot">Prices in KD · ask for a sample at the counter</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <figcaption>
+              <span class="tv-status" aria-hidden="true"></span><span class="tv-title" data-i18n="showcase.perfume.caption">Perfume stand totem</span>
+              <span class="tv-meta" data-i18n="showcase.perfume.meta">2 Row preset · portrait · Top: 3 product slides, 8 s each · Bottom: price list (1 image)</span>
+            </figcaption>
+          </figure>
+
+          <!-- ③ Bagel shop — "3 Col" preset: one menu panel image per column -->
+          <figure class="tv tv-landscape">
+            <div class="tv-screen">
+              <div class="scene layout-columns-3">
+                <div class="zone zone-left">
+                  <span class="zone-tag" data-i18n="showcase.zone.left">Left</span>
+                  <div class="media bg-panel">
+                    <img class="bg-photo" src="assets/showcase/bagel-1.webp" alt="" loading="lazy" />
+                    <div class="bg-body">
+                    <div class="bg-cat" data-i18n="showcase.bagel.cat1">Bagels</div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c1i1">Plain</span><b data-i18n="showcase.bagel.c1p1">0.500</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c1i2">Sesame</span><b data-i18n="showcase.bagel.c1p2">0.750</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c1i3">Everything</span><b data-i18n="showcase.bagel.c1p3">0.750</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c1i4">Za'atar</span><b data-i18n="showcase.bagel.c1p4">0.850</b></div>
+                    <div class="bg-foot" data-i18n="showcase.bagel.foot">Bagel &amp; Co. · Hawalli · prices in KD</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="zone zone-center">
+                  <span class="zone-tag" data-i18n="showcase.zone.center">Center</span>
+                  <div class="media bg-panel">
+                    <img class="bg-photo" src="assets/showcase/bagel-2.webp" alt="" loading="lazy" />
+                    <div class="bg-body">
+                    <div class="bg-cat" data-i18n="showcase.bagel.cat2">Sandwiches</div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c2i1">Lox &amp; cream cheese</span><b data-i18n="showcase.bagel.c2p1">2.250</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c2i2">Halloumi &amp; tomato</span><b data-i18n="showcase.bagel.c2p2">1.750</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c2i3">Egg &amp; cheddar</span><b data-i18n="showcase.bagel.c2p3">1.500</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c2i4">Turkey club</span><b data-i18n="showcase.bagel.c2p4">2.000</b></div>
+                    <div class="bg-foot" data-i18n="showcase.bagel.foot">Bagel &amp; Co. · Hawalli · prices in KD</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="zone zone-right">
+                  <span class="zone-tag" data-i18n="showcase.zone.right">Right</span>
+                  <div class="media bg-panel">
+                    <img class="bg-photo" src="assets/showcase/coffee.webp" alt="" loading="lazy" />
+                    <div class="bg-body">
+                    <div class="bg-cat" data-i18n="showcase.bagel.cat3">Coffee</div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c3i1">Espresso</span><b data-i18n="showcase.bagel.c3p1">0.900</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c3i2">Flat white</span><b data-i18n="showcase.bagel.c3p2">1.250</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c3i3">Iced latte</span><b data-i18n="showcase.bagel.c3p3">1.500</b></div>
+                    <div class="bg-row"><span data-i18n="showcase.bagel.c3i4">Karak</span><b data-i18n="showcase.bagel.c3p4">0.600</b></div>
+                    <div class="bg-foot" data-i18n="showcase.bagel.foot">Bagel &amp; Co. · Hawalli · prices in KD</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <figcaption>
+              <span class="tv-status" aria-hidden="true"></span><span class="tv-title" data-i18n="showcase.bagel.caption">Bagel shop menu</span>
+              <span class="tv-meta" data-i18n="showcase.bagel.meta">3 Col preset · one menu image per column</span>
+            </figcaption>
+          </figure>
+
         </div>
       </div>
     </section>
@@ -154,7 +402,7 @@
     <section class="section section--butter" id="features">
       <div class="container">
         <div class="section-head">
-          <span class="pill" style="background: var(--rose);" data-i18n="features.pill">Why Khanshoof</span>
+          <span class="pill" data-i18n="features.pill">Why Khanshoof</span>
           <h2 class="section-title" data-i18n="features.title">Built for shop owners, not stadiums.</h2>
           <p class="section-sub" data-i18n="features.sub">A fair price, a fast setup, and the tiny touches that matter when you're running a café in Salmiya or a clinic in Hawalli.</p>
         </div>
@@ -162,7 +410,7 @@
         <div class="features-grid">
           <article class="feature-card">
             <div class="feature-icon feature-icon--peach">
-              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="10" width="36" height="24" rx="4" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2.5"/><rect x="18" y="36" width="12" height="4" rx="1" fill="#3E2B4F"/><circle cx="24" cy="22" r="5" fill="#F4B9A1" stroke="#3E2B4F" stroke-width="2"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
             </div>
             <h3 data-i18n="features.screen.heading">Any screen, in ten minutes</h3>
             <p data-i18n="features.screen.body">Plug an old TV or tablet in, scan the pairing code, done. No hardware to buy, no installer to wait for.</p>
@@ -170,16 +418,16 @@
 
           <article class="feature-card">
             <div class="feature-icon feature-icon--mint">
-              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8"  y="8"  width="14" height="14" rx="3" fill="#B5DABD" stroke="#3E2B4F" stroke-width="2"/><rect x="26" y="8"  width="14" height="14" rx="3" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2"/><rect x="8"  y="26" width="14" height="14" rx="3" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2"/><rect x="26" y="26" width="14" height="14" rx="3" fill="#E8B4C6" stroke="#3E2B4F" stroke-width="2"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
             </div>
             <h3 data-i18n="features.zones.heading">Zones, playlists, schedules</h3>
             <p data-i18n="features.zones.body">Split a screen into tidy zones. Run a playlist in each. Schedule your weekend specials once and forget them.</p>
           </article>
 
           <article class="feature-card feature-card--highlight">
-            <span class="pill" style="background: var(--lavender); position: absolute; top: 20px; right: 20px;" data-i18n="features.ai.pill">Coming soon</span>
+            <span class="pill" data-i18n="features.ai.pill">Coming soon</span>
             <div class="feature-icon feature-icon--lavender">
-              <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M14 34 L24 10 L34 34 Z" fill="#C9B8E0" stroke="#3E2B4F" stroke-width="2.5" stroke-linejoin="round"/><circle cx="36" cy="14" r="4" fill="#E8B4C6" stroke="#3E2B4F" stroke-width="2"/><circle cx="12" cy="18" r="3" fill="#F4B9A1" stroke="#3E2B4F" stroke-width="2"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>
             </div>
             <h3 data-i18n="features.ai.heading">AI menu, from your website</h3>
             <p data-i18n="features.ai.body">Paste a URL. Khanshoof pulls your menu, your colours, your logo — and drafts a polished playlist you can edit in minutes.</p>
@@ -187,7 +435,7 @@
 
           <article class="feature-card">
             <div class="feature-icon feature-icon--rose">
-              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="14" width="36" height="22" rx="4" fill="#FFF8F0" stroke="#3E2B4F" stroke-width="2.5"/><rect x="6" y="18" width="36" height="6" fill="#E8B4C6" stroke="#3E2B4F" stroke-width="2.5"/><rect x="12" y="28" width="10" height="4" rx="1" fill="#3E2B4F"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/></svg>
             </div>
             <h3 data-i18n="features.pay.heading">Pay your way</h3>
             <p data-i18n="features.pay.body">Card, Apple Pay, Google Pay on day one. KNET for Kuwait is on its way — because local trust is not optional.</p>
@@ -198,32 +446,30 @@
 
     <!-- ── How it works ─────────────────────────────────────── -->
     <section class="section" id="how">
-      <div class="container how-grid">
-        <div class="how-art">
-          <img src="assets/illustrations/how-it-works.svg" alt="" width="480" height="360" />
+      <div class="container">
+        <div class="section-head">
+          <span class="pill" data-i18n="how.pill">How it works</span>
+          <h2 class="section-title" data-i18n="how.title">Three steps to a screen that sells.</h2>
         </div>
 
         <div class="how-copy">
-          <span class="pill" data-i18n="how.pill">How it works</span>
-          <h2 data-i18n="how.title">Three steps to a screen that sells.</h2>
-
           <ol class="how-steps">
             <li>
-              <span class="how-step-num">1</span>
+              <span class="how-step-num">01</span>
               <div>
                 <h3 data-i18n="how.step1.heading">Sign up in a minute</h3>
                 <p data-i18n="how.step1.body">Business name, email, password. You land on a clean dashboard with a 5-day free trial already running.</p>
               </div>
             </li>
             <li>
-              <span class="how-step-num">2</span>
+              <span class="how-step-num">02</span>
               <div>
                 <h3 data-i18n="how.step2.heading">Upload, arrange, schedule</h3>
                 <p data-i18n="how.step2.body">Drop images and videos, group them into playlists, split screens into zones — a weekly menu or a happy-hour rotation is 15 minutes of work.</p>
               </div>
             </li>
             <li>
-              <span class="how-step-num">3</span>
+              <span class="how-step-num">03</span>
               <div>
                 <h3 data-i18n="how.step3.heading">Pair any screen and you're live</h3>
                 <p data-i18n="how.step3.body">Open the player URL on any TV or tablet, type the six-digit pairing code, and the right content appears instantly.</p>
@@ -300,6 +546,7 @@
           <article class="pricing-card">
             <h3 data-i18n="pricing.enterprise.label">Enterprise</h3>
             <div class="pricing-price"><span class="pricing-amt" data-i18n="pricing.enterprise.amount">Custom</span></div>
+            <div class="pricing-usd-approx" aria-hidden="true">&nbsp;</div>
             <div class="pricing-screens" data-i18n="pricing.enterprise.screens">25+ screens</div>
             <ul class="pricing-list">
               <li data-i18n="pricing.enterprise.feature_1">Volume pricing</li>
@@ -317,7 +564,7 @@
       <div class="container">
         <div class="ai-card">
           <div class="ai-copy">
-            <span class="pill" style="background: var(--lavender);" data-i18n="spotlight.pill">Phase 3 preview</span>
+            <span class="pill" data-i18n="spotlight.pill">Phase 3 preview</span>
             <h2 data-i18n="spotlight.title">Your website, turned into a menu board — in under a minute.</h2>
             <p data-i18n="spotlight.body">
               Paste your website or Instagram URL. Khanshoof reads your menu, extracts your brand palette and logo, and drafts a polished playlist — ready to tweak and publish. The feature that killed our competitors' ten-hour designer bills.
@@ -372,12 +619,15 @@
 
     <!-- ── Final CTA ────────────────────────────────────────── -->
     <section class="section section-cta">
-      <div class="container section-cta-inner">
-        <h2 data-i18n="cta.title">Ready to make it?</h2>
-        <p data-i18n="cta.sub">5 days free. No card. No lock-in.</p>
-        <div class="hero-ctas" style="justify-content: center;">
-          <a class="btn btn-primary btn-lg" href="#" data-cta="signup" data-i18n="cta.primary">Start free trial</a>
-          <a class="btn btn-ghost btn-lg" href="mailto:hello@khanshoof.com" data-i18n="cta.secondary">Talk to us</a>
+      <div class="container">
+        <div class="section-cta-inner">
+          <img class="cta-face" src="assets/faces/v1_heart.png" alt="" width="88" height="77" />
+          <h2 data-i18n="cta.title">Ready to make it?</h2>
+          <p data-i18n="cta.sub">5 days free. No card. No lock-in.</p>
+          <div class="hero-ctas">
+            <a class="btn btn-primary btn-lg" href="#" data-cta="signup" data-i18n="cta.primary">Start free trial</a>
+            <a class="btn btn-ghost btn-lg" href="mailto:hello@khanshoof.com" data-i18n="cta.secondary">Talk to us</a>
+          </div>
         </div>
       </div>
     </section>
@@ -386,7 +636,7 @@
     <footer class="footer">
       <div class="container footer-inner">
         <div class="footer-brand">
-          <img class="footer-face" src="assets/faces/v1_wink.png" alt="" width="28" height="28" />
+          <img class="footer-face" src="assets/faces/v1_wink.png" alt="" width="28" height="25" />
           <span class="footer-wordmark">Khanshoof</span>
           <span class="footer-tag">خنشوف — let's see</span>
         </div>

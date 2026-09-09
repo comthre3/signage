@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Khanshoof — Landing Redesign Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<style>
+/* ═══════════════ Tokens (same system as the dashboard preview) ═══════════════ */
+:root {
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+  --accent:        #E8794A;
+  --accent-strong: #D96835;
+  --accent-soft:   rgba(232, 121, 74, 0.12);
+  --green:  #2FB344;
+  --amber:  #E8A33D;
+  --red:    #E5484D;
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 20px;
+  --t: 150ms cubic-bezier(.3,.7,.3,1);
+  --container: 1120px;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:        #0C0E12;
+  --bg-2:      #0F1218;
+  --surface:   #14171E;
+  --surface-2: #1A1E27;
+  --border:    rgba(255,255,255,0.07);
+  --border-2:  rgba(255,255,255,0.13);
+  --text:      #E7EAF0;
+  --text-2:    #9BA3B2;
+  --text-3:    #626B7B;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.3);
+  --shadow-pop:  0 20px 60px rgba(0,0,0,.55);
+  --hero-glow: radial-gradient(600px 320px at 50% -10%, rgba(232,121,74,.16), transparent 70%);
+  --thumb-a: #1E2430; --thumb-b: #262E3E;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --bg:        #FDFDFC;
+  --bg-2:      #F7F8FA;
+  --surface:   #FFFFFF;
+  --surface-2: #F2F3F6;
+  --border:    #E6E8EC;
+  --border-2:  #D5D8DF;
+  --text:      #16181D;
+  --text-2:    #5C6470;
+  --text-3:    #9AA1AC;
+  --shadow-card: 0 1px 2px rgba(16,18,23,.05);
+  --shadow-pop:  0 20px 60px rgba(16,18,23,.16);
+  --hero-glow: radial-gradient(600px 320px at 50% -10%, rgba(232,121,74,.10), transparent 70%);
+  --thumb-a: #E9ECF1; --thumb-b: #DDE2EA;
+}
+
+/* ═══════════════ Base ═══════════════ */
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+.container { max-width: var(--container); margin: 0 auto; padding: 0 24px; }
+::selection { background: var(--accent-soft); }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600;
+  padding: 10px 20px;
+  border-radius: var(--r-md);
+  transition: all var(--t);
+}
+.btn-primary {
+  background: var(--accent); color: #fff;
+  box-shadow: 0 2px 12px rgba(217,104,53,.35);
+}
+.btn-primary:hover { background: var(--accent-strong); transform: translateY(-1px); }
+.btn-ghost {
+  border: 1px solid var(--border-2);
+  color: var(--text);
+}
+.btn-ghost:hover { border-color: var(--text-3); background: var(--surface); }
+.btn-lg { padding: 13px 26px; font-size: 15px; border-radius: 12px; }
+
+/* ═══════════════ Nav ═══════════════ */
+.nav {
+  position: sticky; top: 0; z-index: 50;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-inner {
+  height: 60px;
+  display: flex; align-items: center; gap: 28px;
+}
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 16.5px; letter-spacing: -0.01em; }
+.brand-face {
+  width: 34px; height: 30px; object-fit: cover; object-position: center 38%;
+  transform: scale(1.25);
+  image-rendering: pixelated;
+}
+.nav-links { display: flex; gap: 22px; font-size: 13.5px; font-weight: 500; color: var(--text-2); }
+.nav-links a { transition: color var(--t); }
+.nav-links a:hover { color: var(--text); }
+.nav-cta { margin-inline-start: auto; display: flex; align-items: center; gap: 10px; }
+.pill-btn {
+  font-size: 12.5px; font-weight: 570;
+  padding: 6px 11px; border-radius: var(--r-sm);
+  color: var(--text-2); border: 1px solid var(--border);
+  transition: all var(--t);
+}
+.pill-btn:hover { border-color: var(--border-2); color: var(--text); }
+
+/* ═══════════════ Hero ═══════════════ */
+.hero {
+  position: relative;
+  padding: 84px 0 0;
+  text-align: center;
+  background: var(--hero-glow);
+  overflow: hidden;
+}
+.hero-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 570;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  padding: 5px 14px; border-radius: 99px;
+  margin-bottom: 22px;
+}
+.hero-pill .dot { width: 6px; height: 6px; border-radius: 99px; background: var(--green); box-shadow: 0 0 8px var(--green); }
+.hero h1 {
+  font-size: clamp(34px, 5.4vw, 56px);
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  max-width: 720px; margin: 0 auto;
+}
+.hero h1 em {
+  font-style: normal;
+  background: linear-gradient(100deg, var(--accent), #F0A177);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.hero-sub {
+  color: var(--text-2);
+  font-size: clamp(15px, 1.8vw, 17.5px);
+  max-width: 560px;
+  margin: 18px auto 0;
+}
+.hero-ctas { display: flex; gap: 12px; justify-content: center; margin-top: 30px; }
+.hero-proof {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin-top: 18px;
+  font-size: 12.5px; color: var(--text-3);
+}
+.hero-proof .dot { width: 7px; height: 7px; border-radius: 99px; background: var(--green); }
+
+/* ── Hero product frame (mini dashboard drawn in CSS) ── */
+.hero-frame-wrap { margin-top: 56px; padding: 0 24px; position: relative; }
+.hero-frame-inner { max-width: 960px; margin: 0 auto; position: relative; }
+.hero-peek {
+  position: absolute;
+  top: -74px; inset-inline-end: 56px;
+  width: 132px; height: auto;
+  z-index: 0;
+  image-rendering: pixelated;
+  transform: rotate(3deg);
+  animation: peek-bob 4s ease-in-out infinite;
+}
+[dir="rtl"] .hero-peek { transform: rotate(-3deg) scaleX(-1); }
+@keyframes peek-bob { 50% { translate: 0 -6px; } }
+@media (max-width: 640px) { .hero-peek { width: 96px; top: -54px; inset-inline-end: 20px; } }
+.hero-frame {
+  position: relative; z-index: 1;
+  max-width: 960px; margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-bottom: none;
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  text-align: start;
+}
+.frame-chrome {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.frame-chrome span { width: 10px; height: 10px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border-2); }
+.frame-url {
+  margin: 0 auto;
+  font-family: var(--mono); font-size: 10.5px; color: var(--text-3);
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 2px 14px; border-radius: 99px;
+}
+.frame-body { display: flex; min-height: 360px; }
+.frame-side {
+  width: 168px; flex-shrink: 0;
+  border-inline-end: 1px solid var(--border);
+  padding: 12px 8px;
+  background: var(--bg-2);
+  font-size: 11px;
+}
+.fs-group { color: var(--text-3); font-size: 9px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; padding: 10px 8px 4px; }
+.fs-item { display: flex; align-items: center; gap: 7px; padding: 5px 8px; border-radius: 5px; color: var(--text-2); font-weight: 500; }
+.fs-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.fs-item i { width: 10px; height: 10px; border-radius: 3px; background: currentColor; opacity: .4; }
+.frame-main { flex: 1; padding: 16px; min-width: 0; }
+.fm-head { display: flex; align-items: center; margin-bottom: 12px; }
+.fm-title { font-size: 14px; font-weight: 650; }
+.fm-btn {
+  margin-inline-start: auto;
+  font-size: 10px; font-weight: 600; color: #fff;
+  background: var(--accent);
+  padding: 4px 10px; border-radius: 6px;
+}
+.fm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.fm-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; }
+.fm-stat b { display: block; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
+.fm-stat span { font-size: 9px; color: var(--text-3); font-weight: 500; }
+.fm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.fm-card { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.fm-thumb { aspect-ratio: 16/8.4; background: linear-gradient(135deg, var(--thumb-a), var(--thumb-b)); position: relative; }
+.fm-live {
+  position: absolute; top: 5px; inset-inline-start: 5px;
+  font-size: 7px; font-weight: 700; letter-spacing: .06em; color: #fff;
+  background: rgba(12,14,18,.72);
+  padding: 2px 6px; border-radius: 99px;
+  display: inline-flex; align-items: center; gap: 3px;
+}
+.fm-live i { width: 4px; height: 4px; border-radius: 99px; background: var(--green); }
+.fm-body { padding: 7px 9px; display: flex; align-items: center; gap: 5px; font-size: 9.5px; font-weight: 550; }
+.fm-dot { width: 5px; height: 5px; border-radius: 99px; }
+.fm-dot.g { background: var(--green); } .fm-dot.a { background: var(--amber); } .fm-dot.r { background: var(--red); }
+
+/* ═══════════════ Sections ═══════════════ */
+.section { padding: 88px 0; }
+.section-alt { background: var(--bg-2); border-block: 1px solid var(--border); }
+.sec-head { text-align: center; max-width: 620px; margin: 0 auto 48px; }
+.sec-pill {
+  display: inline-block;
+  font-size: 12px; font-weight: 620; letter-spacing: .02em;
+  color: var(--accent); background: var(--accent-soft);
+  padding: 4px 13px; border-radius: 99px;
+  margin-bottom: 14px;
+}
+.sec-title { font-size: clamp(26px, 3.4vw, 34px); font-weight: 720; letter-spacing: -0.025em; line-height: 1.15; }
+.sec-sub { color: var(--text-2); margin-top: 12px; font-size: 15.5px; }
+
+/* Features */
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.feature {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 26px 24px;
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--t), transform var(--t);
+}
+.feature:hover { border-color: var(--border-2); transform: translateY(-2px); }
+.feature-icon {
+  width: 38px; height: 38px; border-radius: 11px;
+  display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent);
+  margin-bottom: 16px;
+}
+.feature-icon svg { width: 19px; height: 19px; }
+.feature h3 { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 7px; }
+.feature p { color: var(--text-2); font-size: 13.8px; }
+
+/* How it works */
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; counter-reset: step; }
+.step {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 26px 24px 24px;
+}
+.step-num {
+  font-family: var(--mono);
+  font-size: 12px; font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  margin-bottom: 16px;
+}
+.step h3 { font-size: 15.5px; font-weight: 650; margin-bottom: 7px; }
+.step p { color: var(--text-2); font-size: 13.8px; }
+
+/* Pricing */
+.pricing { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; align-items: stretch; }
+.price-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 22px 18px 20px;
+  display: flex; flex-direction: column;
+  position: relative;
+  transition: border-color var(--t), transform var(--t);
+}
+.price-card:hover { border-color: var(--border-2); }
+.price-card.popular {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface) 55%);
+  transform: scale(1.03);
+  z-index: 1;
+}
+.price-ribbon {
+  position: absolute; top: -11px; inset-inline-start: 50%; transform: translateX(-50%);
+  font-size: 10.5px; font-weight: 650; letter-spacing: .03em;
+  color: #fff; background: var(--accent);
+  padding: 3px 12px; border-radius: 99px;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(217,104,53,.4);
+}
+[dir="rtl"] .price-ribbon { transform: translateX(50%); }
+.price-tier { font-size: 13px; font-weight: 620; color: var(--text-2); }
+.price-amt { margin-top: 10px; font-size: 27px; font-weight: 720; letter-spacing: -0.03em; }
+.price-amt small { font-size: 12.5px; font-weight: 500; color: var(--text-3); letter-spacing: 0; }
+.price-usd { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.price-screens {
+  margin-top: 12px;
+  font-size: 12px; font-weight: 570;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 4px 10px; border-radius: 99px;
+  align-self: flex-start;
+}
+.price-feats { list-style: none; margin: 16px 0 20px; display: grid; gap: 7px; flex: 1; }
+.price-feats li { display: flex; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+.price-feats li::before {
+  content: '';
+  width: 14px; height: 14px; flex-shrink: 0; margin-top: 2px;
+  background: var(--accent);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+.price-cta {
+  text-align: center;
+  font-size: 13px; font-weight: 600;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-md);
+  padding: 8px 0;
+  transition: all var(--t);
+}
+.price-cta:hover { border-color: var(--text-3); }
+.price-card.popular .price-cta { background: var(--accent); border-color: transparent; color: #fff; }
+.price-card.popular .price-cta:hover { background: var(--accent-strong); }
+.pricing-note { text-align: center; color: var(--text-3); font-size: 12.5px; margin-top: 22px; }
+
+/* FAQ */
+.faq { max-width: 680px; margin: 0 auto; display: grid; gap: 10px; }
+.faq details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 0 20px;
+  transition: border-color var(--t);
+}
+.faq details:hover { border-color: var(--border-2); }
+.faq summary {
+  cursor: pointer; list-style: none;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 16px 0;
+  font-weight: 600; font-size: 14px;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: '+'; color: var(--text-3); font-size: 18px; font-weight: 400; transition: transform var(--t); }
+.faq details[open] summary::after { transform: rotate(45deg); }
+.faq details p { color: var(--text-2); font-size: 13.5px; padding-bottom: 18px; }
+
+/* CTA band */
+.cta-band {
+  text-align: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  background:
+    radial-gradient(420px 200px at 50% 120%, rgba(232,121,74,.18), transparent 70%),
+    var(--surface);
+  border-radius: 24px;
+  padding: 60px 32px;
+  max-width: 880px; margin: 0 auto;
+}
+.cta-band h2 { font-size: clamp(24px, 3.2vw, 32px); font-weight: 720; letter-spacing: -0.025em; }
+.cta-band p { color: var(--text-2); margin: 10px 0 26px; }
+.cta-face {
+  width: 88px; height: auto;
+  image-rendering: pixelated;
+  margin-bottom: 6px;
+  transition: transform var(--t);
+}
+.cta-band:hover .cta-face { transform: scale(1.08) rotate(-3deg); }
+
+/* Footer */
+.footer { border-top: 1px solid var(--border); padding: 36px 0; background: var(--bg-2); }
+.footer-inner { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.footer-brand { display: flex; align-items: center; gap: 9px; font-weight: 650; }
+.footer-face { width: 28px; height: 25px; object-fit: cover; object-position: center 38%; transform: scale(1.25); image-rendering: pixelated; }
+.footer-tag { color: var(--text-3); font-size: 12.5px; font-weight: 450; }
+.footer-links { margin-inline-start: auto; display: flex; gap: 20px; font-size: 13px; color: var(--text-2); }
+.footer-links a:hover { color: var(--text); }
+.footer-copy { width: 100%; color: var(--text-3); font-size: 12px; }
+
+/* Responsive */
+@media (max-width: 1000px) {
+  .pricing { grid-template-columns: repeat(2, 1fr); }
+  .price-card.popular { transform: none; }
+}
+@media (max-width: 820px) {
+  .features, .steps { grid-template-columns: 1fr; }
+  .nav-links { display: none; }
+  .frame-side { display: none; }
+}
+@media (max-width: 560px) {
+  .pricing { grid-template-columns: 1fr; }
+  .hero-ctas { flex-direction: column; align-items: center; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ Nav ═══════════ -->
+<nav class="nav">
+  <div class="container nav-inner">
+    <div class="brand"><img class="brand-face" src="assets/faces/v1_kawaii.png" alt="" width="34" height="30" />Khanshoof</div>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="nav-cta">
+      <button class="pill-btn" id="theme-toggle">Light</button>
+      <button class="pill-btn">عربي</button>
+      <a class="btn btn-ghost" href="#" style="padding:7px 14px;font-size:13px">Sign in</a>
+      <a class="btn btn-primary" href="#" style="padding:7px 16px;font-size:13px">Start free trial</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══════════ Hero ═══════════ -->
+<header class="hero">
+  <div class="container">
+    <div class="hero-pill"><span class="dot"></span>Built in the Gulf · Priced in KWD</div>
+    <h1>Digital signage that <em>just works</em>.</h1>
+    <p class="hero-sub">Turn any TV or tablet into a smart display in ten minutes. Playlists, zones, and schedules your staff can actually use — in English and Arabic.</p>
+    <div class="hero-ctas">
+      <a class="btn btn-primary btn-lg" href="#">Start your 5-day free trial</a>
+      <a class="btn btn-ghost btn-lg" href="#pricing">See pricing</a>
+    </div>
+    <div class="hero-proof"><span class="dot"></span>No credit card required · Cancel anytime</div>
+  </div>
+
+  <!-- CSS-drawn product frame: the new dashboard inside a browser window -->
+  <div class="hero-frame-wrap">
+    <div class="hero-frame-inner">
+    <img class="hero-peek" src="assets/faces/v1_smile.png" alt="Khanshoof mascot peeking over the dashboard" />
+    <div class="hero-frame">
+      <div class="frame-chrome">
+        <span></span><span></span><span></span>
+        <div class="frame-url">app.khanshoof.com</div>
+      </div>
+      <div class="frame-body">
+        <div class="frame-side">
+          <div class="fs-group">Displays</div>
+          <div class="fs-item active"><i></i>Screens</div>
+          <div class="fs-item"><i></i>Walls</div>
+          <div class="fs-item"><i></i>Sites</div>
+          <div class="fs-group">Content</div>
+          <div class="fs-item"><i></i>Media</div>
+          <div class="fs-item"><i></i>Playlists</div>
+          <div class="fs-item"><i></i>Schedules</div>
+        </div>
+        <div class="frame-main">
+          <div class="fm-head">
+            <div class="fm-title">Screens</div>
+            <span class="fm-btn">+ Pair screen</span>
+          </div>
+          <div class="fm-stats">
+            <div class="fm-stat"><b>9 / 12</b><span>Screens online</span></div>
+            <div class="fm-stat"><b>7</b><span>Playing now</span></div>
+            <div class="fm-stat"><b>148</b><span>Media items</span></div>
+            <div class="fm-stat"><b>99.2%</b><span>Uptime · 7d</span></div>
+          </div>
+          <div class="fm-grid">
+            <div class="fm-card">
+              <div class="fm-thumb"><span class="fm-live"><i></i>LIVE</span></div>
+              <div class="fm-body"><span class="fm-dot g"></span>Mall Entrance</div>
+            </div>
+            <div class="fm-card">
+              <div class="fm-thumb"><span class="fm-live"><i></i>LIVE</span></div>
+              <div class="fm-body"><span class="fm-dot g"></span>Food Court Menu</div>
+            </div>
+            <div class="fm-card">
+              <div class="fm-thumb"></div>
+              <div class="fm-body"><span class="fm-dot a"></span>Drive-Thru Lane 2</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════════ Features ═══════════ -->
+<section class="section section-alt" id="features">
+  <div class="container">
+    <div class="sec-head">
+      <span class="sec-pill">Why Khanshoof</span>
+      <h2 class="sec-title">Built for shop owners, not stadiums.</h2>
+      <p class="sec-sub">A fair price, a fast setup, and the tiny touches that matter when you're running a café in Salmiya or a clinic in Hawalli.</p>
+    </div>
+    <div class="features">
+      <article class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <h3>Any screen, in ten minutes</h3>
+        <p>Plug an old TV or tablet in, scan the pairing code, done. No hardware to buy, no installer to wait for.</p>
+      </article>
+      <article class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>
+        </div>
+        <h3>Zones, playlists, schedules</h3>
+        <p>Split a screen into tidy zones. Run a playlist in each. Schedule your weekend specials once and forget them.</p>
+      </article>
+      <article class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22c5.5 0 10-4.5 10-10S17.5 2 12 2 2 6.5 2 12s4.5 10 10 10z"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        </div>
+        <h3>Arabic-first, offline-proof</h3>
+        <p>Full RTL dashboard your team will actually enjoy. Screens keep playing through internet hiccups and come back on their own.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ How it works ═══════════ -->
+<section class="section" id="how">
+  <div class="container">
+    <div class="sec-head">
+      <span class="sec-pill">How it works</span>
+      <h2 class="sec-title">Three steps to a screen that sells.</h2>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">01</div>
+        <h3>Sign up in a minute</h3>
+        <p>Business name, email, password. You land on a clean dashboard with a 5-day free trial already running.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <h3>Upload, arrange, schedule</h3>
+        <p>Drop images and videos, group them into playlists, split screens into zones — a weekly menu or a happy-hour rotation is 15 minutes of work.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <h3>Pair any screen and you're live</h3>
+        <p>Open the player URL on any TV or tablet, type the six-digit pairing code, and the right content appears instantly.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ Pricing ═══════════ -->
+<section class="section section-alt" id="pricing">
+  <div class="container">
+    <div class="sec-head">
+      <span class="sec-pill">Honest pricing</span>
+      <h2 class="sec-title">Five tiers. No surprises.</h2>
+      <p class="sec-sub">Priced in KWD. Billed monthly. Cancel anytime — we'd rather earn next month than trap you in a contract.</p>
+    </div>
+    <div class="pricing">
+      <div class="price-card">
+        <div class="price-tier">Starter</div>
+        <div class="price-amt">3 KWD<small> / month</small></div>
+        <div class="price-usd">≈ $9.80 USD</div>
+        <div class="price-screens">Up to 3 screens</div>
+        <ul class="price-feats">
+          <li>All core features</li>
+          <li>Playlists + zones</li>
+          <li>Email support</li>
+        </ul>
+        <a class="price-cta" href="#">Start free trial</a>
+      </div>
+      <div class="price-card">
+        <div class="price-tier">Growth</div>
+        <div class="price-amt">4 KWD<small> / month</small></div>
+        <div class="price-usd">≈ $13.07 USD</div>
+        <div class="price-screens">Up to 5 screens</div>
+        <ul class="price-feats">
+          <li>Everything in Starter</li>
+          <li>Multi-location scheduling</li>
+          <li>Priority email support</li>
+        </ul>
+        <a class="price-cta" href="#">Start free trial</a>
+      </div>
+      <div class="price-card popular">
+        <span class="price-ribbon">Most popular</span>
+        <div class="price-tier">Business</div>
+        <div class="price-amt">8 KWD<small> / month</small></div>
+        <div class="price-usd">≈ $26.14 USD</div>
+        <div class="price-screens">Up to 10 screens</div>
+        <ul class="price-feats">
+          <li>Everything in Growth</li>
+          <li>Team roles + audit log</li>
+          <li>WhatsApp support</li>
+        </ul>
+        <a class="price-cta" href="#">Start free trial</a>
+      </div>
+      <div class="price-card">
+        <div class="price-tier">Pro</div>
+        <div class="price-amt">15 KWD<small> / month</small></div>
+        <div class="price-usd">≈ $49.02 USD</div>
+        <div class="price-screens">Up to 25 screens</div>
+        <ul class="price-feats">
+          <li>Everything in Business</li>
+          <li>Video walls</li>
+          <li>API access</li>
+        </ul>
+        <a class="price-cta" href="#">Start free trial</a>
+      </div>
+      <div class="price-card">
+        <div class="price-tier">Enterprise</div>
+        <div class="price-amt">Custom</div>
+        <div class="price-usd">&nbsp;</div>
+        <div class="price-screens">25+ screens</div>
+        <ul class="price-feats">
+          <li>Everything in Pro</li>
+          <li>SLA + onboarding</li>
+          <li>Dedicated support</li>
+        </ul>
+        <a class="price-cta" href="#">Talk to us</a>
+      </div>
+    </div>
+    <p class="pricing-note">All plans include the 5-day free trial. Pay by KNET or card.</p>
+  </div>
+</section>
+
+<!-- ═══════════ FAQ ═══════════ -->
+<section class="section" id="faq">
+  <div class="container">
+    <div class="sec-head">
+      <span class="sec-pill">FAQ</span>
+      <h2 class="sec-title">Questions, answered.</h2>
+    </div>
+    <div class="faq">
+      <details open>
+        <summary>Do I need special hardware?</summary>
+        <p>No. Any TV, tablet, or screen with a browser works. Open the player URL, type the pairing code, and you're live.</p>
+      </details>
+      <details>
+        <summary>Does it work in Arabic?</summary>
+        <p>Fully. The dashboard, the player, and support — all bilingual English/Arabic with proper RTL layout.</p>
+      </details>
+      <details>
+        <summary>What happens if the internet drops?</summary>
+        <p>Screens keep playing from their local cache and resync automatically when the connection returns.</p>
+      </details>
+      <details>
+        <summary>How do I pay?</summary>
+        <p>KNET or card, billed monthly in KWD. No annual lock-in.</p>
+      </details>
+      <details>
+        <summary>What happens after the free trial?</summary>
+        <p>You pick a plan, enter a card, and keep going. No auto-charge during the trial — we ask before we bill.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ CTA band ═══════════ -->
+<section class="section" style="padding-top:0">
+  <div class="container">
+    <div class="cta-band">
+      <img class="cta-face" src="assets/faces/v1_heart.png" alt="" width="88" height="77" />
+      <h2>Your first screen could be live tonight.</h2>
+      <p>Five days free. No card. Ten minutes from signup to signage.</p>
+      <a class="btn btn-primary btn-lg" href="#">Start your free trial</a>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ Footer ═══════════ -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <img class="footer-face" src="assets/faces/v1_wink.png" alt="" width="26" height="26" />
+      <span>Khanshoof</span>
+      <span class="footer-tag">خنشوف — let's see</span>
+    </div>
+    <div class="footer-links">
+      <a href="#features">Features</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+      <a href="mailto:hello@khanshoof.com">Contact</a>
+    </div>
+    <div class="footer-copy">© 2026 Khanshoof. Built in the Gulf.</div>
+  </div>
+</footer>
+
+<script>
+const root = document.documentElement;
+const btn = document.getElementById('theme-toggle');
+btn.addEventListener('click', () => {
+  const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+  root.dataset.theme = next;
+  btn.textContent = next === 'dark' ? 'Light' : 'Dark';
+});
+</script>
+</body>
+</html>
