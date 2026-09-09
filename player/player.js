@@ -153,16 +153,32 @@ async function resumeAfterPair(token) {
   }
 }
 
+/* Last resort: mount the item even if its load event never arrives (a hung
+   request, a server that never closes the connection, a frame that stalls).
+   Generous enough not to pre-empt a normal load, short enough to stay well
+   inside a typical slot duration — a screen must never go permanently blank. */
+const MOUNT_FALLBACK_MS = 5000;
+
 function mountMedia(container, node, enableFade, transitionMs = 600) {
   const previous = container.firstElementChild;
   if (enableFade) {
     node.classList.add("fade-media");
     node.style.transitionDuration = `${transitionMs}ms`;
   }
+  let mounted = false;
   const showNode = () => {
+    if (mounted) return;   // load and the fallback timer can both fire
+    mounted = true;
     container.appendChild(node);
     if (enableFade) {
-      requestAnimationFrame(() => node.classList.add("visible"));
+      /* Reveal on the next frame so the browser registers the opacity
+         transition — but never depend on it alone: browsers throttle
+         requestAnimationFrame in backgrounded tabs, which would leave the item
+         mounted at opacity 0 and the screen black. classList.add is idempotent,
+         so whichever path runs first wins and the other is a no-op. */
+      const reveal = () => node.classList.add("visible");
+      requestAnimationFrame(reveal);
+      setTimeout(reveal, 50);
       if (previous) {
         setTimeout(() => previous.remove(), transitionMs + 50);
       }
@@ -178,9 +194,11 @@ function mountMedia(container, node, enableFade, transitionMs = 600) {
     node.addEventListener("error", showNode, { once: true });
   } else if (node.tagName === "IFRAME") {
     node.addEventListener("load", showNode, { once: true });
-    setTimeout(showNode, 1500);
   } else {
     showNode();
+  }
+  if (!mounted) {
+    setTimeout(showNode, MOUNT_FALLBACK_MS);
   }
 }
 
