@@ -184,6 +184,17 @@ function mountMedia(container, node, enableFade, transitionMs = 600) {
   }
 }
 
+/* A "website" item whose URL is really a picture (very common — people paste a
+   link to a product photo) must be rendered as an <img>, not framed: the
+   player's CSP allows https images but no external frames, so an iframe here
+   renders a black screen. Query strings and fragments are ignored when
+   sniffing the extension. */
+const IMAGE_URL_RE = /\.(jpe?g|png|gif|webp|avif|bmp|svg)(?:[?#]|$)/i;
+
+function isImageUrl(url) {
+  return typeof url === "string" && IMAGE_URL_RE.test(url);
+}
+
 function renderItem(item, durationMs) {
   const url = `${API_BASE}${item.url}`;
   let node = null;
@@ -197,8 +208,14 @@ function renderItem(item, durationMs) {
     node = document.createElement("iframe");
     node.src = `${url}#toolbar=0&navpanes=0`;
   } else if (item.mime_type === "text/url") {
-    node = document.createElement("iframe");
-    node.src = item.url;
+    if (isImageUrl(item.url)) {
+      node = document.createElement("img");
+      node.src = item.url;
+      node.decoding = "async";
+    } else {
+      node = document.createElement("iframe");
+      node.src = item.url;
+    }
   } else {
     node = document.createElement("div");
     node.textContent = `Unsupported media: ${item.name}`;
@@ -262,8 +279,14 @@ function renderZoneItem(container, item, durationMs, transitionMs) {
     node = document.createElement("iframe");
     node.src = `${url}#toolbar=0&navpanes=0`;
   } else if (item.mime_type === "text/url") {
-    node = document.createElement("iframe");
-    node.src = item.url;
+    if (isImageUrl(item.url)) {
+      node = document.createElement("img");
+      node.src = item.url;
+      node.decoding = "async";
+    } else {
+      node = document.createElement("iframe");
+      node.src = item.url;
+    }
   } else {
     node = document.createElement("div");
     node.textContent = `Unsupported media: ${item.name}`;
