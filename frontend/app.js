@@ -1720,10 +1720,14 @@ function renderPlanCard(org) {
 }
 
 /* ── Pair view ──────────────────────────────────────────────── */
-const PAIR_CODE_RE = /^[A-Z2-9]{5}$/;
+// Must match PAIR_CODE_LENGTH in backend/main.py. The player renders the full
+// code into its QR URL, so a shorter value here silently truncates the prefill
+// and pairing fails with no visible error.
+const PAIR_CODE_LENGTH = 6;
+const PAIR_CODE_RE = new RegExp(`^[A-Z2-9]{${PAIR_CODE_LENGTH}}$`);
 
 function normalizePairCode(raw) {
-  return String(raw || "").toUpperCase().replace(/[^A-Z2-9]/g, "").slice(0, 5);
+  return String(raw || "").toUpperCase().replace(/[^A-Z2-9]/g, "").slice(0, PAIR_CODE_LENGTH);
 }
 
 function showPairViewPanel() {
@@ -1772,6 +1776,10 @@ async function showPairView(initialCode) {
   const radioExist   = document.getElementById("pair-target-existing");
   const radioNew     = document.getElementById("pair-target-new");
 
+  // Stamp the length constraints from the JS constant so the markup can never
+  // drift out of sync with it again.
+  codeInput.maxLength = PAIR_CODE_LENGTH;
+  codeInput.setAttribute("pattern", `[A-Z2-9]{${PAIR_CODE_LENGTH}}`);
   codeInput.value    = normalizePairCode(initialCode);
   newNameInput.value = "";
   newNameInput.classList.add("hidden");

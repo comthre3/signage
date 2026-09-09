@@ -46,7 +46,7 @@
   "pair.loading": "Loading…",
   "pair.title": "Pair a display",
   "pair.code_label": "Pairing code",
-  "pair.code_placeholder": "ABCDE",
+  "pair.code_placeholder": "ABCDEF",
   "pair.which_screen": "Which screen is this?",
   "pair.existing_screen": "Existing screen",
   "pair.pick_screen": "— Pick a screen —",
