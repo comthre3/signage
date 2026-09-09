@@ -128,6 +128,7 @@ function withLoading(btn, fn) {
 const state = {
   sites: [], screens: [], playlists: [], schedules: [], media: [], users: [], groups: [],
   org: null,
+  capabilities: { menus: false, menu_import: false },
 };
 
 const zonesState = {
@@ -150,12 +151,31 @@ document.getElementById("nav-toggle")?.addEventListener("click", () => {
 const navButtons = document.querySelectorAll("nav button[data-section]");
 navButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
-    showSection(btn.dataset.section);
     document.getElementById("header-row")?.classList.remove("nav-open");
+    // Billing is a full-page view outside #dashboard, not a section inside it.
+    if (btn.dataset.section === "billing") { goToBilling(); return; }
+    showSection(btn.dataset.section);
   });
 });
 
+/* Billing and pairing are full-page views that live OUTSIDE #dashboard and hide it,
+   so they can't be reached through showSection — and leaving them again means
+   restoring #dashboard. goToBilling/showSection are the only two entry points. */
+function goToBilling() {
+  if (location.pathname !== "/billing") history.pushState({}, "", "/billing");
+  navButtons.forEach((btn) => {
+    btn.classList.toggle("nav-active", btn.dataset.section === "billing");
+  });
+  showBilling();
+}
+
 function showSection(id) {
+  // Dismiss the full-page views and put the dashboard back, or every nav click
+  // after visiting Billing just toggles panels behind a hidden parent.
+  document.getElementById("billing-view")?.classList.add("hidden");
+  document.getElementById("pair-view")?.classList.add("hidden");
+  document.getElementById("dashboard")?.classList.remove("hidden");
+  if (location.pathname === "/billing") history.replaceState({}, "", "/");
   document.querySelectorAll("#dashboard > section.panel, #dashboard > div").forEach((el) => {
     el.classList.toggle("hidden", el.id !== id);
   });
@@ -166,6 +186,7 @@ function showSection(id) {
   if (id === "schedules") Schedules.show();
   if (id === "audit-log") AuditLog.show();
   if (id === "api-keys") ApiKeys.show();
+  if (id === "menus") Menus.show();
 }
 
 function buildPlayerUrl(base, params) {
@@ -1641,6 +1662,12 @@ async function bootData() {
   populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
   await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadSchedules(), loadMedia(), loadUsers()]);
   await loadScreens();
+  try {
+    const caps = await fetch(`${API_BASE}/ai/capabilities`).then((r) => r.json());
+    state.capabilities = caps;
+    document.getElementById("nav-menus-btn")?.classList.toggle("hidden", !caps.menus);
+    document.getElementById("menu-import-btn")?.classList.toggle("hidden", !caps.menu_import);
+  } catch (_) { state.capabilities = { menus: false, menu_import: false }; }
   showSection("sites");
 }
 
@@ -2183,11 +2210,7 @@ document.getElementById("billing-tier-grid").addEventListener("click", (e) => {
   onBillingPay(btn.dataset.tier);
 });
 
-document.querySelector('nav button[data-section="billing"]')?.addEventListener("click", (e) => {
-  e.preventDefault();
-  history.pushState({}, "", "/billing");
-  showBilling();
-});
+// (the Billing nav button is handled by the single nav handler above, via goToBilling)
 
 // ====== MediaPicker ======
 const MediaPicker = (() => {
@@ -3489,7 +3512,8 @@ const SubscriptionBanner = (() => {
     cta.textContent = cfg.ctaText;
     cta.onclick = (e) => {
       e.preventDefault();
-      if (typeof showSection === "function") showSection("billing");
+      // "billing" is not a dashboard section — showSection would blank the page.
+      if (typeof goToBilling === "function") goToBilling();
     };
   }
 

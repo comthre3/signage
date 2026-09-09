@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -27,6 +27,7 @@ from slowapi.util import get_remote_address
 
 from billing import create_knet_request
 from db import init_db, execute, query_all, query_one, utc_now_iso
+import menus as menus_domain
 from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
 from oauth import router as oauth_router
@@ -96,6 +97,11 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "86400"))
 PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "300"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
+
+RENDERER_URL   = os.getenv("RENDERER_URL", "").rstrip("/")
+RENDERER_TOKEN = os.getenv("RENDERER_TOKEN", "")
+
+MAX_BOARDS_PER_REQUEST = 60
 
 DOCS_ENABLED = os.getenv("DOCS_ENABLED", "0").lower() in ("1", "true", "yes")
 
@@ -3718,6 +3724,208 @@ def add_playlist_item(
     item["media"] = media
     item["url"] = f"/uploads/{media['filename']}"
     return item
+
+
+# ── Menus (Plan A) ────────────────────────────────────────────────────────
+
+class MenuCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    template: str = "dark-classic"
+
+
+@app.get("/ai/capabilities")
+def ai_capabilities() -> dict:
+    """Feature flags the dashboard uses to hide what isn't configured."""
+    return {
+        "menus":       bool(RENDERER_URL),
+        "menu_import": bool(RENDERER_URL) and bool(os.getenv("ANTHROPIC_API_KEY", "")),
+    }
+
+
+@app.get("/menus/templates")
+def list_menu_templates(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    from menu_render import list_templates  # Task 4; static fallback until then
+    return {"items": list_templates()}
+
+
+@app.get("/menus")
+def list_menus_endpoint(
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    return {"items": menus_domain.list_menus(principal.organization_id)}
+
+
+@app.post("/menus", status_code=201)
+def create_menu_endpoint(
+    payload: MenuCreate,
+    request: Request,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:rw", session_roles=("admin", "editor"))),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    if payload.template not in menus_domain.TEMPLATE_IDS:
+        raise http_error(400, "menu.bad_template", "Unknown template")
+    menu_id = menus_domain.create_menu(principal.organization_id, payload.name, payload.template)
+    audit(request, action="menu.create", actor=principal.user, target_type="menu",
+          target_id=menu_id, organization_id=principal.organization_id)
+    return menus_domain.get_menu_tree(principal.organization_id, menu_id)
+
+
+@app.get("/menus/{menu_id}")
+def get_menu_endpoint(
+    menu_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    tree = menus_domain.get_menu_tree(principal.organization_id, menu_id)
+    if not tree:
+        raise http_error(404, "menu.not_found", "Menu not found")
+    tree["renders"] = _current_renders(menu_id)  # Task 6 fills this; returns [] until then
+    return tree
+
+
+@app.put("/menus/{menu_id}")
+def update_menu_endpoint(
+    menu_id: int,
+    payload: menus_domain.MenuTreeIn,
+    request: Request,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:rw", session_roles=("admin", "editor"))),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    tree = menus_domain.replace_menu_tree(principal.organization_id, menu_id, payload)
+    if not tree:
+        raise http_error(404, "menu.not_found", "Menu not found")
+    audit(request, action="menu.update", actor=principal.user, target_type="menu",
+          target_id=menu_id, organization_id=principal.organization_id)
+    tree["renders"] = _current_renders(menu_id)
+    return tree
+
+
+@app.delete("/menus/{menu_id}", status_code=204)
+def delete_menu_endpoint(
+    menu_id: int,
+    request: Request,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:rw", session_roles=("admin", "editor"))),
+    _sub: dict = Depends(require_active_subscription),
+):
+    if not menus_domain.delete_menu(principal.organization_id, menu_id):
+        raise http_error(404, "menu.not_found", "Menu not found")
+    audit(request, action="menu.delete", actor=principal.user, target_type="menu",
+          target_id=menu_id, organization_id=principal.organization_id)
+    return Response(status_code=204)
+
+
+class RenderRequest(BaseModel):
+    languages: list[str] = Field(default_factory=lambda: ["en", "ar"])
+    aspects:   list[str] = Field(default_factory=lambda: ["16:9"])
+    kinds:     list[str] = Field(default_factory=lambda: ["board"])
+
+
+@app.post("/menus/{menu_id}/render", status_code=202)
+async def render_menu_endpoint(
+    menu_id: int,
+    payload: RenderRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:rw", session_roles=("admin", "editor"))),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    from menu_render import plan_renders, run_render_job
+    if not RENDERER_URL:
+        raise http_error(503, "menu.renderer_unavailable", "Rendering is not configured on this server")
+    tree = menus_domain.get_menu_tree(principal.organization_id, menu_id)
+    if not tree:
+        raise http_error(404, "menu.not_found", "Menu not found")
+    try:
+        specs = plan_renders(tree, tree["template"], payload.languages, payload.aspects, payload.kinds)
+    except ValueError as exc:
+        raise http_error(400, "menu.bad_render_request", str(exc))
+    if len(specs) > MAX_BOARDS_PER_REQUEST:
+        raise http_error(400, "menu.too_many_boards",
+                         f"That would render {len(specs)} boards; narrow the languages, aspects or kinds "
+                         f"(max {MAX_BOARDS_PER_REQUEST}).")
+    background_tasks.add_task(run_render_job, principal.organization_id, menu_id, specs,
+                              renderer_url=RENDERER_URL, renderer_token=RENDERER_TOKEN, upload_dir=UPLOAD_DIR)
+    audit(request, action="menu.render", actor=principal.user, target_type="menu",
+          target_id=menu_id, organization_id=principal.organization_id,
+          details={"boards": len(specs)})
+    return {"queued": len(specs)}
+
+
+@app.get("/menus/{menu_id}/renders")
+def list_menu_renders_endpoint(
+    menu_id: int,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+) -> dict:
+    if not menus_domain.get_menu_tree(principal.organization_id, menu_id):
+        raise http_error(404, "menu.not_found", "Menu not found")
+    return {"items": _current_renders(menu_id)}
+
+
+_KIND_ORDER = {"board": 0, "category": 1, "promo": 2}
+_LANG_ORDER = {"en": 0, "ar": 1, "bi": 2}
+
+
+@app.post("/menus/{menu_id}/playlist")
+def menu_playlist_endpoint(
+    menu_id: int,
+    request: Request,
+    principal: AuthedPrincipal = Depends(require_api_scope("api:rw", session_roles=("admin", "editor"))),
+    _sub: dict = Depends(require_active_subscription),
+) -> dict:
+    oid = principal.organization_id
+    tree = menus_domain.get_menu_tree(oid, menu_id)
+    if not tree:
+        raise http_error(404, "menu.not_found", "Menu not found")
+    renders = [r for r in _current_renders(menu_id) if r["status"] == "ready" and r["media_id"]]
+    if not renders:
+        raise http_error(409, "menu.no_boards", "Render the boards before creating a playlist")
+    cat_pos = {c["id"]: i for i, c in enumerate(tree["categories"])}
+    renders.sort(key=lambda r: (_KIND_ORDER[r["kind"]], cat_pos.get(r["category_id"], 0),
+                                r["item_id"] or 0, _LANG_ORDER[r["language"]], r["aspect"]))
+    name = f"Menu — {tree['name']}"
+    playlist = None
+    if tree.get("playlist_id"):
+        playlist = query_one("SELECT * FROM playlists WHERE id = ? AND organization_id = ?",
+                             (tree["playlist_id"], oid))
+    if not playlist:
+        pid = execute("INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
+                      (oid, name, utc_now_iso()))
+        execute("UPDATE menus SET playlist_id = ? WHERE id = ?", (pid, menu_id))
+    else:
+        pid = playlist["id"]
+        execute("UPDATE playlists SET name = ? WHERE id = ?", (name, pid))
+        execute("DELETE FROM playlist_items WHERE playlist_id = ?", (pid,))
+    for pos, r in enumerate(renders, start=1):
+        execute("INSERT INTO playlist_items (playlist_id, media_id, duration_seconds, position, created_at) "
+                "VALUES (?, ?, 10, ?, ?)", (pid, r["media_id"], pos, utc_now_iso()))
+    audit(request, action="menu.playlist", actor=principal.user, target_type="playlist",
+          target_id=pid, organization_id=oid, details={"menu_id": menu_id, "boards": len(renders)})
+    out = query_one("SELECT * FROM playlists WHERE id = ?", (pid,))
+    out["items"] = query_all(
+        "SELECT pi.id, pi.duration_seconds, pi.position, m.id AS media_id, m.name, m.filename "
+        "FROM playlist_items pi JOIN media m ON m.id = pi.media_id WHERE pi.playlist_id = ? ORDER BY pi.position",
+        (pid,))
+    return out
+
+
+def _current_renders(menu_id: int) -> list[dict]:
+    """Latest render per (kind, category, item, language, aspect). Populated by Task 6."""
+    rows = query_all(
+        """
+        SELECT DISTINCT ON (kind, COALESCE(category_id, 0), COALESCE(item_id, 0), language, aspect)
+               r.id, r.kind, r.category_id, r.item_id, r.language, r.aspect, r.status,
+               r.media_id, r.render_hash, r.error, r.created_at, m.filename
+        FROM menu_renders r LEFT JOIN media m ON m.id = r.media_id
+        WHERE r.menu_id = ?
+        ORDER BY kind, COALESCE(category_id, 0), COALESCE(item_id, 0), language, aspect, r.created_at DESC
+        """,
+        (menu_id,),
+    )
+    for r in rows:
+        r["url"] = f"/uploads/{r['filename']}" if r.get("filename") else None
+        r.pop("filename", None)
+    return rows
 
 
 @app.delete("/playlists/{playlist_id}/items/{item_id}")

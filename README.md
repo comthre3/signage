@@ -38,6 +38,7 @@ chmod +x scripts/backup.sh
 - Per-zone media carousels with independent durations.
 - Website URLs as media (rendered in player via iframe).
 - Offline-friendly player caching (app shell + uploads).
+- Menus content type (menus → categories → items, bilingual EN/AR) rendered to PNG boards via an internal renderer service, then dropped straight into a playlist.
 
 ## Zone behavior
 
@@ -65,6 +66,38 @@ In **Media Library**, use **Add Website**:
 
 - `https://` or `http://` only.
 - Website entries render in the player as iframes.
+
+## Menus + renderer service
+
+Menus (menus → categories → items, bilingual EN/AR) are turned into PNG boards by an internal
+`renderer` service (headless Chromium), which the backend calls over HTTP. It's built from
+`renderer/` in `docker-compose.yml`, runs alongside `backend`, and has no published host port —
+only the backend can reach it, on the compose network.
+
+Set these in `.env` before rendering will work:
+
+```
+RENDERER_URL=http://renderer:8080
+RENDERER_TOKEN=<a-shared-secret>
+```
+
+- `RENDERER_URL` — internal URL of the `renderer` service. Leave unset to disable menu rendering
+  (`GET /ai/capabilities` reports `"menus": false` and the dashboard hides the Menus section).
+  With both variables unset, the Menus section stays hidden and everything else works normally.
+- `RENDERER_TOKEN` — shared secret the backend sends to the renderer on every request; must match
+  the `RENDERER_TOKEN` the `renderer` service itself is started with. The `renderer` service fails
+  closed (rejects every request) if this is unset when it starts.
+
+The backend does not depend on `renderer` at startup — it calls it lazily per request and degrades
+gracefully if it's unreachable — so build and start the renderer explicitly, *before* deploying the
+backend, whenever you're turning menu rendering on for the first time or updating the renderer image:
+
+```bash
+sudo docker-compose build renderer && sudo docker-compose up -d renderer
+```
+
+Only then redeploy the backend as usual (`sudo docker-compose up -d --build backend`). This keeps a
+routine backend deploy from also having to build the ~2 GB Playwright renderer image.
 
 ## Tailscale / remote access
 

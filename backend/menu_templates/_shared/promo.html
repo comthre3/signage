@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="{{ 'ar' if lang == 'ar' else 'en' }}" dir="{{ dir }}">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --primary: {{ brand.primary }}; --accent: {{ brand.accent }}; --bg: {{ brand.background }}; }
+  html, body { margin: 0; padding: 0; }
+  body { width: {{ width }}px; height: {{ height }}px; overflow: hidden; }
+  {{ css | safe }}
+</style>
+</head>
+<body class="kind-promo aspect-{{ '169' if aspect == '16:9' else '916' }} lang-{{ lang }}">
+<div class="board promo">
+  <div class="promo-kicker">{{ badge_label('new') if 'new' in item.badges else badge_label('popular') }}</div>
+  <div class="promo-name">{{ t(item.name_en, item.name_ar) }}</div>
+  {% if item.description_en or item.description_ar %}<div class="promo-desc">{{ t(item.description_en, item.description_ar) }}</div>{% endif %}
+  <div class="promo-price">{{ money(item.price) }} <small>{{ brand.currency }}</small></div>
+  <div class="promo-brand">{{ t(brand.name_en, brand.name_ar) }}</div>
+</div>
+</body>
+</html>

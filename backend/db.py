@@ -413,6 +413,82 @@ def init_db() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_groups_org      ON groups      (organization_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_templates_org   ON screen_zone_templates (organization_id)")
 
+        # ── Menus (Plan A) ──────────────────────────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS menus (
+                id               SERIAL PRIMARY KEY,
+                organization_id  INTEGER NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+                name             TEXT NOT NULL,
+                brand            JSONB NOT NULL DEFAULT '{}'::jsonb,
+                template         TEXT NOT NULL DEFAULT 'dark-classic',
+                source           JSONB,
+                playlist_id      INTEGER REFERENCES playlists (id) ON DELETE SET NULL,
+                last_rendered_at TEXT,
+                created_at       TEXT NOT NULL,
+                updated_at       TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS menu_categories (
+                id         SERIAL PRIMARY KEY,
+                menu_id    INTEGER NOT NULL REFERENCES menus (id) ON DELETE CASCADE,
+                name_en    TEXT NOT NULL,
+                name_ar    TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS menu_items (
+                id             SERIAL PRIMARY KEY,
+                category_id    INTEGER NOT NULL REFERENCES menu_categories (id) ON DELETE CASCADE,
+                name_en        TEXT NOT NULL,
+                name_ar        TEXT NOT NULL DEFAULT '',
+                description_en TEXT,
+                description_ar TEXT,
+                price          NUMERIC(10,3),
+                price_note     TEXT,
+                badges         JSONB NOT NULL DEFAULT '[]'::jsonb,
+                is_available   BOOLEAN NOT NULL DEFAULT true,
+                sort_order     INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS menu_renders (
+                id          SERIAL PRIMARY KEY,
+                menu_id     INTEGER NOT NULL REFERENCES menus (id) ON DELETE CASCADE,
+                kind        TEXT NOT NULL CHECK (kind IN ('board','category','promo')),
+                category_id INTEGER REFERENCES menu_categories (id) ON DELETE CASCADE,
+                item_id     INTEGER REFERENCES menu_items (id) ON DELETE CASCADE,
+                language    TEXT NOT NULL CHECK (language IN ('en','ar','bi')),
+                aspect      TEXT NOT NULL CHECK (aspect IN ('16:9','9:16')),
+                status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','ready','failed')),
+                media_id    INTEGER REFERENCES media (id) ON DELETE SET NULL,
+                render_hash TEXT NOT NULL,
+                error       TEXT,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS menu_imports (
+                id              SERIAL PRIMARY KEY,
+                organization_id INTEGER NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+                menu_id         INTEGER REFERENCES menus (id) ON DELETE SET NULL,
+                status          TEXT NOT NULL DEFAULT 'queued',
+                step            TEXT,
+                source          JSONB NOT NULL,
+                error           JSONB,
+                usage           JSONB,
+                created_by      INTEGER,
+                created_at      TEXT NOT NULL,
+                finished_at     TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_menus_org          ON menus (organization_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_cats_menu     ON menu_categories (menu_id, sort_order)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_items_cat     ON menu_items (category_id, sort_order)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_renders_menu  ON menu_renders (menu_id, created_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_imports_org   ON menu_imports (organization_id, created_at DESC)")
+
         cursor.execute("UPDATE users SET role = 'admin' WHERE role = 'viewer' AND is_admin = 1")
 
         cursor.execute(

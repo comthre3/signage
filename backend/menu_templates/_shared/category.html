@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="{{ 'ar' if lang == 'ar' else 'en' }}" dir="{{ dir }}">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --primary: {{ brand.primary }}; --accent: {{ brand.accent }}; --bg: {{ brand.background }}; }
+  html, body { margin: 0; padding: 0; }
+  body { width: {{ width }}px; height: {{ height }}px; overflow: hidden; }
+  {{ css | safe }}
+</style>
+</head>
+<body class="kind-category aspect-{{ '169' if aspect == '16:9' else '916' }} lang-{{ lang }}">
+  <main class="single">
+    <section class="cat">
+      <h2 class="cat-name">{{ t(category.name_en, category.name_ar) }}</h2>
+      {% for it in category.items if it.is_available %}
+      <div class="item{% if 'popular' in it.badges %} popular{% endif %}">
+        <div class="item-main">
+          <span class="item-name">{{ t(it.name_en, it.name_ar) }}</span>
+          {% for b in it.badges %}<span class="badge badge-{{ b }}">{{ badge_label(b) }}</span>{% endfor %}
+          <span class="dots"></span>
+          <span class="price">{{ money(it.price) }}{% if it.price_note %} <small>{{ it.price_note }}</small>{% endif %}</span>
+        </div>
+        {% if it.description_en or it.description_ar %}<div class="item-desc">{{ t(it.description_en, it.description_ar) }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </section>
+  </main>
+</body>
+</html>

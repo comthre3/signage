@@ -38,7 +38,7 @@
   <body>
     <main>
       <h1>Khanshoof API</h1>
-      <p class="muted">v1 — agent-friendly REST API for managing media, playlists, screens, walls, and schedules.</p>
+      <p class="muted">v1 — agent-friendly REST API for managing media, playlists, screens, walls, schedules, and menus.</p>
 
       <div style="background: var(--pre-bg); padding: 16px 20px; border-radius: 8px; margin-block: 16px;">
         <strong>Building an AI-agent integration?</strong> Read the
@@ -85,6 +85,11 @@
         <tr><td>404</td><td>—</td><td>Resource not found, or belongs to another organization</td></tr>
         <tr><td>422</td><td>—</td><td>Request body validation failed</td></tr>
         <tr><td>429</td><td><code>rate_limited</code></td><td>Per-minute or per-hour rate limit hit</td></tr>
+        <tr><td>400</td><td><code>menu.bad_template</code></td><td>Unknown template id passed to <code>POST /menus</code></td></tr>
+        <tr><td>400</td><td><code>menu.bad_render_request</code></td><td>Invalid <code>languages</code>/<code>aspects</code>/<code>kinds</code> combination for <code>POST /menus/{id}/render</code></td></tr>
+        <tr><td>404</td><td><code>menu.not_found</code></td><td>Menu doesn't exist, or belongs to another organization</td></tr>
+        <tr><td>409</td><td><code>menu.no_boards</code></td><td>No ready renders yet — render the menu before calling <code>POST /menus/{id}/playlist</code></td></tr>
+        <tr><td>503</td><td><code>menu.renderer_unavailable</code></td><td>The renderer service isn't configured on this server (<code>RENDERER_URL</code> unset)</td></tr>
       </table>
 
       <h2>Endpoint reference</h2>
@@ -106,6 +111,20 @@
         <li><code>POST /playlists/{id}/items</code> — add item</li>
         <li><code>DELETE /playlists/{id}/items/{item_id}</code> — remove item</li>
       </ul>
+
+      <h3>Menus</h3>
+      <p class="muted">Bilingual (EN/AR) menu content — menus → categories → items — rendered to PNG boards for playback. Check <code>GET /ai/capabilities</code> first; <code>menus</code> is <code>false</code> until the operator sets <code>RENDERER_URL</code>.</p>
+      <ul>
+        <li><code>GET /ai/capabilities</code> — feature flags, e.g. <code>{"menus": true, "menu_import": false}</code></li>
+        <li><code>GET /menus/templates</code> — available board templates</li>
+        <li><code>GET /menus</code> · <code>GET /menus/{id}</code></li>
+        <li><code>POST /menus</code> — create (201)</li>
+        <li><code>PUT /menus/{id}</code> — replace the full tree (categories + items) · <code>DELETE /menus/{id}</code> (204)</li>
+        <li><code>POST /menus/{id}/render</code> — queue board renders for the given languages/aspects/kinds (202, <code>{"queued": n}</code>)</li>
+        <li><code>GET /menus/{id}/renders</code> — latest render status per board</li>
+        <li><code>POST /menus/{id}/playlist</code> — build (or update) a playlist from the latest ready renders</li>
+      </ul>
+      <p class="muted"><code>menu_import</code> (paste a URL, AI-assisted menu creation) is designed but not implemented yet — always <code>false</code> today.</p>
 
       <h3>Sites + Screens</h3>
       <ul>
@@ -140,6 +159,7 @@
         <li>Creating users, sites, or screens (paired with screen-limit logic — coming in a later phase)</li>
         <li>Triggering billing or signup flows</li>
         <li>Zone editing (advanced layout)</li>
+        <li>AI menu import — paste a restaurant URL and have a menu built for you (designed, not implemented)</li>
         <li>Outbound webhooks</li>
         <li>MCP server wrapper (coming soon)</li>
       </ul>

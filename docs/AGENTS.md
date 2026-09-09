@@ -263,6 +263,12 @@ Then assign the schedule to a screen via the dashboard (no API endpoint for sche
 
 ---
 
+## Menus
+
+Khanshoof also has a native **Menus** content type — menus → categories → items, bilingual (EN/AR) — that you can create, edit, and render over the REST API: `GET`/`POST`/`PUT`/`DELETE /menus`, `POST /menus/{id}/render` to generate PNG boards from the content, and `POST /menus/{id}/playlist` to drop the rendered boards straight into a playlist. Full reference at `/api-docs.html`; these aren't wrapped as MCP tools yet, so call the HTTP endpoints directly with an `api:rw` key. **AI import** — paste a restaurant URL and have a menu built for you automatically — is designed but not implemented; `GET /ai/capabilities` reports `menu_import: false` until it ships, and Recipe 2 above (manual fetch-and-build) is still the way to turn a website into signage content today.
+
+---
+
 ## What you can't do (v1 limitations)
 
 - **Binary upload over the API** — media-from-URL only. Images must be hosted somewhere with a public URL first.

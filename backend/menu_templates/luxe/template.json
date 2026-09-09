@@ -1,0 +1,2 @@
+{ "id": "luxe", "name_en": "Luxe", "name_ar": "فاخر", "version": "1",
+  "aspects": ["16:9", "9:16"], "kinds": ["board", "category", "promo"] }

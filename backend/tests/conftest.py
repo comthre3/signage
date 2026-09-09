@@ -1,4 +1,24 @@
+import os
 import uuid
+
+# Force tests onto a dedicated database before `db`/`main` ever connect.
+# Never trust the ambient DATABASE_URL as-is (it's the production DSN from
+# .env) — tests must not be able to write to production even by accident.
+# Reuse its host/credentials but always pin the database name to sawwii_test
+# unless TEST_DATABASE_URL is explicitly set.
+_prod_dsn = os.environ.get(
+    "DATABASE_URL", "postgresql://sawwii:sawwii@postgres:5432/sawwii"
+)
+_base, _, _ = _prod_dsn.rpartition("/")
+_TEST_DSN = os.environ.get("TEST_DATABASE_URL", f"{_base}/sawwii_test")
+_dbname = _TEST_DSN.rsplit("/", 1)[-1].split("?")[0]
+if "test" not in _dbname.lower():
+    raise RuntimeError(
+        f"Refusing to run tests against database {_dbname!r} — it doesn't "
+        "look like a test database. Set TEST_DATABASE_URL to a DSN whose "
+        "database name contains 'test'."
+    )
+os.environ["DATABASE_URL"] = _TEST_DSN
 
 import pytest
 from fastapi.testclient import TestClient
