@@ -33,6 +33,26 @@
   const signinEl = document.getElementById('cta-signin');
   if (signinEl) signinEl.href = APP_URL + '/';
 
+  /* ── Theme toggle ───────────────────────────────────────── */
+  const themeBtn = document.getElementById('theme-toggle');
+  if (themeBtn) {
+    themeBtn.addEventListener('click', () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('khanshoof_theme', next); } catch (e) {}
+    });
+  }
+
+  /* ── Showcase: "Show zones" outlines the zones like the editor does ── */
+  const zonesBtn = document.getElementById('showcase-zones-toggle');
+  const showcaseGrid = document.getElementById('showcase-grid');
+  if (zonesBtn && showcaseGrid) {
+    zonesBtn.addEventListener('click', () => {
+      const on = showcaseGrid.classList.toggle('zones-visible');
+      zonesBtn.setAttribute('aria-pressed', String(on));
+    });
+  }
+
   /* ── Mobile nav toggle ──────────────────────────────────── */
   const toggle = document.getElementById('nav-toggle');
   const links  = document.getElementById('nav-links');
