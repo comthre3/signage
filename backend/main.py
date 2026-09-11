@@ -220,14 +220,38 @@ def verify_password(password: str, stored: str | None) -> bool:
 API_KEY_PREFIX_LEN = 12   # "khan_live_" (10 chars) + 2 randomness chars
 
 
+def hash_api_key(full_key: str) -> str:
+    """SHA-256 of an API key, hex encoded.
+
+    Deliberately NOT the PBKDF2 used for passwords. A slow KDF exists to make
+    brute-forcing a *low-entropy* human-chosen secret expensive. API keys are
+    secrets.token_urlsafe(24) -- 192 bits from the CSPRNG -- so guessing one is
+    infeasible no matter how fast the hash is, and the KDF only bought ~82ms of
+    CPU burned on every single authenticated request. Plain SHA-256 over a
+    high-entropy token is the standard choice here.
+    """
+    return hashlib.sha256(full_key.encode()).hexdigest()
+
+
 def generate_api_key() -> tuple[str, str, str]:
     """Returns (full_key, prefix, hash). Caller stores prefix + hash; returns
     full_key to the operator ONCE (never seen again)."""
     suffix = secrets.token_urlsafe(24)
     full_key = f"khan_live_{suffix}"
     prefix = full_key[:API_KEY_PREFIX_LEN]
-    hashed = hash_password(full_key)
+    hashed = hash_api_key(full_key)
     return full_key, prefix, hashed
+
+
+def _touch_api_key(key_id: int) -> None:
+    """Fire-and-forget last_used_at bump; never fail the request over it."""
+    try:
+        execute("UPDATE api_keys SET last_used_at = now() WHERE id = ?", (key_id,))
+    except Exception as exc:
+        logger.warning("api_key_last_used_update_failed id=%s err=%s", key_id, exc)
+
+
+API_KEY_COLUMNS = "id, organization_id, key_hash, scope, key_prefix"
 
 
 def lookup_api_key(bearer_token: str) -> Optional[dict]:
@@ -235,22 +259,36 @@ def lookup_api_key(bearer_token: str) -> Optional[dict]:
     Fire-and-forget update of last_used_at."""
     if not bearer_token or not bearer_token.startswith("khan_live_"):
         return None
+
+    # Fast path: one indexed equality lookup, no key derivation at all.
+    sha = hash_api_key(bearer_token)
+    row = query_one(
+        f"SELECT {API_KEY_COLUMNS} FROM api_keys "
+        "WHERE key_sha256 = ? AND revoked_at IS NULL",
+        (sha,),
+    )
+    if row:
+        _touch_api_key(row["id"])
+        return row
+
+    # Legacy path: keys minted before key_sha256 existed still carry only a
+    # PBKDF2 hash. Verify once the old way, then upgrade the row in place so
+    # this key never pays that cost again.
     prefix = bearer_token[:API_KEY_PREFIX_LEN]
     candidates = query_all(
-        "SELECT id, organization_id, key_hash, scope, key_prefix FROM api_keys "
-        "WHERE key_prefix = ? AND revoked_at IS NULL",
+        f"SELECT {API_KEY_COLUMNS} FROM api_keys "
+        "WHERE key_prefix = ? AND key_sha256 IS NULL AND revoked_at IS NULL",
         (prefix,),
     )
     for row in candidates:
         if verify_password(bearer_token, row["key_hash"]):
             try:
-                execute(
-                    "UPDATE api_keys SET last_used_at = now() WHERE id = ?",
-                    (row["id"],),
-                )
+                execute("UPDATE api_keys SET key_sha256 = ? WHERE id = ?",
+                        (sha, row["id"]))
             except Exception as exc:
-                logger.warning("api_key_last_used_update_failed id=%s err=%s",
+                logger.warning("api_key_sha_backfill_failed id=%s err=%s",
                                row["id"], exc)
+            _touch_api_key(row["id"])
             return row
     return None
 
@@ -1684,9 +1722,9 @@ def create_api_key(
 ) -> dict:
     full_key, prefix, hashed = generate_api_key()
     key_id = execute(
-        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, scope, created_by_user_id) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (org_id(user), payload.name, prefix, hashed, payload.scope, user["id"]),
+        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, key_sha256, scope, created_by_user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (org_id(user), payload.name, prefix, hashed, hashed, payload.scope, user["id"]),
     )
     return {
         "id":         key_id,
@@ -1764,9 +1802,9 @@ def rotate_api_key(
     execute("UPDATE api_keys SET revoked_at = now() WHERE id = ?", (key_id,))
     full_key, prefix, hashed = generate_api_key()
     new_id = execute(
-        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, scope, created_by_user_id) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (org_id(user), old["name"], prefix, hashed, old["scope"], user["id"]),
+        "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, key_sha256, scope, created_by_user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (org_id(user), old["name"], prefix, hashed, hashed, old["scope"], user["id"]),
     )
     return {
         "id":           new_id,

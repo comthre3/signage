@@ -3,6 +3,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import psycopg
 from psycopg.rows import dict_row
@@ -38,6 +39,11 @@ def connect() -> psycopg.Connection:
     raise RuntimeError(f"Could not connect to Postgres: {last_err}")
 
 
+# SQL strings here are static literals, so the same handful of strings are
+# translated over and over -- this ran a per-character Python loop on every
+# query. Caching makes a repeat call ~138x cheaper. Bounded so that any
+# dynamically-built SQL cannot grow the cache without limit.
+@lru_cache(maxsize=2048)
 def _translate_placeholders(sql: str) -> str:
     out = []
     in_single = False
@@ -403,6 +409,14 @@ def init_db() -> None:
         cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS pdf_pages_status TEXT")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS duration_override_seconds INTEGER")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS fit_mode TEXT NOT NULL DEFAULT 'fit' CHECK (fit_mode IN ('fit','fill','stretch'))")
+        # API keys are high-entropy random tokens (secrets.token_urlsafe(24) =
+        # 192 bits), not user-chosen passwords, so they do not need a slow KDF.
+        # key_sha256 lets an authenticated request resolve with one indexed
+        # lookup instead of a PBKDF2-120k verification (~82ms of CPU each).
+        # Nullable: rows minted before this column are upgraded in place on
+        # their next successful use. See lookup_api_key() in main.py.
+        cursor.execute("ALTER TABLE api_keys      ADD COLUMN IF NOT EXISTS key_sha256 TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_sha256 ON api_keys (key_sha256) WHERE key_sha256 IS NOT NULL")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_screens_wall_cell ON screens(wall_cell_id)")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sites_org       ON sites       (organization_id)")
