@@ -9,3 +9,13 @@ uploads/
 backend_app/
 frontend_app/
 player_app/
+.superpowers/
+
+# macOS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# local-only scratch, never part of a build
+backups/
+.env.bak

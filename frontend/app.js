@@ -714,9 +714,6 @@ function snapValue(value) {
   const step = zonesState.gridStep;
   return Math.round(value / step) * step;
 }
-function normalizeZone(zone) {
-  return { ...zone, x: clamp(zone.x, 0, 1), y: clamp(zone.y, 0, 1), width: clamp(zone.width, 0.1, 1), height: clamp(zone.height, 0.1, 1) };
-}
 function setZones(zones) {
   zonesState.zones = zones.map((zone, index) => ({
     id: zone.id || `local-${index}`,
@@ -2157,10 +2154,6 @@ async function onBillingPay(tier) {
     buttons.forEach((b) => (b.disabled = false));
     setBillingBanner("error", err?.data?.detail || err.message || "Payment failed to start.");
   }
-}
-
-function stopBillingPoll() {
-  if (billingPollTimer) { clearTimeout(billingPollTimer); billingPollTimer = null; }
 }
 
 function maybeResumeBillingStatus() {
