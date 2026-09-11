@@ -7,7 +7,10 @@
 #   bash scripts/test-backend-in-docker.sh tests/test_menus.py -v
 #
 # The DSN is pinned to sawwii_test here AND re-pinned by tests/conftest.py, so
-# a run can never touch the production database.
+# a run can never touch the production database. REDIS_URL is pinned to logical
+# db 1 for the same reason: rate-limit counters are keyed by api_key id, and a
+# test minting an id that collides with a live key would otherwise spend that
+# customer's real quota.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 env_file="${KHAN_ENV_FILE:-/home/ahmed/signage/.env}"
@@ -18,5 +21,6 @@ network="${KHAN_NETWORK:-signage_default}"
 exec docker run --rm --network "$network" \
   -v "$here/backend:/app" -w /app \
   -e DATABASE_URL="postgresql://sawwii:${pw}@postgres:5432/sawwii_test" \
+  -e REDIS_URL="redis://redis:6379/1" \
   -e RATE_LIMITS_ENABLED=0 -e UPLOAD_DIR=/tmp/uploads -e DEV_MODE=1 \
   "$image" python -m pytest -q -p no:cacheprovider "$@"

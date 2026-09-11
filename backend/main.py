@@ -23,10 +23,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from billing import create_knet_request
-from db import init_db, execute, query_all, query_one, utc_now_iso
+import ratelimit
+from db import advisory_lock, init_db, execute, query_all, query_one, utc_now_iso
 import menus as menus_domain
 from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
@@ -114,7 +114,22 @@ app = FastAPI(
 )
 
 _RATE_LIMITS_ENABLED = os.getenv("RATE_LIMITS_ENABLED", "1").lower() in ("1", "true", "yes")
-limiter = Limiter(key_func=get_remote_address, enabled=_RATE_LIMITS_ENABLED)
+
+# Counters live in Redis so every uvicorn worker shares one budget; without it
+# an advertised "10/minute" would be 10 per worker. storage_uri() returns None
+# when Redis is unreachable, which leaves slowapi on per-process memory -- the
+# pre-Redis behavior, rather than an outage or no limit at all.
+# The key is ratelimit.client_ip, NOT get_remote_address: behind the tunnel
+# every request shares one TCP peer, so get_remote_address made these limits a
+# single global bucket instead of per-caller.
+_limiter_storage = ratelimit.storage_uri() if _RATE_LIMITS_ENABLED else None
+limiter = Limiter(
+    key_func=ratelimit.client_ip,
+    enabled=_RATE_LIMITS_ENABLED,
+    storage_uri=_limiter_storage,
+)
+if _RATE_LIMITS_ENABLED and _limiter_storage is None:
+    logger.warning("rate_limiter_using_in_process_storage redis_unavailable=1")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -301,12 +316,16 @@ PLAN_API_LIMITS = {
     "enterprise": {"per_minute": 5000, "per_hour": 250000},
 }
 
-_rate_buckets: dict = defaultdict(lambda: {"min": [], "hour": []})
+
 
 
 def _api_key_rate_check(principal) -> None:
     """Raise 429 if the principal's API key has exceeded its tier limits.
-    Sessions are NOT rate-limited here."""
+    Sessions are NOT rate-limited here.
+
+    Counters are shared across workers via Redis (see backend/ratelimit.py);
+    they degrade to per-process counters if Redis is down.
+    """
     if principal.api_key is None:
         return
     key_id = principal.api_key["id"]
@@ -315,43 +334,25 @@ def _api_key_rate_check(principal) -> None:
     plan = (org or {}).get("plan", "starter")
     limits = PLAN_API_LIMITS.get(plan, PLAN_API_LIMITS["starter"])
 
-    now = time.time()
-    bucket = _rate_buckets[key_id]
-    bucket["min"]  = [t for t in bucket["min"]  if t > now - 60]
-    bucket["hour"] = [t for t in bucket["hour"] if t > now - 3600]
-
-    if len(bucket["min"]) >= limits["per_minute"]:
-        oldest = min(bucket["min"])
-        retry_after = max(1, int(60 - (now - oldest)))
-        raise HTTPException(
-            status_code=429,
-            headers={
-                "Retry-After":           str(retry_after),
-                "X-RateLimit-Limit":     str(limits["per_minute"]),
-                "X-RateLimit-Window":    "60",
-                "X-RateLimit-Remaining": "0",
-            },
-            detail={"code": "rate_limited",
-                    "message": "Per-minute rate limit exceeded"},
-        )
-
-    if len(bucket["hour"]) >= limits["per_hour"]:
-        oldest = min(bucket["hour"])
-        retry_after = max(1, int(3600 - (now - oldest)))
-        raise HTTPException(
-            status_code=429,
-            headers={
-                "Retry-After":           str(retry_after),
-                "X-RateLimit-Limit":     str(limits["per_hour"]),
-                "X-RateLimit-Window":    "3600",
-                "X-RateLimit-Remaining": "0",
-            },
-            detail={"code": "rate_limited",
-                    "message": "Per-hour rate limit exceeded"},
-        )
-
-    bucket["min"].append(now)
-    bucket["hour"].append(now)
+    for window_s, limit_key, window_label in ((60, "per_minute", "60"),
+                                              (3600, "per_hour", "3600")):
+        limit = limits[limit_key]
+        count = ratelimit.incr_window(f"apikey:{key_id}", window_s)
+        if count > limit:
+            retry_after = ratelimit.window_reset_in(window_s)
+            raise HTTPException(
+                status_code=429,
+                headers={
+                    "Retry-After":           str(retry_after),
+                    "X-RateLimit-Limit":     str(limit),
+                    "X-RateLimit-Window":    window_label,
+                    "X-RateLimit-Remaining": "0",
+                },
+                detail={"code": "rate_limited",
+                        "message": ("Per-minute rate limit exceeded"
+                                    if window_s == 60
+                                    else "Per-hour rate limit exceeded")},
+            )
 
 
 def http_error(status: int, code: str, message: str) -> HTTPException:
@@ -1017,30 +1018,43 @@ def startup() -> None:
     cleanup_preview_tokens()
     execute("UPDATE screens SET password_hash = NULL WHERE password_hash IS NOT NULL")
     execute("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NOT NULL")
-    existing = query_one("SELECT id FROM users LIMIT 1")
-    if not existing:
-        admin_username = os.getenv("ADMIN_USERNAME", "admin")
-        admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
-        validate_password(admin_password)
-        org_row = query_one("SELECT id FROM organizations WHERE slug = ?", ("default",))
-        if org_row:
-            default_org_id = org_row["id"]
-        else:
-            default_org_id = execute(
+    _bootstrap_default_admin()
+
+
+def _bootstrap_default_admin() -> None:
+    """Seed the first admin on an empty database.
+
+    Runs under the migration advisory lock because every uvicorn worker
+    executes startup(): without it, all workers would observe an empty users
+    table simultaneously and race to INSERT the same username, and every loser
+    would crash on the UNIQUE constraint. The check is re-read inside the lock
+    so only the first worker through does any work.
+    """
+    with advisory_lock():
+        existing = query_one("SELECT id FROM users LIMIT 1")
+        if not existing:
+            admin_username = os.getenv("ADMIN_USERNAME", "admin")
+            admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+            validate_password(admin_password)
+            org_row = query_one("SELECT id FROM organizations WHERE slug = ?", ("default",))
+            if org_row:
+                default_org_id = org_row["id"]
+            else:
+                default_org_id = execute(
+                    """
+                    INSERT INTO organizations
+                    (name, slug, plan, screen_limit, subscription_status, locale, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("Default", "default", "pro", 25, "active", "en", utc_now_iso()),
+                )
+            execute(
                 """
-                INSERT INTO organizations
-                (name, slug, plan, screen_limit, subscription_status, locale, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                ("Default", "default", "pro", 25, "active", "en", utc_now_iso()),
+                (default_org_id, admin_username, hash_password(admin_password), 1, "admin", utc_now_iso()),
             )
-        execute(
-            """
-            INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (default_org_id, admin_username, hash_password(admin_password), 1, "admin", utc_now_iso()),
-        )
 
 
 @app.get("/health")

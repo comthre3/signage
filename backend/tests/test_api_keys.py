@@ -60,12 +60,15 @@ def _mint_legacy_key_row(org_id, scope="api:rw", name="legacy"):
     from main import hash_password, API_KEY_PREFIX_LEN
     full_key = f"khan_live_{_secrets.token_urlsafe(24)}"
     prefix = full_key[:API_KEY_PREFIX_LEN]
-    execute(
+    key_id = execute(
         "INSERT INTO api_keys (organization_id, name, key_prefix, key_hash, key_sha256, scope) "
         "VALUES (?, ?, ?, ?, NULL, ?)",
         (org_id, name, prefix, hash_password(full_key), scope),
     )
-    return full_key, prefix
+    # Return the id, not just the prefix: "khan_live_" consumes 10 of the 12
+    # prefix characters, leaving 4096 possibilities, so two keys in one suite
+    # run collide often enough to make prefix-keyed assertions flaky.
+    return full_key, prefix, key_id
 
 
 def test_generate_api_key_format():
@@ -241,8 +244,11 @@ def test_rate_limit_enforced_per_minute(client, monkeypatch):
     monkeypatch.setattr("main.PLAN_API_LIMITS", {
         "starter": {"per_minute": 3, "per_hour": 100},
     })
-    from main import _rate_buckets
-    _rate_buckets.clear()
+    # Counters live in Redis now, keyed by api_key id; each test mints a fresh
+    # key so its bucket is already isolated. Reset clears the local fallback
+    # so the result does not depend on whether Redis happens to be reachable.
+    import ratelimit
+    ratelimit.reset_for_tests()
     _t, org_id, _u = _signup_org(client)
     full_key, _ = _mint_key_row(org_id, scope="api:read")
     # 3 requests fine
@@ -258,8 +264,11 @@ def test_429_includes_retry_after_header(client, monkeypatch):
     monkeypatch.setattr("main.PLAN_API_LIMITS", {
         "starter": {"per_minute": 1, "per_hour": 100},
     })
-    from main import _rate_buckets
-    _rate_buckets.clear()
+    # Counters live in Redis now, keyed by api_key id; each test mints a fresh
+    # key so its bucket is already isolated. Reset clears the local fallback
+    # so the result does not depend on whether Redis happens to be reachable.
+    import ratelimit
+    ratelimit.reset_for_tests()
     _t, org_id, _u = _signup_org(client)
     full_key, _ = _mint_key_row(org_id, scope="api:read")
     r = client.get("/organization", headers=_bearer(full_key))
@@ -342,9 +351,10 @@ def test_lookup_uses_sha256_fast_path(client):
     """A freshly minted key resolves via key_sha256, with no KDF involved."""
     from main import lookup_api_key, hash_api_key
     _t, org_id, _u = _signup_org(client)
-    full_key, prefix = _mint_key_row(org_id)
-    stored = query_one("SELECT key_sha256 FROM api_keys WHERE key_prefix = ?", (prefix,))
-    assert stored["key_sha256"] == hash_api_key(full_key)
+    full_key, _prefix = _mint_key_row(org_id)
+    stored = query_one("SELECT id FROM api_keys WHERE key_sha256 = ?",
+                       (hash_api_key(full_key),))
+    assert stored is not None, "new key was not stored under its SHA-256"
     assert lookup_api_key(full_key)["organization_id"] == org_id
 
 
@@ -352,8 +362,8 @@ def test_legacy_pbkdf2_key_still_authenticates(client):
     """Keys minted before the column existed must keep working."""
     from main import lookup_api_key
     _t, org_id, _u = _signup_org(client)
-    full_key, prefix = _mint_legacy_key_row(org_id)
-    before = query_one("SELECT key_sha256 FROM api_keys WHERE key_prefix = ?", (prefix,))
+    full_key, _prefix, key_id = _mint_legacy_key_row(org_id)
+    before = query_one("SELECT key_sha256 FROM api_keys WHERE id = ?", (key_id,))
     assert before["key_sha256"] is None
     row = lookup_api_key(full_key)
     assert row is not None and row["organization_id"] == org_id
@@ -363,9 +373,9 @@ def test_legacy_key_is_upgraded_in_place_on_first_use(client):
     """After one successful legacy lookup the row carries a SHA-256."""
     from main import lookup_api_key, hash_api_key
     _t, org_id, _u = _signup_org(client)
-    full_key, prefix = _mint_legacy_key_row(org_id)
+    full_key, _prefix, key_id = _mint_legacy_key_row(org_id)
     assert lookup_api_key(full_key) is not None
-    after = query_one("SELECT key_sha256 FROM api_keys WHERE key_prefix = ?", (prefix,))
+    after = query_one("SELECT key_sha256 FROM api_keys WHERE id = ?", (key_id,))
     assert after["key_sha256"] == hash_api_key(full_key), "row was not upgraded"
     # and it still resolves once the fast path owns it
     assert lookup_api_key(full_key)["organization_id"] == org_id
@@ -375,7 +385,7 @@ def test_wrong_key_sharing_a_legacy_prefix_is_rejected(client):
     """The legacy branch must not authenticate a key it merely prefix-matches."""
     from main import lookup_api_key
     _t, org_id, _u = _signup_org(client)
-    full_key, prefix = _mint_legacy_key_row(org_id)
+    full_key, prefix, _key_id = _mint_legacy_key_row(org_id)
     forged = prefix + "x" * (len(full_key) - len(prefix))
     assert forged[:len(prefix)] == prefix and forged != full_key
     assert lookup_api_key(forged) is None
@@ -384,8 +394,8 @@ def test_wrong_key_sharing_a_legacy_prefix_is_rejected(client):
 def test_revoked_legacy_key_is_rejected_and_not_upgraded(client):
     from main import lookup_api_key
     _t, org_id, _u = _signup_org(client)
-    full_key, prefix = _mint_legacy_key_row(org_id)
-    execute("UPDATE api_keys SET revoked_at = now() WHERE key_prefix = ?", (prefix,))
+    full_key, _prefix, key_id = _mint_legacy_key_row(org_id)
+    execute("UPDATE api_keys SET revoked_at = now() WHERE id = ?", (key_id,))
     assert lookup_api_key(full_key) is None
-    after = query_one("SELECT key_sha256 FROM api_keys WHERE key_prefix = ?", (prefix,))
+    after = query_one("SELECT key_sha256 FROM api_keys WHERE id = ?", (key_id,))
     assert after["key_sha256"] is None, "revoked key must not be upgraded"

@@ -3,6 +3,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from functools import lru_cache
 
 import psycopg
@@ -103,8 +104,46 @@ def query_one(sql: str, params: tuple = ()) -> dict | None:
     return dict(row) if row else None
 
 
-def init_db() -> None:
+# Arbitrary but fixed application id for the schema-migration advisory lock.
+_INIT_DB_LOCK_ID = 8412771903
+
+
+@contextmanager
+def advisory_lock(lock_id: int = _INIT_DB_LOCK_ID):
+    """Serialize a block across every worker and replica via Postgres.
+
+    Used for startup work that must happen exactly once even though each
+    uvicorn worker runs it: schema DDL, and seeding the bootstrap admin.
+    Session-scoped, so a worker that dies mid-block releases the lock when its
+    connection drops rather than wedging every other worker forever.
+    """
     conn = connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s)", (lock_id,))
+    try:
+        yield
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+
+
+def init_db() -> None:
+    """Create/upgrade the schema.
+
+    Serialized behind a Postgres advisory lock because the backend runs
+    multiple uvicorn workers, each of which calls this on startup. Concurrent
+    CREATE/ALTER of the same objects deadlocks or errors in Postgres even with
+    IF NOT EXISTS -- the guards make the statements idempotent, not concurrent.
+    The first worker in does the DDL; the rest block here briefly and then find
+    everything already present. The lock is session-scoped and released in the
+    finally block, so a crashed worker cannot wedge startup permanently (the
+    connection dying releases it either way).
+    """
+    with advisory_lock():
+        _init_db_locked(connect())
+
+
+def _init_db_locked(conn) -> None:
     with conn.cursor() as cursor:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS organizations (

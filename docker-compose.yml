@@ -16,6 +16,25 @@ services:
       timeout: 5s
       retries: 5
 
+  # Shared state for rate limiting across backend workers. Deliberately has no
+  # published port (reachable only on the compose network) and no volume: every
+  # key here is ephemeral counter data that is cheaper to lose than to persist.
+  # allkeys-lru bounds memory so a burst of distinct keys can never OOM it.
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   backend:
     build: ./backend
     ports:
@@ -27,6 +46,8 @@ services:
       - .env
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
