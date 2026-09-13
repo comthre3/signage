@@ -835,16 +835,10 @@ if (adminCodeForm) {
   });
 }
 
-// ── Language toggle (Task 4 — Arabic/RTL hardening) ──────────────
-const langToggle = document.getElementById("player-lang-toggle");
-if (langToggle) {
-  langToggle.addEventListener("click", async () => {
-    const next = Khan.currentLocale() === "ar" ? "en" : "ar";
-    Khan.setLocale(next);
-    await Khan.loadLocale(next);
-    Khan.applyTranslations();
-  });
-}
+// No language toggle on the player: a display screen shows content only, with
+// no operator-facing chrome over it. Locale still comes from
+// Khan.detectInitialLocale() -- the khanshoof_lang cookie, else the device's
+// own browser language -- so an Arabic-configured TV still renders Arabic.
 
 // ── Connection indicator (Phase 2.5d) ─────────────────────────────────
 const ConnectionStatus = (() => {
