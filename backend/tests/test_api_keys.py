@@ -122,20 +122,26 @@ def test_lookup_returns_none_for_bad_scheme(client):
 def test_lookup_returns_none_for_revoked_key(client):
     from main import lookup_api_key
     _t, org_id, _u = _signup_org(client)
-    full_key, prefix = _mint_key_row(org_id)
-    execute("UPDATE api_keys SET revoked_at = now() WHERE key_prefix = ?", (prefix,))
+    full_key, _prefix = _mint_key_row(org_id)
+    from main import hash_api_key
+    # Address this exact row: keying the UPDATE on key_prefix could revoke a
+    # different test's key and fail something unrelated later.
+    execute("UPDATE api_keys SET revoked_at = now() WHERE key_sha256 = ?",
+            (hash_api_key(full_key),))
     assert lookup_api_key(full_key) is None
 
 
 def test_lookup_updates_last_used_at(client):
     from main import lookup_api_key
     _t, org_id, _u = _signup_org(client)
-    full_key, prefix = _mint_key_row(org_id)
-    before = query_one("SELECT last_used_at FROM api_keys WHERE key_prefix = ?", (prefix,))
+    full_key, _prefix = _mint_key_row(org_id)
+    from main import hash_api_key
+    sha = hash_api_key(full_key)
+    before = query_one("SELECT last_used_at FROM api_keys WHERE key_sha256 = ?", (sha,))
     assert before["last_used_at"] is None
     lookup_api_key(full_key)
     time.sleep(0.1)
-    after = query_one("SELECT last_used_at FROM api_keys WHERE key_prefix = ?", (prefix,))
+    after = query_one("SELECT last_used_at FROM api_keys WHERE key_sha256 = ?", (sha,))
     assert after["last_used_at"] is not None
 
 

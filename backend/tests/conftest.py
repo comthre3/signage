@@ -29,7 +29,42 @@ from main import app
 
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_schema() -> None:
-    init_db()
+    init_db()             # schema must exist before anything can be truncated
+    _reset_test_database()
+    init_db()             # re-seeds rows the truncate cleared (OAuth clients)
+
+
+def _reset_test_database() -> None:
+    """Start every run from an empty database.
+
+    Without this the test database only ever grows -- it had accumulated 4,955
+    organizations. That is not merely untidy: several checks sweep every org in
+    the database (the subscription reminder tick, for one) and then assert on a
+    global side effect, so an unrelated org left behind by an earlier run can
+    fail a test that is itself correct. Runtime degrades with the same growth.
+
+    Guarded by the same database-name check that gates the DSN above: this
+    function can only ever run against a database whose name contains "test",
+    and _dbname was validated at import before anything connected.
+    """
+    assert "test" in _dbname.lower(), (
+        f"refusing to truncate {_dbname!r} — not a test database"
+    )
+    from db import connect, query_all
+    rows = query_all(
+        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+    )
+    names = [r["tablename"] for r in rows]
+    if not names:
+        return
+    conn = connect()
+    with conn.cursor() as cur:
+        # One statement so foreign keys never block the order of truncation.
+        cur.execute(
+            "TRUNCATE TABLE "
+            + ", ".join(f'public."{n}"' for n in names)
+            + " RESTART IDENTITY CASCADE"
+        )
 
 
 @pytest.fixture

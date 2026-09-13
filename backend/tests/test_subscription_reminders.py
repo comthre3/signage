@@ -13,7 +13,7 @@ def test_subscription_reminders_table_exists():
 
 # ── _claim_reminder ───────────────────────────────────────────────────
 from datetime import datetime, timedelta, timezone
-from db import execute, query_one
+from db import execute, query_all, query_one
 
 
 def _make_test_org(client, suffix="x"):
@@ -260,9 +260,23 @@ def test_no_reminder_when_no_admins(client, monkeypatch):
     _expire_trial_to(org_id, 2)
     execute("UPDATE users SET role = 'viewer', is_admin = 0 WHERE organization_id = ?",
             (org_id,))
+    # _reminder_check_once() sweeps EVERY org in the database, so a global
+    # call_count assertion is really an assertion about every other org a test
+    # run happens to have created. Scope it to this org's own recipients, which
+    # is what the test name actually claims.
+    recipients = {
+        r["username"] for r in query_all(
+            "SELECT username FROM users WHERE organization_id = ?", (org_id,))
+    }
     with patch("main.send_via_resend") as mock_send:
         _reminder_check_once()
-    assert mock_send.call_count == 0
+    sent_to_this_org = [
+        c for c in mock_send.call_args_list
+        if c.kwargs.get("to") in recipients
+    ]
+    assert sent_to_this_org == [], (
+        f"an org with no admins was emailed: {sent_to_this_org}"
+    )
     # No-admins path: send returns 0 but the claim row IS inserted (per spec
     # claim-then-send semantics). Don't assert on count.
 
