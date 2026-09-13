@@ -1,8 +1,6 @@
 {
   "meta.title": "Khanshoof",
-
   "lang.toggle_label": "عربي",
-
   "nav.toggle_aria": "Toggle navigation",
   "nav.sites": "Sites",
   "nav.screens": "Screens",
@@ -10,7 +8,6 @@
   "nav.playlists": "Playlists",
   "nav.users": "Users",
   "nav.billing": "Billing",
-
   "auth.account_locked": "Too many failed attempts. Try again in {minutes} minutes.",
   "auth.connection": "⚙ Connection",
   "auth.signout": "Sign Out",
@@ -42,7 +39,6 @@
   "auth.connection_save": "Save",
   "auth.connection_reset": "Reset",
   "auth.connection_reload_note": "Changes take effect after page reload.",
-
   "pair.loading": "Loading…",
   "pair.title": "Pair a display",
   "pair.code_label": "Pairing code",
@@ -56,7 +52,6 @@
   "pair.success_title": "Display paired",
   "pair.another_btn": "Pair another display",
   "pair.dashboard_btn": "View dashboard",
-
   "billing.title": "Billing",
   "billing.subtitle": "Upgrade your plan — paid via KNET.",
   "billing.current_plan": "Current plan",
@@ -67,12 +62,10 @@
   "billing.term_12mo": "12 months",
   "billing.past_payments": "Past payments",
   "billing.no_payments": "No payments yet.",
-
   "sites.heading": "Sites",
   "sites.name_placeholder": "Site name",
   "sites.slug_placeholder": "Slug (optional)",
   "sites.add_btn": "Add Site",
-
   "screens.heading": "Screens",
   "screens.name_placeholder": "Screen name",
   "screens.location_placeholder": "Location",
@@ -109,14 +102,12 @@
   "screens.zones_cancel": "Close",
   "screens.preview_heading": "Live Preview",
   "screens.preview_iframe_title": "Screen preview",
-
   "media.heading": "Media Library",
   "media.url_name_placeholder": "Website name",
   "media.add_website": "Add Website",
   "media.dropzone_title": "Drag & drop files here",
   "media.dropzone_subtitle": "or click to select — images & video",
   "media.upload_btn": "Upload",
-
   "playlists.heading": "Playlists",
   "playlists.name_placeholder": "Playlist name",
   "playlists.create_btn": "Create",
@@ -124,7 +115,6 @@
   "playlists.select_media": "Select media",
   "playlists.duration_placeholder": "Duration (s)",
   "playlists.add_item": "Add Item",
-
   "users.heading": "Users & Groups",
   "users.username_placeholder": "Username",
   "users.password_placeholder": "Password",
@@ -134,7 +124,6 @@
   "users.create_user": "Create User",
   "users.group_name_placeholder": "Group name",
   "users.create_group": "Create Group",
-
   "toast.site_deleted": "Site deleted.",
   "toast.site_created": "Site created.",
   "toast.playlist_deleted": "Playlist deleted.",
@@ -162,7 +151,6 @@
   "toast.settings_saved": "Saved — reload to apply.",
   "toast.settings_reset": "Reset — reload to apply.",
   "toast.dashboard_load_failed": "Failed to load dashboard. Check your connection.",
-
   "error.email_taken": "This email is already registered.",
   "error.invalid_email": "Please enter a valid email address.",
   "error.password_too_short": "Password must be at least 12 characters.",
@@ -184,7 +172,6 @@
   "error.invalid_role": "Invalid role.",
   "error.plan_limit": "You've reached your plan's screen limit. Upgrade to add more.",
   "error.invalid_locale": "Locale must be 'en' or 'ar'.",
-
   "nav.walls": "Walls",
   "walls.title": "Walls",
   "walls.create": "Create wall",
@@ -365,7 +352,6 @@
   "audit_log.pagination.info": "{start}–{end} of {total}",
   "audit_log.empty": "No audit events match these filters.",
   "audit_log.error.fetch": "Failed to load audit log.",
-
   "sub_banner.trialing": "Trial — {n} days left.",
   "sub_banner.trialing_urgent": "Trial ends in {n} days.",
   "sub_banner.trial_expired": "Trial ended — subscribe to make changes.",
@@ -376,7 +362,6 @@
   "sub_banner.cta_manage": "Manage",
   "error.subscription.trial_expired": "Your trial has ended. Subscribe to continue making changes.",
   "error.subscription.expired": "Your subscription has expired. Renew to continue making changes.",
-
   "nav.api_keys": "API Keys",
   "api_keys.title": "API Keys",
   "api_keys.intro": "Programmatically manage media, playlists, screens, walls, and schedules. ",
@@ -404,14 +389,12 @@
   "api_keys.error.fetch": "Failed to load API keys.",
   "api_keys.error.create": "Failed to create key.",
   "api_keys.error.revoke": "Failed to revoke.",
-
   "auth.social.google": "Sign in with Google",
   "auth.social.apple": "Sign in with Apple",
   "auth.social.divider": "or",
   "auth.social.complete_signup.title": "Welcome to Khanshoof!",
   "auth.social.complete_signup.business_name": "Business name",
   "auth.social.complete_signup.continue": "Continue",
-
   "confirm_dialog.ok": "OK",
   "confirm_dialog.cancel": "Cancel",
   "nav.menus": "Menus",
@@ -492,5 +475,15 @@
   "error.menu.renderer_unavailable": "Rendering isn't configured on this server.",
   "error.menu.bad_render_request": "Invalid render options.",
   "error.menu.too_many_boards": "That would render too many boards. Narrow the languages, aspects or kinds and try again.",
-  "error.menu.no_boards": "Render the boards first."
+  "error.menu.no_boards": "Render the boards first.",
+  "setup.title": "Set up this deployment",
+  "setup.intro": "No administrator exists yet. Paste the one-time setup token from the server log (or data/setup-token.txt) to create the first account.",
+  "setup.token": "Setup token",
+  "setup.username": "Admin username",
+  "setup.password": "Password (min 12 characters)",
+  "setup.submit": "Create administrator",
+  "setup.network_error": "Couldn't reach the server.",
+  "error.setup.bad_token": "That setup token is not valid.",
+  "error.setup.already_done": "This deployment already has an administrator.",
+  "error.setup.unavailable": "No setup token has been issued for this deployment."
 }

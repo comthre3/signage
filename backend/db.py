@@ -454,6 +454,19 @@ def _init_db_locked(conn) -> None:
         # lookup instead of a PBKDF2-120k verification (~82ms of CPU each).
         # Nullable: rows minted before this column are upgraded in place on
         # their next successful use. See lookup_api_key() in main.py.
+        # First-run setup. A deployment with no users publishes a one-time token
+        # that must be presented to create the first administrator, so that
+        # whoever merely reaches the URL first cannot claim the deployment.
+        # Stored here rather than in process memory because the backend runs
+        # several workers, which would otherwise each mint a different token.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS setup_token (
+              id         INTEGER PRIMARY KEY DEFAULT 1,
+              token      TEXT NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              CONSTRAINT setup_token_single_row CHECK (id = 1)
+            )
+        """)
         cursor.execute("ALTER TABLE api_keys      ADD COLUMN IF NOT EXISTS key_sha256 TEXT")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_sha256 ON api_keys (key_sha256) WHERE key_sha256 IS NOT NULL")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_screens_wall_cell ON screens(wall_cell_id)")

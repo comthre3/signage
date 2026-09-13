@@ -51,6 +51,31 @@
     </header>
 
     <main>
+      <!-- Shown only on a deployment that has no users yet. Replaces the whole
+           sign-in panel, because there is nothing to sign in to. -->
+      <section id="setup-panel" class="panel hidden">
+        <h2 data-i18n="setup.title">Set up this deployment</h2>
+        <p class="helper-text" data-i18n="setup.intro">
+          No administrator exists yet. Paste the one-time setup token from the
+          server log (or <code>data/setup-token.txt</code>) to create the first account.
+        </p>
+        <form id="setup-form" class="auth-form">
+          <input type="text" id="setup-token" placeholder="Setup token"
+                 data-i18n-placeholder="setup.token" required autocomplete="off"
+                 spellcheck="false" dir="ltr" />
+          <input type="text" id="setup-business" placeholder="Business name"
+                 data-i18n-placeholder="auth.business_name" required maxlength="100" dir="auto" />
+          <input type="text" id="setup-username" placeholder="Admin username"
+                 data-i18n-placeholder="setup.username" required minlength="3" maxlength="80"
+                 autocomplete="username" dir="auto" />
+          <input type="password" id="setup-password" placeholder="Password (min 12 characters)"
+                 data-i18n-placeholder="setup.password" required minlength="12"
+                 autocomplete="new-password" />
+          <button type="submit" data-i18n="setup.submit">Create administrator</button>
+          <div id="setup-error" class="helper-text hidden"></div>
+        </form>
+      </section>
+
       <section id="auth-panel" class="panel">
         <div class="auth-tabs" role="tablist">
           <button type="button" class="auth-tab active" id="auth-tab-login"  role="tab" aria-selected="true" data-i18n="auth.signin_tab">Sign In</button>

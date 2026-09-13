@@ -90,9 +90,10 @@ if [ ! -f .env ]; then
 POSTGRES_PASSWORD=$(rand 32)
 SECRET_KEY=$(rand 48)
 RENDERER_TOKEN=$(rand 32)
-ADMIN_USERNAME=admin
-# Must be >= 12 characters or the backend refuses to start.
-ADMIN_PASSWORD=$(rand 20)
+# ADMIN_USERNAME/ADMIN_PASSWORD are intentionally absent. A fresh deployment
+# issues a one-time setup token instead, and the first administrator chooses
+# their own password in the browser -- so no account secret lives in this file.
+# Setting ADMIN_PASSWORD (>= 12 chars) still works if you prefer seeding.
 
 # --- where this deployment lives (EDIT THESE for a real host) ---
 API_BASE_URL=http://${host_ip}:8000
@@ -114,7 +115,6 @@ EOF
   pw=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
   sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://sawwii:${pw}@postgres:5432/sawwii|" .env
   ok "created .env — ${YEL}edit the URLs before exposing this publicly${RST}"
-  ok "admin password: $(grep '^ADMIN_PASSWORD=' .env | cut -d= -f2-)"
 else
   ok ".env present"
 fi
@@ -134,7 +134,7 @@ envset() {
 }
 
 # Anything absent or empty here means the stack will not come up correctly.
-for key in POSTGRES_PASSWORD SECRET_KEY ADMIN_USERNAME ADMIN_PASSWORD \
+for key in POSTGRES_PASSWORD SECRET_KEY \
            DATABASE_URL API_BASE_URL APP_URL PLAYER_BASE_URL RENDERER_TOKEN; do
   if [ -z "$(envget "$key")" ]; then fail "$key is missing or empty in .env"; else ok "$key set"; fi
 done
@@ -384,6 +384,29 @@ if [ "$FAILED" -ne 0 ]; then
   printf "\n${RED}Deployment finished with problems.${RST} See FAIL lines above.\n"
   printf "Logs: %s logs --tail 50\n" "$COMPOSE"
   exit 1
+fi
+
+# ── First-run setup ───────────────────────────────────────────────────
+# A deployment with no users issues a one-time token; without it the first
+# stranger to load the page would become administrator. Surface it here so the
+# operator never has to go digging through logs for it.
+setup_needed="$(curl -s --max-time 10 "http://localhost:$P_API/auth/setup-status" 2>/dev/null \
+                | grep -o '"needs_setup":[^,}]*' | grep -c true || true)"
+if [ "${setup_needed:-0}" != "0" ]; then
+  token=""
+  if [ -f data/setup-token.txt ]; then
+    token="$(cat data/setup-token.txt 2>/dev/null || true)"
+  fi
+  step "First-run setup required"
+  printf "  No administrator exists yet. Open the dashboard and create one:\n\n"
+  printf "    %s\n" "$(envget APP_URL)"
+  if [ -n "$token" ]; then
+    printf "\n  One-time setup token:\n\n    ${GRN}%s${RST}\n\n" "$token"
+    printf "  ${DIM}(also in data/setup-token.txt, deleted once setup completes)${RST}\n"
+  else
+    printf "\n  ${YEL}Token file not readable from here.${RST} Find it with:\n"
+    printf "    %s logs backend | grep 'SETUP REQUIRED'\n" "$COMPOSE"
+  fi
 fi
 
 # ── Cloudflare Tunnel (optional) ──────────────────────────────────────

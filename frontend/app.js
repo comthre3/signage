@@ -1353,6 +1353,51 @@ const appleBtn  = document.getElementById("btn-social-apple");
 if (googleBtn) googleBtn.addEventListener("click", () => startSocialAuth("google"));
 if (appleBtn)  appleBtn.addEventListener("click",  () => startSocialAuth("apple"));
 
+// A deployment with no users has nothing to sign in to: show the first-run
+// setup form instead of the auth panel. Failing open (leaving login visible)
+// is the right default if this check cannot complete -- an operator who cannot
+// reach the API has a bigger problem than a missing form.
+fetch(`${API_BASE}/auth/setup-status`)
+  .then((r) => (r.ok ? r.json() : null))
+  .then((cfg) => {
+    if (!cfg || !cfg.needs_setup) return;
+    document.getElementById("auth-panel")?.classList.add("hidden");
+    document.getElementById("setup-panel")?.classList.remove("hidden");
+  })
+  .catch(() => { /* leave the normal sign-in panel in place */ });
+
+document.getElementById("setup-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = document.getElementById("setup-error");
+  err.classList.add("hidden");
+  const body = {
+    setup_token:   document.getElementById("setup-token").value.trim(),
+    business_name: document.getElementById("setup-business").value.trim(),
+    username:      document.getElementById("setup-username").value.trim(),
+    password:      document.getElementById("setup-password").value,
+  };
+  try {
+    const res = await fetch(`${API_BASE}/auth/setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const code = data?.detail?.code || "";
+      err.textContent = Khan.t(`error.${code}`, data?.detail?.message || "Setup failed.");
+      err.classList.remove("hidden");
+      return;
+    }
+    // Straight into the dashboard: the operator is now signed in.
+    localStorage.setItem(AUTH_STORAGE_KEY, data.token);
+    location.reload();
+  } catch (_) {
+    err.textContent = Khan.t("setup.network_error", "Couldn't reach the server.");
+    err.classList.remove("hidden");
+  }
+});
+
 // Hide buttons for providers that aren't configured on the backend.
 // If /auth/providers itself 404s (e.g., older backend), keep both visible.
 fetch(`${API_BASE}/auth/providers`)
