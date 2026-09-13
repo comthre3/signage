@@ -38,7 +38,7 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./uploads:/app/uploads
       - ./data:/app/data
@@ -72,7 +72,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "3000:80"
+      - "${APP_PORT:-3000}:80"
     depends_on:
       - backend
     env_file:
@@ -93,7 +93,7 @@ services:
       args:
         PLAYER_VERSION: ${PLAYER_VERSION:-dev}
     ports:
-      - "3001:80"
+      - "${PLAYER_PORT:-3001}:80"
     depends_on:
       - backend
     env_file:
@@ -108,7 +108,7 @@ services:
   landing:
     build: ./landing
     ports:
-      - "3003:80"
+      - "${LANDING_PORT:-3003}:80"
     env_file:
       - .env
     restart: unless-stopped

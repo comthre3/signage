@@ -119,7 +119,12 @@ else
   ok ".env present"
 fi
 
-envget() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2-; }
+envget() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
+# Resolved published port for a service: whatever .env says, else the default
+# baked into docker-compose.yml. Used by the verification probes and the final
+# summary so they follow a port that conflict resolution moved.
+portof() { local v; v="$(envget "$1")"; printf '%s' "${v:-$2}"; }
+
 envset() {
   if grep -qE "^$1=" .env; then
     sed -i "s|^$1=.*|$1=$2|" .env
@@ -179,20 +184,95 @@ mkdir -p data uploads && ok "data/ and uploads/ present"
 
 # ── 4. Ports ──────────────────────────────────────────────────────────
 step "Checking published ports"
-port_busy() {
+
+# Ports are overridable (compose reads ${API_PORT} etc. with these defaults),
+# so a conflict is something we can resolve rather than only report.
+port_listening() {
   if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | grep -qE "[:.]$1[[:space:]]"
   elif command -v netstat >/dev/null 2>&1; then netstat -ltn 2>/dev/null | grep -qE "[:.]$1[[:space:]]"
-  else return 1; fi
-}
-running_ours() { $COMPOSE ps -q 2>/dev/null | grep -q . ; }
-for p in 8000 3000 3001 3003; do
-  if port_busy "$p"; then
-    if running_ours; then ok "port $p in use (this stack — will be replaced)"
-    else warn "port $p already in use by something else — deploy may fail"; fi
   else
-    ok "port $p free"
+    # No socket tools: fall back to asking whether anything answers there.
+    ! curl -s -o /dev/null --max-time 1 --connect-timeout 1 "http://127.0.0.1:$1/" 2>/dev/null && return 1 || return 0
+  fi
+}
+
+# Which container, if any, publishes this port. Works without root, unlike
+# reading process names out of ss.
+port_container() {
+  docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null \
+    | awk -F'\t' -v p=":$1->" '$2 ~ p {print $1; exit}'
+}
+
+ours_container() { case "$1" in signage_*|"${COMPOSE_PROJECT_NAME:-}"_*) return 0 ;; *) return 1 ;; esac; }
+
+# First free port at or above $1 that nothing holds and we have not already
+# handed to another service in this same run.
+suggest_port() {
+  local cand="$1" limit=$(( $1 + 200 ))
+  while [ "$cand" -le "$limit" ]; do
+    case " $ASSIGNED " in *" $cand "*) cand=$((cand+1)); continue ;; esac
+    if ! port_listening "$cand"; then printf '%s' "$cand"; return 0; fi
+    cand=$((cand+1))
+  done
+  return 1
+}
+
+ASSIGNED=""
+PORTS_CHANGED=0
+# service:env-var:default
+for entry in "API:API_PORT:8000" "Dashboard:APP_PORT:3000" "Player:PLAYER_PORT:3001" "Landing:LANDING_PORT:3003"; do
+  label="${entry%%:*}"; rest="${entry#*:}"; var="${rest%%:*}"; default="${rest##*:}"
+  want="$(envget "$var")"; want="${want:-$default}"
+
+  if ! port_listening "$want"; then
+    ok "$label port $want free"
+    ASSIGNED="$ASSIGNED $want"
+    continue
+  fi
+
+  holder="$(port_container "$want")"
+  if [ -n "$holder" ] && ours_container "$holder"; then
+    ok "$label port $want held by this stack ($holder) — will be replaced"
+    ASSIGNED="$ASSIGNED $want"
+    continue
+  fi
+
+  # A genuine conflict: something else owns the port.
+  if [ -n "$holder" ]; then
+    who="container '$holder'"
+  else
+    who="$(command -v ss >/dev/null 2>&1 && ss -ltnp 2>/dev/null | grep -E "[:.]$want[[:space:]]" \
+           | grep -oE 'users:\(\("[^"]+' | head -1 | sed 's/.*"//')"
+    who="${who:+process '$who'}"; who="${who:-another process}"
+  fi
+
+  alt="$(suggest_port $((want + 10)) || true)"
+  if [ -z "$alt" ]; then
+    fail "$label port $want is taken by $who and no free port found nearby"
+    continue
+  fi
+
+  if [ -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+    printf "  ${YEL}conflict${RST}  %s port %s is taken by %s\n" "$label" "$want" "$who"
+    printf "            use %s instead? [Y/n] " "$alt"
+    read -r ans </dev/tty || ans=""
+    case "$ans" in
+      [nN]*) fail "$label port $want unavailable and no alternative accepted" ;;
+      *) envset "$var" "$alt"; ASSIGNED="$ASSIGNED $alt"; PORTS_CHANGED=1
+         ok "$label moved to port $alt (saved as $var in .env)" ;;
+    esac
+  else
+    fail "$label port $want is taken by $who. Free it, or set $var=$alt in .env
+        (suggested: $alt is free). Re-run with a terminal attached to be offered this."
   fi
 done
+
+[ "$FAILED" -eq 0 ] || die "port conflicts must be resolved before deploying"
+
+if [ "$PORTS_CHANGED" -eq 1 ]; then
+  warn "Published ports changed. If a Cloudflare Tunnel fronts this host, update its
+        Public Hostname routes to the new local ports, or the public URLs will 502."
+fi
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
   printf "\n${GRN}Preflight passed.${RST} Re-run without --check-only to deploy.\n"; exit 0
@@ -270,10 +350,12 @@ probe() {  # name url expected
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$2" 2>/dev/null || echo 000)"
   if [ "$code" = "$3" ]; then ok "$1 -> $code"; else fail "$1 -> $code (expected $3)"; fi
 }
-probe "API   (localhost:8000/plans)" "http://localhost:8000/plans" 200
-probe "App   (localhost:3000)"       "http://localhost:3000/"      200
-probe "Player(localhost:3001)"       "http://localhost:3001/"      200
-probe "Landing(localhost:3003)"      "http://localhost:3003/"      200
+P_API="$(portof API_PORT 8000)";     P_APP="$(portof APP_PORT 3000)"
+P_PLAY="$(portof PLAYER_PORT 3001)"; P_LAND="$(portof LANDING_PORT 3003)"
+probe "API    (localhost:$P_API/plans)" "http://localhost:$P_API/plans" 200
+probe "App    (localhost:$P_APP)"       "http://localhost:$P_APP/"      200
+probe "Player (localhost:$P_PLAY)"      "http://localhost:$P_PLAY/"     200
+probe "Landing(localhost:$P_LAND)"      "http://localhost:$P_LAND/"     200
 
 if $COMPOSE exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
   ok "redis responding"
@@ -291,7 +373,7 @@ fi
 workers="$($COMPOSE ps -q backend | head -1 | xargs -r docker top 2>/dev/null | grep -c 'multiprocessing-fork' || echo 0)"
 [ "$workers" -gt 0 ] && ok "backend running $workers workers" || warn "could not count backend workers"
 
-served="$(curl -s --max-time 10 http://localhost:3001/sw.js 2>/dev/null | head -1)"
+served="$(curl -s --max-time 10 "http://localhost:$P_PLAY/sw.js" 2>/dev/null | head -1)"
 case "$served" in
   *"$PLAYER_VERSION"*) ok "player cache stamped $PLAYER_VERSION" ;;
   *) warn "player sw.js does not carry $PLAYER_VERSION — TVs may serve a cached build" ;;
@@ -331,5 +413,6 @@ printf "  Dashboard  %s\n" "$(envget APP_URL)"
 printf "  Player     %s\n" "$(envget PLAYER_BASE_URL)"
 printf "  API        %s\n" "$(envget API_BASE_URL)"
 printf "  Landing    %s\n" "$(envget LANDING_URL)"
-printf "\n  ${DIM}local: :3000 dashboard  :3001 player  :8000 api  :3003 landing${RST}\n"
+printf "\n  ${DIM}local: :%s dashboard  :%s player  :%s api  :%s landing${RST}\n" \
+  "$P_APP" "$P_PLAY" "$P_API" "$P_LAND"
 printf "  ${DIM}logs:  %s logs -f backend${RST}\n\n" "$COMPOSE"

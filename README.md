@@ -25,6 +25,20 @@ re-run: `data/` and `uploads/` are never touched.
 - API: `http://<host>:8000`
 - Landing: `http://<host>:3003`
 
+### Port conflicts
+
+Published ports are overridable via `API_PORT`, `APP_PORT`, `PLAYER_PORT` and
+`LANDING_PORT` in `.env`; the values above are the defaults. `redeploy.sh`
+checks each one before deploying and distinguishes a port held by this stack
+(fine — it gets replaced) from one held by anything else. On a real conflict it
+names what is holding the port, finds the nearest free one, and — when run
+interactively — offers to switch to it and records the choice in `.env`.
+Non-interactively it refuses to deploy and prints the setting to apply, so an
+automated run fails loudly instead of half-starting.
+
+If you change a port while a Cloudflare Tunnel fronts the host, update that
+tunnel's Public Hostname routes to match, or the public URLs will return 502.
+
 On a fresh install the admin password is generated and printed once by
 `redeploy.sh`. It must be at least 12 characters; the backend refuses to seed
 the first admin otherwise.
