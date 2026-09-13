@@ -10,6 +10,7 @@
 #   scripts/redeploy.sh --check-only # preflight only, change nothing
 #   scripts/redeploy.sh --no-build   # restart without rebuilding images
 #   scripts/redeploy.sh --yes        # skip the confirmation prompt
+#   scripts/redeploy.sh --no-tunnel  # never ask about Cloudflare Tunnel
 #
 # Safe to re-run. Never touches the Postgres volume or uploads/.
 set -euo pipefail
@@ -17,12 +18,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CHECK_ONLY=0; NO_BUILD=0; ASSUME_YES=0
+CHECK_ONLY=0; NO_BUILD=0; ASSUME_YES=0; NO_TUNNEL=0
 for arg in "$@"; do
   case "$arg" in
     --check-only) CHECK_ONLY=1 ;;
     --no-build)   NO_BUILD=1 ;;
     --yes|-y)     ASSUME_YES=1 ;;
+    --no-tunnel)  NO_TUNNEL=1 ;;
     --help|-h)    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
@@ -300,6 +302,28 @@ if [ "$FAILED" -ne 0 ]; then
   printf "\n${RED}Deployment finished with problems.${RST} See FAIL lines above.\n"
   printf "Logs: %s logs --tail 50\n" "$COMPOSE"
   exit 1
+fi
+
+# ── Cloudflare Tunnel (optional) ──────────────────────────────────────
+# The tunnel is what publishes this stack on its public hostnames, and it runs
+# on the host rather than in the compose stack -- so it is the one piece a move
+# to a new machine does not carry over. Only raise it when it is actually
+# missing, and only when there is a human present to answer.
+if [ "$NO_TUNNEL" -eq 0 ] && ! command -v cloudflared >/dev/null 2>&1; then
+  if [ -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+    step "Public access"
+    printf "  Reachable locally. No cloudflared on this host -- fine if your\n"
+    printf "  tunnel runs on another machine, otherwise nothing publishes this.\n"
+    printf "  Install Cloudflare Tunnel as a service now? [y/N] "
+    read -r want </dev/tty || want=""
+    case "$want" in
+      [yY]*) "$ROOT_DIR/scripts/setup-tunnel.sh" || warn "tunnel setup did not complete — rerun scripts/setup-tunnel.sh" ;;
+      *)     ok "skipped — run scripts/setup-tunnel.sh whenever you want it" ;;
+    esac
+  else
+    warn "no cloudflared on this host. If your tunnel runs elsewhere that is
+        expected; otherwise run scripts/setup-tunnel.sh to publish this stack."
+  fi
 fi
 
 printf "\n${GRN}Stack is up.${RST}\n\n"

@@ -31,6 +31,27 @@ the first admin otherwise.
 
 `scripts/install.sh` still works and simply calls `redeploy.sh`.
 
+## Public access (Cloudflare Tunnel)
+
+The tunnel publishes the stack on your hostnames without opening inbound
+ports. It runs on the host, outside the Compose stack, so it is the one piece
+that does not move with `redeploy.sh` — on a new machine you set it up once:
+
+```bash
+./scripts/setup-tunnel.sh            # install and connect
+./scripts/setup-tunnel.sh --status   # report, change nothing
+./scripts/setup-tunnel.sh --uninstall
+```
+
+It installs `cloudflared` from Cloudflare's signed apt repository, then asks
+for a tunnel token from your own Zero Trust dashboard. The token is read
+without echo and passed straight to `cloudflared`, so it never reaches your
+shell history or this repo. Afterwards the script prints the hostname → port
+routes to add under the tunnel's **Public Hostname** tab.
+
+`redeploy.sh` offers this automatically when `cloudflared` is missing and it is
+run interactively; `--no-tunnel` silences that.
+
 ## Requirements
 
 Docker with the Compose plugin (or `docker-compose`), `git`, and `curl`.
