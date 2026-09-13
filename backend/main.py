@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
+from fastapi.responses import HTMLResponse
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,7 @@ from slowapi.errors import RateLimitExceeded
 from billing import create_knet_request
 import ratelimit
 from db import advisory_lock, init_db, execute, query_all, query_one, utc_now_iso
+import menu_render
 import menus as menus_domain
 from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
@@ -3834,6 +3836,50 @@ def get_menu_endpoint(
         raise http_error(404, "menu.not_found", "Menu not found")
     tree["renders"] = _current_renders(menu_id)  # Task 6 fills this; returns [] until then
     return tree
+
+
+@app.get("/menus/{menu_id}/preview", response_class=HTMLResponse)
+def preview_menu_endpoint(
+    menu_id: int,
+    kind: str = "board",
+    language: str = "en",
+    aspect: str = "16:9",
+    principal: AuthedPrincipal = Depends(require_api_scope("api:read", "api:rw")),
+):
+    """The menu as HTML, exactly as the renderer would receive it.
+
+    Deliberately does NOT go through the Playwright renderer: an author looking
+    at their own menu should not wait on a render job, and a signup-seeded
+    sample must be viewable on a deployment whose renderer is down. Rendering
+    stays required only to put a menu onto a screen.
+    """
+    tree = menus_domain.get_menu_tree(principal.organization_id, menu_id)
+    if not tree:
+        raise http_error(404, "menu.not_found", "Menu not found")
+    try:
+        tpl = menu_render.get_template(tree["template"])
+    except KeyError:
+        raise http_error(500, "menu.bad_template",
+                         f"Menu references unknown template {tree['template']!r}")
+
+    # Validate against what THIS template declares rather than the global sets:
+    # a template that only ships 16:9 should not silently render a squashed 9:16.
+    if kind not in tpl.get("kinds", []):
+        raise http_error(400, "menu.bad_kind",
+                         f"Template '{tree['template']}' supports kinds: {', '.join(tpl.get('kinds', []))}")
+    if aspect not in tpl.get("aspects", []):
+        raise http_error(400, "menu.bad_aspect",
+                         f"Template '{tree['template']}' supports aspects: {', '.join(tpl.get('aspects', []))}")
+    if language not in menu_render.LANGUAGES:
+        raise http_error(400, "menu.bad_language",
+                         f"Language must be one of: {', '.join(menu_render.LANGUAGES)}")
+
+    logo_url = menu_render.resolve_logo_data_uri(
+        principal.organization_id, menu_id, tree["brand"], UPLOAD_DIR)
+    html = menu_render.build_html(tree, tree["template"], kind, language, aspect,
+                                  logo_url=logo_url)
+    # no-store: a preview must reflect the edit that was just made.
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 @app.put("/menus/{menu_id}")

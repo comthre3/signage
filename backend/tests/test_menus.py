@@ -195,3 +195,86 @@ def test_menu_crud_and_isolation(client):
 
     assert client.delete(f"/menus/{menu_id}", headers=_auth(tok)).status_code == 204
     assert client.get(f"/menus/{menu_id}", headers=_auth(tok)).status_code == 404
+
+
+# ── Renderer-free preview (Spec 1.1) ──────────────────────────────────
+# The point of this endpoint is that an author can see their own menu without
+# waiting on -- or depending on -- the Playwright renderer.
+
+def _menu_with_content(client, tok, template="cream-cafe"):
+    r = client.post("/menus", json={"name": "FORNO", "template": template}, headers=_auth(tok))
+    menu_id = r.json()["id"]
+    client.put(f"/menus/{menu_id}", headers=_auth(tok), json={
+        "name": "FORNO", "template": template,
+        "brand": {"name_en": "FORNO", "name_ar": "فورنو", "primary": "#D9483B",
+                  "accent": "#F0A177", "background": "#1B2026", "currency": "KWD"},
+        "categories": [{"name_en": "Classics", "name_ar": "الكلاسيكية",
+                        "items": [{"name_en": "Margherita", "name_ar": "مارغريتا",
+                                   "price": "2.750"}]}],
+    })
+    return menu_id
+
+
+def test_preview_returns_html_containing_the_menu(client):
+    tok, _ = _org_id(client)
+    menu_id = _menu_with_content(client, tok)
+    r = client.get(f"/menus/{menu_id}/preview", headers=_auth(tok))
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/html")
+    body = r.text
+    assert "Margherita" in body and "FORNO" in body
+    assert "<html" in body.lower(), "must be a standalone document, not a fragment"
+
+
+def test_preview_does_not_touch_the_renderer(client, monkeypatch):
+    """Regression guard: preview must never call out to Playwright."""
+    import menu_render
+    called = {"n": 0}
+
+    def _boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("preview must not invoke the renderer")
+
+    monkeypatch.setattr(menu_render, "run_render_job", _boom, raising=False)
+    tok, _ = _org_id(client)
+    menu_id = _menu_with_content(client, tok)
+    assert client.get(f"/menus/{menu_id}/preview", headers=_auth(tok)).status_code == 200
+    assert called["n"] == 0
+
+
+def test_preview_honours_language_and_aspect(client):
+    tok, _ = _org_id(client)
+    menu_id = _menu_with_content(client, tok)
+    ar = client.get(f"/menus/{menu_id}/preview?language=ar", headers=_auth(tok))
+    assert ar.status_code == 200
+    assert "مارغريتا" in ar.text, "Arabic preview should use Arabic item names"
+    portrait = client.get(f"/menus/{menu_id}/preview?aspect=9:16", headers=_auth(tok))
+    assert portrait.status_code == 200
+    assert "1080" in portrait.text and "1920" in portrait.text
+
+
+def test_preview_rejects_combinations_the_template_does_not_declare(client):
+    tok, _ = _org_id(client)
+    menu_id = _menu_with_content(client, tok)
+    for qs, code in (("kind=nonsense", "menu.bad_kind"),
+                     ("aspect=4:3", "menu.bad_aspect"),
+                     ("language=fr", "menu.bad_language")):
+        r = client.get(f"/menus/{menu_id}/preview?{qs}", headers=_auth(tok))
+        assert r.status_code == 400, f"{qs} -> {r.status_code}"
+        assert r.json()["detail"]["code"] == code
+
+
+def test_preview_is_scoped_to_the_owning_org(client):
+    tok_a, _ = _org_id(client)
+    tok_b, _ = _org_id(client)
+    menu_id = _menu_with_content(client, tok_a)
+    assert client.get(f"/menus/{menu_id}/preview", headers=_auth(tok_b)).status_code == 404
+    assert client.get("/menus/99999999/preview", headers=_auth(tok_a)).status_code == 404
+
+
+def test_preview_is_not_cached(client):
+    """An edit must be visible on the next preview, not a stale copy."""
+    tok, _ = _org_id(client)
+    menu_id = _menu_with_content(client, tok)
+    r = client.get(f"/menus/{menu_id}/preview", headers=_auth(tok))
+    assert "no-store" in r.headers.get("cache-control", "")

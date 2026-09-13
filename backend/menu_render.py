@@ -189,6 +189,67 @@ def _media_name(tree: dict, spec: RenderSpec) -> str:
     return f"{brand} — {what} ({lang}, {spec.aspect})"
 
 
+def resolve_logo_data_uri(org_id: int, menu_id: int, brand: dict,
+                          upload_dir: str) -> Optional[str]:
+    """Brand logo as a self-contained data: URI, or None.
+
+    Inlining rather than linking keeps generated menu HTML standalone: the
+    render container has no access to our upload directory, and the browser
+    preview would otherwise need a cross-origin image fetch that CSP governs.
+
+    Every rejection path is a warning and a None, never an exception -- a menu
+    with an unusable logo should still render without one. Shared by the render
+    job and the live preview so the path-traversal, MIME and size checks below
+    exist exactly once.
+    """
+    logger = logging.getLogger(__name__)
+    logo_media_id = (brand or {}).get("logo_media_id")
+    if not logo_media_id:
+        return None
+    row = query_one("SELECT filename, mime_type FROM media WHERE id = ? AND organization_id = ?",
+                    (logo_media_id, org_id))
+    if not row:
+        logger.warning("menu %s logo %s: media row not found", menu_id, logo_media_id)
+        return None
+    if not (row["mime_type"] or "").startswith("image/"):
+        logger.warning("menu %s logo %s: mime_type %r is not an image, skipping",
+                       menu_id, logo_media_id, row["mime_type"])
+        return None
+    real_upload_dir = os.path.realpath(upload_dir)
+    path = os.path.realpath(os.path.join(upload_dir, row["filename"]))
+    if not path.startswith(real_upload_dir + os.sep):
+        logger.warning("menu %s logo %s: filename %r resolves outside upload_dir, skipping",
+                       menu_id, logo_media_id, row["filename"])
+        return None
+    if not os.path.exists(path):
+        logger.warning("menu %s logo %s: file %s does not exist, skipping",
+                       menu_id, logo_media_id, path)
+        return None
+    if os.path.getsize(path) > MAX_LOGO_BYTES:
+        logger.warning("menu %s logo %s: file %s is %d bytes, exceeds MAX_LOGO_BYTES=%d, skipping",
+                       menu_id, logo_media_id, path, os.path.getsize(path), MAX_LOGO_BYTES)
+        return None
+    import base64
+    with open(path, "rb") as f:
+        data = f.read()
+    return f"data:{row['mime_type']};base64," + base64.b64encode(data).decode()
+
+
+def build_preview_html(org_id: int, menu_id: int, kind: str, language: str,
+                       aspect: str, upload_dir: str) -> Optional[str]:
+    """Menu as standalone HTML, with no renderer involved.
+
+    Same output the render job hands to Playwright, so what an author previews
+    is what a screen will show. Returns None when the menu does not exist or
+    does not belong to this organization.
+    """
+    tree = get_menu_tree(org_id, menu_id)
+    if not tree:
+        return None
+    logo_url = resolve_logo_data_uri(org_id, menu_id, tree["brand"], upload_dir)
+    return build_html(tree, tree["template"], kind, language, aspect, logo_url=logo_url)
+
+
 async def run_render_job(org_id: int, menu_id: int, specs: list[RenderSpec], *, renderer_url: str,
                          renderer_token: str, upload_dir: str) -> None:
     """Render each spec whose hash isn't already 'ready'. Rows go pending → ready/failed."""
@@ -197,33 +258,7 @@ async def run_render_job(org_id: int, menu_id: int, specs: list[RenderSpec], *, 
     if not tree:
         return
     logger = logging.getLogger(__name__)
-    logo_url = None
-    if tree["brand"].get("logo_media_id"):
-        logo_media_id = tree["brand"]["logo_media_id"]
-        row = query_one("SELECT filename, mime_type FROM media WHERE id = ? AND organization_id = ?",
-                        (logo_media_id, org_id))
-        if not row:
-            logger.warning("menu %s logo %s: media row not found", menu_id, logo_media_id)
-        elif not (row["mime_type"] or "").startswith("image/"):
-            logger.warning("menu %s logo %s: mime_type %r is not an image, skipping",
-                            menu_id, logo_media_id, row["mime_type"])
-        else:
-            real_upload_dir = os.path.realpath(upload_dir)
-            p = os.path.realpath(os.path.join(upload_dir, row["filename"]))
-            if not p.startswith(real_upload_dir + os.sep):
-                logger.warning("menu %s logo %s: filename %r resolves outside upload_dir, skipping",
-                                menu_id, logo_media_id, row["filename"])
-            elif not os.path.exists(p):
-                logger.warning("menu %s logo %s: file %s does not exist, skipping",
-                                menu_id, logo_media_id, p)
-            elif os.path.getsize(p) > MAX_LOGO_BYTES:
-                logger.warning("menu %s logo %s: file %s is %d bytes, exceeds MAX_LOGO_BYTES=%d, skipping",
-                                menu_id, logo_media_id, p, os.path.getsize(p), MAX_LOGO_BYTES)
-            else:
-                import base64
-                with open(p, "rb") as f:
-                    data = f.read()
-                logo_url = f"data:{row['mime_type']};base64," + base64.b64encode(data).decode()
+    logo_url = resolve_logo_data_uri(org_id, menu_id, tree["brand"], upload_dir)
     async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as http:
         for spec in specs:
             existing = query_one(
