@@ -5,21 +5,36 @@ Self-hosted digital signage system with an admin dashboard, multi-zone player, a
 ## Quick start
 
 ```bash
-sudo docker-compose up -d --build
+./scripts/redeploy.sh
+```
+
+This is the supported way to stand the stack up, on this machine or a new one.
+It checks every prerequisite, creates and validates `.env` (generating strong
+secrets on first run), derives the host-specific settings, rebuilds, waits for
+health, and verifies the deployment before reporting success. It is safe to
+re-run: `data/` and `uploads/` are never touched.
+
+```bash
+./scripts/redeploy.sh --check-only   # validate this host, change nothing
+./scripts/redeploy.sh --no-build     # restart without rebuilding images
+./scripts/redeploy.sh --yes          # skip the confirmation prompt
 ```
 
 - Admin dashboard: `http://<host>:3000`
 - Player: `http://<host>:3001`
 - API: `http://<host>:8000`
+- Landing: `http://<host>:3003`
 
-Default login: `admin` / `admin123`
+On a fresh install the admin password is generated and printed once by
+`redeploy.sh`. It must be at least 12 characters; the backend refuses to seed
+the first admin otherwise.
 
-## Installation script
+`scripts/install.sh` still works and simply calls `redeploy.sh`.
 
-```bash
-chmod +x scripts/install.sh
-./scripts/install.sh
-```
+## Requirements
+
+Docker with the Compose plugin (or `docker-compose`), `git`, and `curl`.
+`redeploy.sh --check-only` reports anything missing.
 
 ## Backup script
 
