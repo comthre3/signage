@@ -1021,6 +1021,65 @@ def startup() -> None:
     execute("UPDATE screens SET password_hash = NULL WHERE password_hash IS NOT NULL")
     execute("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NOT NULL")
     _bootstrap_default_admin()
+    _ensure_setup_token()
+
+
+SETUP_TOKEN_PATH = os.path.join(os.getenv("DATA_DIR", "./data"), "setup-token.txt")
+
+
+def needs_setup() -> bool:
+    """True when this deployment has no users and awaits its first admin."""
+    return query_one("SELECT id FROM users LIMIT 1") is None
+
+
+def _publish_setup_token(token: str) -> None:
+    """Put the token where an operator can reach it, and nobody else can.
+
+    Written to the log AND to a file: an operator who deploys unattended has no
+    log to watch, and one who deploys interactively should not have to hunt for
+    a file. 0600 so it is readable only by the account running the service, and
+    deleted the moment setup completes.
+    """
+    logger.warning(
+        "SETUP REQUIRED: no users exist. Create the first administrator with "
+        "this one-time token: %s", token)
+    try:
+        os.makedirs(os.path.dirname(SETUP_TOKEN_PATH) or ".", exist_ok=True)
+        # Open with 0600 from the start rather than chmod-ing afterwards, which
+        # would leave a window where the token is world-readable.
+        fd = os.open(SETUP_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token + "\n")
+    except OSError as exc:
+        logger.warning("could not write %s: %s (token is in the log above)",
+                       SETUP_TOKEN_PATH, exc)
+
+
+def _clear_setup_token() -> None:
+    execute("DELETE FROM setup_token")
+    try:
+        os.remove(SETUP_TOKEN_PATH)
+    except OSError:
+        pass
+
+
+def _ensure_setup_token() -> None:
+    """Issue a setup token if this deployment still needs its first admin.
+
+    Runs under the migration advisory lock: every worker executes startup, and
+    without it four workers would mint four tokens and race to insert them.
+    """
+    with advisory_lock():
+        if not needs_setup():
+            _clear_setup_token()   # stale token from a since-completed setup
+            return
+        existing = query_one("SELECT token FROM setup_token WHERE id = 1")
+        if existing:
+            _publish_setup_token(existing["token"])
+            return
+        token = secrets.token_urlsafe(32)
+        execute("INSERT INTO setup_token (id, token) VALUES (1, ?)", (token,))
+        _publish_setup_token(token)
 
 
 def _bootstrap_default_admin() -> None:
@@ -1080,6 +1139,90 @@ def _is_local_request(request: Request) -> bool:
         return False
     host = (request.client.host if request.client else "") or ""
     return host in ("127.0.0.1", "::1", "localhost", "testclient")
+
+
+def _unique_org_slug(business_name: str) -> str:
+    """Organization slug, suffixed until unused. Same rule signup applies."""
+    base = slugify(business_name)
+    slug = base
+    counter = 1
+    while query_one("SELECT id FROM organizations WHERE slug = ?", (slug,)):
+        counter += 1
+        slug = f"{base}-{counter}"
+    return slug
+
+
+class SetupPayload(BaseModel):
+    setup_token: str = Field(..., min_length=8, max_length=128)
+    business_name: str = Field(..., min_length=1, max_length=120)
+    username: str = Field(..., min_length=3, max_length=80)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+@app.get("/auth/setup-status")
+def setup_status() -> dict:
+    """Whether this deployment still awaits its first administrator.
+
+    Unauthenticated by necessity -- it is what the login screen asks before
+    anyone can authenticate. It leaks only whether the deployment is empty,
+    which is already obvious to anyone who tries to log in.
+    """
+    return {"needs_setup": needs_setup()}
+
+
+@app.post("/auth/setup")
+@limiter.limit("5/minute")
+def complete_setup(request: Request, payload: SetupPayload) -> dict:
+    """Create the first administrator, once, against a one-time token.
+
+    The token exists because this endpoint has to be reachable by someone with
+    no account, on a deployment that is already internet-facing. Without it the
+    first stranger to load the page owns the deployment. It is printed to the
+    log and written to a 0600 file, both reachable only with server access.
+    """
+    # Serialized so two simultaneous submissions cannot both create an admin.
+    with advisory_lock():
+        if not needs_setup():
+            raise http_error(409, "setup.already_done",
+                             "This deployment already has an administrator")
+        row = query_one("SELECT token FROM setup_token WHERE id = 1")
+        if not row:
+            raise http_error(409, "setup.unavailable",
+                             "No setup token has been issued for this deployment")
+        if not secrets.compare_digest(payload.setup_token, row["token"]):
+            logger.warning("setup_token_mismatch ip=%s", _client_ip(request))
+            raise http_error(403, "setup.bad_token", "Setup token is not valid")
+
+        validate_password(payload.password)
+
+        now = utc_now_iso()
+        org_id_new = execute(
+            """
+            INSERT INTO organizations
+            (name, slug, plan, screen_limit, subscription_status, locale, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (payload.business_name, _unique_org_slug(payload.business_name), "pro", 25,
+             "active", "en", now),
+        )
+        user_id = execute(
+            """
+            INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (org_id_new, payload.username, hash_password(payload.password), 1, "admin", now),
+        )
+        _clear_setup_token()
+
+    token = secrets.token_hex(32)
+    execute(
+        "INSERT INTO sessions (user_id, token, created_at, last_used) VALUES (?, ?, ?, ?)",
+        (user_id, token, utc_now_iso(), utc_now_iso()),
+    )
+    logger.warning("setup_completed org=%s user=%s", org_id_new, payload.username)
+    return {"token": token,
+            "user": {"id": user_id, "username": payload.username, "is_admin": True},
+            "organization": {"id": org_id_new, "name": payload.business_name}}
 
 
 @app.post("/auth/signup/request")
@@ -2236,7 +2379,7 @@ def screen_layout(token: str) -> dict:
         "UPDATE screens SET last_seen = ? WHERE id = ?",
         (utc_now_iso(), screen["id"]),
     )
-    zones = get_screen_zones(screen["id"])
+    zones = playable_zones(screen["id"])
     return {"screen": sanitize_screen(screen), "zones": zones}
 
 
@@ -2256,7 +2399,7 @@ def preview_layout(token: str) -> dict:
     screen = query_one("SELECT * FROM screens WHERE id = ?", (preview["screen_id"],))
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
-    zones = get_screen_zones(screen["id"])
+    zones = playable_zones(screen["id"])
     return {"screen": sanitize_screen(screen), "zones": zones}
 
 
@@ -2966,6 +3109,27 @@ def get_screen_zones(screen_id: int) -> list[dict]:
                 item["url"] = f"/uploads/{item['filename']}"
         zone["items"] = items
     return zones
+
+
+def playable_zones(screen_id: int) -> list[dict]:
+    """Zones as the PLAYER should see them, which is not always what exists.
+
+    A zone layout in which no zone holds a single item is not a layout -- it is
+    an unfinished one. Handing it to the player puts it into zones mode, where
+    it faithfully renders empty regions and shows black, while ignoring the
+    playlist the screen already has assigned. That reads to an operator as "the
+    screen is broken", with nothing anywhere saying why.
+
+    Returning [] instead lets the player take its existing playlist path. The
+    threshold is deliberately ALL zones empty: if even one zone has content the
+    layout is real and wins, so an operator filling zones one at a time is not
+    yanked back to an old playlist mid-edit.
+
+    Only the player-facing endpoints use this. The dashboard editor reads
+    /screens/{screen_id}/zones and must keep seeing empty zones to edit them.
+    """
+    zones = get_screen_zones(screen_id)
+    return zones if any(z.get("items") for z in zones) else []
 
 
 class PairRequestStart(BaseModel):
