@@ -485,5 +485,10 @@
   "setup.network_error": "Couldn't reach the server.",
   "error.setup.bad_token": "That setup token is not valid.",
   "error.setup.already_done": "This deployment already has an administrator.",
-  "error.setup.unavailable": "No setup token has been issued for this deployment."
+  "error.setup.unavailable": "No setup token has been issued for this deployment.",
+  "menus.editor.preview": "Preview",
+  "menus.editor.preview_lang": "Preview language",
+  "menus.editor.preview_aspect": "Preview aspect",
+  "menus.editor.preview_refresh": "Refresh",
+  "menus.editor.preview_hint": "Live preview — no rendering needed. Save to update it."
 }

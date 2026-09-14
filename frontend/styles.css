@@ -2531,6 +2531,39 @@ code, kbd, samp, pre,
 .menu-card h3 { margin: 0 0 8px; }
 .menu-card-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; margin-block-end: 12px; }
 .menu-card-actions { display: flex; gap: 8px; }
+/* Live menu preview. The stage owns the aspect ratio and the iframe is scaled
+   into it, because the generated document is authored at full screen size
+   (1920x1080 or 1080x1920) rather than at the size of this pane. */
+.menu-preview-pane { margin-top: 24px; }
+.menu-preview-controls { display: flex; gap: 8px; align-items: center; }
+.menu-preview-controls select {
+  padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--cream-border, #E8DCC6); background: #fff;
+}
+.menu-preview-stage {
+  position: relative; width: 100%; aspect-ratio: 16 / 9;
+  margin: 12px auto 0; overflow: hidden; border-radius: 12px;
+  border: 1px solid var(--cream-border, #E8DCC6); background: #0b0d12;
+}
+.menu-preview-stage.loading { opacity: .55; }
+.menu-preview-stage iframe {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 0; display: block;
+}
+/* The editor uses .field throughout, but the only rule for it was scoped to
+   .schedule-editor, so every label in this editor rendered unstyled. */
+.panel-sub .field { display: block; margin-block: 14px; }
+.panel-sub .field > span {
+  display: block; margin-bottom: 6px;
+  font-size: 13px; font-weight: 600; color: var(--muted, #6b6257);
+}
+.panel-sub .field input, .panel-sub .field select, .panel-sub .field textarea {
+  width: 100%; box-sizing: border-box;
+}
+.panel-sub .field input[type="color"] { width: 100%; height: 38px; padding: 2px; }
+.colour-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.logo-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
 .menu-editor-grid { display: grid; grid-template-columns: 340px 1fr; gap: 24px; margin-top: 14px; }
 @media (max-width: 1000px) { .menu-editor-grid { grid-template-columns: 1fr; } }
 .panel-sub { border: 1px solid var(--cream-border, #E8DCC6); border-radius: 14px; padding: 16px; }

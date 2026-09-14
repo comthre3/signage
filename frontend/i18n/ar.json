@@ -485,5 +485,10 @@
   "setup.network_error": "تعذر الوصول إلى الخادم.",
   "error.setup.bad_token": "رمز الإعداد غير صالح.",
   "error.setup.already_done": "يوجد مسؤول بالفعل لهذا التثبيت.",
-  "error.setup.unavailable": "لم يتم إصدار رمز إعداد لهذا التثبيت."
+  "error.setup.unavailable": "لم يتم إصدار رمز إعداد لهذا التثبيت.",
+  "menus.editor.preview": "معاينة",
+  "menus.editor.preview_lang": "لغة المعاينة",
+  "menus.editor.preview_aspect": "نسبة العرض",
+  "menus.editor.preview_refresh": "تحديث",
+  "menus.editor.preview_hint": "معاينة مباشرة — بدون تصيير. احفظ لتحديثها."
 }

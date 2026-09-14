@@ -259,6 +259,27 @@ async function api(path, options = {}) {
   return res.json();
 }
 
+/** Same auth, 401 handling and error shape as api(), but returns the raw body.
+ *  For endpoints that answer with something other than JSON -- currently the
+ *  menu preview, which returns a standalone HTML document. */
+async function apiText(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const res = await fetch(`${API_BASE}${path}`, { headers, ...options });
+  if (!res.ok) {
+    if (res.status === 401) handleAuthFailure();
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+    const err = new Error(data && data.detail ? localizeError(data.detail, text)
+                                             : (text || "Request failed"));
+    err.status = res.status;
+    err.data   = data;
+    throw err;
+  }
+  return res.text();
+}
+
 /* ── Auth ────────────────────────────────────────────────────── */
 function setAuth(token, user) {
   authToken   = token;

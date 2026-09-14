@@ -139,6 +139,29 @@ const Menus = (() => {
           <div id="menu-cats">${m.categories.map((c, ci) => catHtml(c, ci)).join("")}</div>
         </section>
       </div>
+      <section class="panel-sub menu-preview-pane">
+        <div class="row-between">
+          <h3>${escHtml(Khan.t("menus.editor.preview", "Preview"))}</h3>
+          <div class="menu-preview-controls">
+            <select id="menu-preview-lang" aria-label="${escAttr(Khan.t("menus.editor.preview_lang", "Preview language"))}">
+              <option value="en">EN</option>
+              <option value="ar">AR</option>
+              <option value="bi">EN + AR</option>
+            </select>
+            <select id="menu-preview-aspect" aria-label="${escAttr(Khan.t("menus.editor.preview_aspect", "Preview aspect"))}">
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
+            <button class="btn btn-ghost" id="menu-preview-refresh">${escHtml(Khan.t("menus.editor.preview_refresh", "Refresh"))}</button>
+          </div>
+        </div>
+        <p class="helper-text" data-i18n="menus.editor.preview_hint">${escHtml(
+          Khan.t("menus.editor.preview_hint",
+                 "Live preview — no rendering needed. Save to update it."))}</p>
+        <div class="menu-preview-stage" id="menu-preview-stage">
+          <iframe id="menu-preview-frame" title="${escAttr(Khan.t("menus.editor.preview", "Preview"))}"></iframe>
+        </div>
+      </section>
       <div class="editor-actions">
         <button class="btn btn-primary" id="menu-save">${escHtml(Khan.t("menus.editor.save", "Save"))}</button>
         <button class="btn" id="menu-render">${escHtml(Khan.t("menus.editor.render", "Render boards"))}</button>
@@ -227,6 +250,10 @@ const Menus = (() => {
       });
     });
     ed.querySelector("#menu-save").addEventListener("click", save);
+    ed.querySelector("#menu-preview-refresh")?.addEventListener("click", loadPreview);
+    ed.querySelector("#menu-preview-lang")?.addEventListener("change", loadPreview);
+    ed.querySelector("#menu-preview-aspect")?.addEventListener("change", loadPreview);
+    loadPreview();
     ed.querySelector("#menu-render").addEventListener("click", () => Menus.renderBoards()); // Task 10
   }
 
@@ -245,9 +272,57 @@ const Menus = (() => {
     };
   }
 
+  async function loadPreview() {
+    const frame = document.getElementById("menu-preview-frame");
+    const stage = document.getElementById("menu-preview-stage");
+    if (!frame || !st.current) return;
+    const lang   = document.getElementById("menu-preview-lang")?.value   || "en";
+    const aspect = document.getElementById("menu-preview-aspect")?.value || "16:9";
+    stage.classList.add("loading");
+    try {
+      // srcdoc rather than pointing src at the API: the document is fully
+      // self-contained (inlined CSS, logo as a data URI), so this needs no
+      // frame-src entry and no cross-origin image loads.
+      const html = await apiText(
+        `/menus/${st.current.id}/preview?language=${encodeURIComponent(lang)}` +
+        `&aspect=${encodeURIComponent(aspect)}`);
+      frame.srcdoc = html;
+      const [w, h] = aspect === "9:16" ? [1080, 1920] : [1920, 1080];
+      stage.style.aspectRatio = `${w} / ${h}`;
+      // Portrait at full panel width is ~1900px tall -- taller than a laptop
+      // screen, which buries the Save button beneath the preview. Size it from
+      // the viewport height instead, so either orientation fits on screen.
+      stage.style.width = aspect === "9:16"
+        ? `min(100%, calc(70vh * ${w} / ${h}))`
+        : "100%";
+      frame.dataset.w = w;
+      frame.dataset.h = h;
+      frame.onload = () => scalePreview();
+    } catch (err) {
+      frame.srcdoc = `<p style="font:14px system-ui;padding:12px;color:#a33">${
+        escHtml(err.message || "Preview failed")}</p>`;
+    } finally {
+      stage.classList.remove("loading");
+    }
+  }
+
+  function scalePreview() {
+    const frame = document.getElementById("menu-preview-frame");
+    const stage = document.getElementById("menu-preview-stage");
+    if (!frame || !stage || !frame.contentDocument) return;
+    const w = Number(frame.dataset.w || 1920);
+    const scale = stage.clientWidth / w;
+    const root = frame.contentDocument.documentElement;
+    root.style.transformOrigin = "0 0";
+    root.style.transform = `scale(${scale})`;
+  }
+
+  window.addEventListener("resize", () => { try { scalePreview(); } catch (_) {} });
+
   async function save() {
     try {
       st.current = await api(`/menus/${st.current.id}`, { method: "PUT", body: JSON.stringify(payload()) });
+      loadPreview();   // an edit the author cannot see is not much of an edit
       toast(Khan.t("menus.editor.saved", "Menu saved."), "success");
       renderEditor();
       return st.current;
