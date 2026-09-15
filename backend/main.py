@@ -1018,8 +1018,6 @@ def startup() -> None:
     init_db()
     cleanup_sessions()
     cleanup_preview_tokens()
-    execute("UPDATE screens SET password_hash = NULL WHERE password_hash IS NOT NULL")
-    execute("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NOT NULL")
     _bootstrap_default_admin()
     _ensure_setup_token()
 
