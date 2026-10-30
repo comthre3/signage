@@ -1046,7 +1046,23 @@ label {
   height: 100%;
 }
 
+/* The invisible file input above spans the whole drop zone so a tap anywhere
+   opens the picker -- but it was also on top of the Upload button, so tapping
+   Upload reopened the picker and the form never submitted. Lift the button. */
+.dropzone > button {
+  position: relative;
+  z-index: 1;
+}
+
 .dropzone-content { text-align: center; pointer-events: none; }
+
+.dropzone-file {
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--plum);
+  overflow-wrap: anywhere;
+}
+.dropzone-file:empty { display: none; }
 
 .dropzone-title {
   font-family: var(--font-display);

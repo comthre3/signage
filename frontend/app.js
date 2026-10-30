@@ -1194,6 +1194,7 @@ document.getElementById("media-form").addEventListener("submit", async (e) => {
     });
     if (!res.ok) { const text = await res.text(); throw new Error(text || "Upload failed"); }
     input.value = "";
+    document.getElementById("media-file-name").textContent = "";
     toast(Khan.t("toast.media_uploaded"), "success");
     await loadMedia();
   });
@@ -1214,6 +1215,11 @@ document.getElementById("media-url-form").addEventListener("submit", async (e) =
 });
 
 const mediaForm = document.getElementById("media-form");
+// The file input is invisible, so echo the picked file's name -- on a phone
+// there is otherwise no sign the pick registered before tapping Upload.
+document.getElementById("media-file")?.addEventListener("change", (e) => {
+  document.getElementById("media-file-name").textContent = e.target.files[0]?.name || "";
+});
 mediaForm?.addEventListener("dragover", (e) => { e.preventDefault(); mediaForm.classList.add("dropzone-active"); });
 mediaForm?.addEventListener("dragleave", ()  => mediaForm.classList.remove("dropzone-active"));
 mediaForm?.addEventListener("drop", async (e) => {
