@@ -81,7 +81,7 @@ window.confirmDialog = function ({ title, message, confirmLabel, danger = false 
       <div class="modal-card confirm-dialog-card">
         <div class="confirm-dialog-header">
           <h3>${title || ""}</h3>
-          <button class="confirm-dialog-close btn-ghost" aria-label="Close">✕</button>
+          <button class="confirm-dialog-close btn-ghost" aria-label="${escAttr(Khan.t("common.close", "Close"))}">✕</button>
         </div>
         <div class="confirm-dialog-body">
           <p>${(message || "").replace(/</g, "&lt;")}</p>
@@ -411,6 +411,36 @@ function resetOrgState() {
   });
 }
 
+/* ── Roles ───────────────────────────────────────────────────── */
+// Mirrors the backend's require_roles / session_roles: viewers read only;
+// editors manage content (sites, screens, media, playlists, schedules,
+// walls, menus, pairing); deleting sites, screens and schedules, plus
+// users, groups, screen access, API keys, audit log and billing, is admin.
+function currentRole() {
+  if (!currentUser) return null;
+  return currentUser.role || (currentUser.is_admin ? "admin" : "viewer");
+}
+function isAdmin() { return currentRole() === "admin"; }
+function canEditContent() { return currentRole() === "admin" || currentRole() === "editor"; }
+
+function roleLabel(role) {
+  return Khan.t(`users.role_${role}`, role || "");
+}
+
+// Static controls that only make sense for someone who can write. Gated with
+// an inline display so it never fights the .hidden class other code toggles.
+const EDITOR_ONLY_IDS = [
+  "site-form", "screen-form", "media-url-form", "media-form", "playlist-form",
+  "playlist-add-item", "walls-create-btn", "schedule-new-btn", "menu-new-btn",
+];
+function applyRoleGating() {
+  const edit = canEditContent();
+  EDITOR_ONLY_IDS.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = edit ? "" : "none";
+  });
+}
+
 function updateAuthUI() {
   const authUser  = document.getElementById("auth-user");
   const logoutBtn = document.getElementById("logout-btn");
@@ -418,13 +448,14 @@ function updateAuthUI() {
   const usersBtn    = document.querySelector('button[data-section="users"]');
   const auditBtn    = document.querySelector('button[data-section="audit-log"]');
   const apiKeysBtn  = document.querySelector('button[data-section="api-keys"]');
+  applyRoleGating();
   if (currentUser) {
-    authUser.textContent = `${currentUser.username} · ${currentUser.role}`;
+    authUser.textContent = `${currentUser.username} · ${roleLabel(currentRole())}`;
     logoutBtn.classList.remove("hidden");
     nav.classList.remove("hidden");
-    if (usersBtn) usersBtn.classList.toggle("hidden", currentUser.role !== "admin");
-    if (auditBtn) auditBtn.classList.toggle("hidden", currentUser.role !== "admin");
-    if (apiKeysBtn) apiKeysBtn.classList.toggle("hidden", currentUser.role !== "admin");
+    if (usersBtn) usersBtn.classList.toggle("hidden", !isAdmin());
+    if (auditBtn) auditBtn.classList.toggle("hidden", !isAdmin());
+    if (apiKeysBtn) apiKeysBtn.classList.toggle("hidden", !isAdmin());
   } else {
     authUser.textContent = "";
     logoutBtn.classList.add("hidden");
@@ -494,7 +525,7 @@ async function loadMedia() {
 }
 
 async function loadUsers() {
-  if (currentUser?.role !== "admin") {
+  if (!isAdmin()) {
     state.users  = [];
     state.groups = [];
     renderUsers();
@@ -513,14 +544,15 @@ function renderSites() {
   state.sites.forEach((site) => {
     const card = document.createElement("div");
     card.className = "card";
+    // Deleting a site is admin-only on the backend.
     card.innerHTML = `
       <h3>${escHtml(site.name)}</h3>
-      <div>Slug: <span style="font-family:var(--mono)">${escHtml(site.slug)}</span></div>
-      <div class="card-actions">
-        <button class="delete-btn" data-id="${site.id}">Delete</button>
-      </div>
+      <div>${escHtml(Khan.t("sites.slug_label", "Slug:"))} <span style="font-family:var(--mono)" dir="ltr">${escHtml(site.slug)}</span></div>
+      ${isAdmin() ? `<div class="card-actions">
+        <button class="delete-btn" data-id="${site.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
+      </div>` : ""}
     `;
-    card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+    card.querySelector(".delete-btn")?.addEventListener("click", async (e) => {
       const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_site_title", "Delete site"),
@@ -541,7 +573,7 @@ function renderSites() {
 
 function renderSiteOptions() {
   const select = document.getElementById("screen-site");
-  select.innerHTML = `<option value="">Site</option>`;
+  select.innerHTML = `<option value="">${escHtml(Khan.t("screens.site_label", "Site"))}</option>`;
   state.sites.forEach((site) => {
     const option = document.createElement("option");
     option.value = site.id;
@@ -562,11 +594,11 @@ function renderPlaylists() {
     card.className = "card";
     card.innerHTML = `
       <h3>${escHtml(playlist.name)}</h3>
-      <div class="card-actions">
-        <button class="delete-btn" data-id="${playlist.id}">Delete</button>
-      </div>
+      ${canEditContent() ? `<div class="card-actions">
+        <button class="delete-btn" data-id="${playlist.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
+      </div>` : ""}
     `;
-    card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+    card.querySelector(".delete-btn")?.addEventListener("click", async (e) => {
       const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_playlist_title", "Delete playlist"),
@@ -587,7 +619,7 @@ function renderPlaylists() {
 
 function renderPlaylistSelect() {
   const select = document.getElementById("playlist-select");
-  select.innerHTML = `<option value="">Select playlist</option>`;
+  select.innerHTML = `<option value="">${escHtml(Khan.t("playlists.select_playlist", "Select playlist"))}</option>`;
   state.playlists.forEach((playlist) => {
     const option = document.createElement("option");
     option.value = playlist.id;
@@ -605,19 +637,19 @@ function renderMedia() {
     card.className = "card";
     const isUrl = item.mime_type === "text/url";
     const url   = isUrl ? item.url : `${API_BASE}${item.url}`;
-    const typeLabel = isUrl ? "Website URL" : item.mime_type;
+    const typeLabel = isUrl ? Khan.t("media.type_website", "Website URL") : item.mime_type;
     card.innerHTML = `
       <h3>${escHtml(item.name)}</h3>
       <div class="card-meta">
         <span>${escHtml(typeLabel)}</span>
         ${!isUrl && item.size ? `<span>${formatBytes(item.size)}</span>` : ""}
       </div>
-      <div><a href="${escAttr(url)}" target="_blank" rel="noreferrer">Open ↗</a></div>
-      <div class="card-actions">
-        <button class="delete-btn" data-id="${item.id}">Delete</button>
-      </div>
+      <div><a href="${escAttr(url)}" target="_blank" rel="noreferrer">${escHtml(Khan.t("media.open", "Open ↗"))}</a></div>
+      ${canEditContent() ? `<div class="card-actions">
+        <button class="delete-btn" data-id="${item.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
+      </div>` : ""}
     `;
-    card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+    card.querySelector(".delete-btn")?.addEventListener("click", async (e) => {
       const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_media_title", "Delete media"),
@@ -638,7 +670,7 @@ function renderMedia() {
 function renderUsers() {
   const container = document.getElementById("users-list");
   container.innerHTML = "";
-  if (currentUser?.role !== "admin") {
+  if (!isAdmin()) {
     container.innerHTML = `<div class='card'>${Khan.t("users.admin_required", "Admin access required to manage users.")}</div>`;
     return;
   }
@@ -647,17 +679,17 @@ function renderUsers() {
     card.className = "card";
     card.innerHTML = `
       <h3>${escHtml(user.username)}</h3>
-      <div class="card-meta"><span>Role: ${escHtml(user.role)}</span></div>
+      <div class="card-meta"><span>${escHtml(Khan.t("users.role_label", "Role: {role}").replace("{role}", roleLabel(user.role)))}</span></div>
       <div class="card-actions">
-        <input type="password" placeholder="New password" data-user-pass="${user.id}" style="min-width:140px" />
-        <button class="save-btn"   data-user-reset="${user.id}">Reset Password</button>
+        <input type="password" placeholder="${escAttr(Khan.t("users.new_password_placeholder", "New password"))}" data-user-pass="${user.id}" style="min-width:140px" autocomplete="new-password" />
+        <button class="save-btn"   data-user-reset="${user.id}">${escHtml(Khan.t("users.reset_password", "Reset Password"))}</button>
         <select data-user-role="${user.id}">
-          <option value="viewer">Viewer</option>
-          <option value="editor">Editor</option>
-          <option value="admin">Admin</option>
+          <option value="viewer">${escHtml(roleLabel("viewer"))}</option>
+          <option value="editor">${escHtml(roleLabel("editor"))}</option>
+          <option value="admin">${escHtml(roleLabel("admin"))}</option>
         </select>
-        <button class="save-btn"   data-user-role-save="${user.id}">Update Role</button>
-        <button class="delete-btn" data-user-delete="${user.id}">Delete</button>
+        <button class="save-btn"   data-user-role-save="${user.id}">${escHtml(Khan.t("users.update_role", "Update Role"))}</button>
+        <button class="delete-btn" data-user-delete="${user.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
       </div>
       <div class="card-actions" data-user-groups="${user.id}"></div>
     `;
@@ -725,7 +757,7 @@ function renderUsers() {
 function renderGroups() {
   const container = document.getElementById("groups-list");
   container.innerHTML = "";
-  if (currentUser?.role !== "admin") return;
+  if (!isAdmin()) return;
   if (state.groups.length) {
     const heading = document.createElement("h3");
     heading.textContent = Khan.t("users.groups_heading", "Groups");
@@ -738,7 +770,7 @@ function renderGroups() {
     card.innerHTML = `
       <h3>${escHtml(group.name)}</h3>
       <div class="card-actions">
-        <button class="delete-btn" data-group-delete="${group.id}">Delete</button>
+        <button class="delete-btn" data-group-delete="${group.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
       </div>
     `;
     card.querySelector(`[data-group-delete="${group.id}"]`).addEventListener("click", async (e) => {
@@ -768,10 +800,10 @@ function renderScreens() {
     const base      = getPlayerBaseWithOverrides();
     const playerUrl = base.includes("?") ? `${base}&code=${screen.pair_code}` : `${base}/?code=${screen.pair_code}`;
     const statusHtml = screen.is_online
-      ? `<span class="status-online">Online</span>`
-      : `<span class="status-offline">Offline</span>`;
+      ? `<span class="status-online">${escHtml(Khan.t("screens.status_online", "Online"))}</span>`
+      : `<span class="status-offline">${escHtml(Khan.t("screens.status_offline", "Offline"))}</span>`;
     const playlistOptions = [
-      `<option value="">No playlist</option>`,
+      `<option value="">${escHtml(Khan.t("screens.no_playlist", "No playlist"))}</option>`,
       ...state.playlists.map((p) => `<option value="${p.id}">${escHtml(p.name)}</option>`),
     ].join("");
 
@@ -780,25 +812,31 @@ function renderScreens() {
       ...(state.schedules || []).map((s) => `<option value="${s.id}">${escHtml(s.name)}</option>`),
     ].join("");
 
+    // Saving, zones and preview need editor; access (GET/PUT
+    // /screens/{id}/groups) and delete are admin-only on the backend.
+    const edit  = canEditContent();
+    const admin = isAdmin();
+    const orientationLabel = screen.orientation
+      ? Khan.t(`screens.orientation_${screen.orientation}`, screen.orientation) : "";
     card.innerHTML = `
       <h3>${escHtml(screen.name)}</h3>
       <div class="card-meta">
-        <span>Site: ${escHtml(screen.site_name || Khan.t("screens.site_unassigned_label", "Unassigned"))}</span>
+        <span>${escHtml(Khan.t("screens.site_prefix", "Site:"))} ${escHtml(screen.site_name || Khan.t("screens.site_unassigned_label", "Unassigned"))}</span>
         ${screen.location ? `<span>${escHtml(screen.location)}</span>` : ""}
-        ${screen.resolution ? `<span>${escHtml(screen.resolution)}</span>` : ""}
-        ${screen.orientation ? `<span>${escHtml(screen.orientation)}</span>` : ""}
-        <span>Status: ${statusHtml}</span>
+        ${screen.resolution ? `<span dir="ltr">${escHtml(screen.resolution)}</span>` : ""}
+        ${orientationLabel ? `<span>${escHtml(orientationLabel)}</span>` : ""}
+        <span>${escHtml(Khan.t("screens.status_label", "Status:"))} ${statusHtml}</span>
       </div>
-      <div>Pair code: <strong class="pair-code">${escHtml(screen.pair_code)}</strong></div>
-      <div><a href="${escAttr(playerUrl)}" target="_blank" rel="noreferrer">Player URL ↗</a></div>
+      <div>${escHtml(Khan.t("screens.pair_code_label", "Pair code:"))} <strong class="pair-code" dir="ltr">${escHtml(screen.pair_code)}</strong></div>
+      <div><a href="${escAttr(playerUrl)}" target="_blank" rel="noreferrer">${escHtml(Khan.t("screens.player_url", "Player URL ↗"))}</a></div>
       <div class="card-actions">
-        <select data-playlist-select="${screen.id}">${playlistOptions}</select>
-        <select data-schedule-select="${screen.id}">${scheduleOptions}</select>
-        <button class="save-btn"    data-save-screen="${screen.id}">Save</button>
-        <button class="save-btn"    data-zones-screen="${screen.id}">Zones</button>
-        <button class="access-btn"  data-access-screen="${screen.id}">Access</button>
-        <button class="preview-btn" data-preview-screen="${screen.id}">Preview</button>
-        <button class="delete-btn"  data-delete-screen="${screen.id}">Delete</button>
+        <select data-playlist-select="${screen.id}" ${edit ? "" : "disabled"} aria-label="${escAttr(Khan.t("schedules.editor.playlist", "Playlist"))}">${playlistOptions}</select>
+        <select data-schedule-select="${screen.id}" ${edit ? "" : "disabled"} aria-label="${escAttr(Khan.t("screen.field.schedule", "Schedule"))}">${scheduleOptions}</select>
+        ${edit ? `<button class="save-btn"    data-save-screen="${screen.id}">${escHtml(Khan.t("screens.save_btn", "Save"))}</button>
+        <button class="save-btn"    data-zones-screen="${screen.id}">${escHtml(Khan.t("screens.zones_btn", "Zones"))}</button>` : ""}
+        ${admin ? `<button class="access-btn"  data-access-screen="${screen.id}">${escHtml(Khan.t("screens.access_btn", "Access"))}</button>` : ""}
+        ${edit ? `<button class="preview-btn" data-preview-screen="${screen.id}">${escHtml(Khan.t("screens.preview_btn", "Preview"))}</button>` : ""}
+        ${admin ? `<button class="delete-btn"  data-delete-screen="${screen.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>` : ""}
       </div>
     `;
 
@@ -808,7 +846,7 @@ function renderScreens() {
     const scheduleSel = card.querySelector(`[data-schedule-select="${screen.id}"]`);
     if (scheduleSel) scheduleSel.value = screen.schedule_id || "";
 
-    card.querySelector(`[data-save-screen="${screen.id}"]`).addEventListener("click", async (e) => {
+    card.querySelector(`[data-save-screen="${screen.id}"]`)?.addEventListener("click", async (e) => {
       const btn = e.currentTarget;   // null once the event finishes dispatching
       await withLoading(btn, async () => {
         const playlistId = select.value ? Number(select.value) : null;
@@ -822,15 +860,15 @@ function renderScreens() {
       });
     });
 
-    card.querySelector(`[data-zones-screen="${screen.id}"]`).addEventListener("click", async () => {
+    card.querySelector(`[data-zones-screen="${screen.id}"]`)?.addEventListener("click", async () => {
       await openZonesEditor(screen.id);
     });
 
-    card.querySelector(`[data-access-screen="${screen.id}"]`).addEventListener("click", async () => {
+    card.querySelector(`[data-access-screen="${screen.id}"]`)?.addEventListener("click", async () => {
       await openScreenAccessEditor(screen.id);
     });
 
-    card.querySelector(`[data-preview-screen="${screen.id}"]`).addEventListener("click", async (e) => {
+    card.querySelector(`[data-preview-screen="${screen.id}"]`)?.addEventListener("click", async (e) => {
       const btn = e.currentTarget;   // null once the event finishes dispatching
       await withLoading(btn, async () => {
         const preview = await api(`/screens/${screen.id}/preview-token`, { method: "POST" });
@@ -840,7 +878,7 @@ function renderScreens() {
       });
     });
 
-    card.querySelector(`[data-delete-screen="${screen.id}"]`).addEventListener("click", async (e) => {
+    card.querySelector(`[data-delete-screen="${screen.id}"]`)?.addEventListener("click", async (e) => {
       const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_screen_title", "Delete screen"),
@@ -881,7 +919,7 @@ function snapValue(value) {
 function setZones(zones) {
   zonesState.zones = zones.map((zone, index) => ({
     id: zone.id || `local-${index}`,
-    name: zone.name || `Zone ${index + 1}`,
+    name: zone.name || zoneDefaultName(index + 1),
     x: zone.x, y: zone.y, width: zone.width, height: zone.height,
     sort_order: zone.sort_order ?? index,
     transition_ms: zone.transition_ms ?? 600,
@@ -939,11 +977,11 @@ function renderZonesList() {
     card.className = "card";
     const itemsHtml = zone.items?.map((item, itemIndex) => `
       <div class="zone-item">
-        <span>${escHtml(item.name || "Media")}</span>
+        <span>${escHtml(item.name || Khan.t("zones.media_fallback", "Media"))}</span>
         <input type="number" min="0" max="3600" value="${item.duration_seconds ?? 10}" data-zone-item-duration="${zoneIndex}:${itemIndex}" />
         <button class="delete-btn" data-zone-item-remove="${zoneIndex}:${itemIndex}">✕</button>
       </div>
-    `).join("") || "<div class='helper-text'>No media yet.</div>";
+    `).join("") || `<div class='helper-text'>${escHtml(Khan.t("zones.no_media", "No media yet."))}</div>`;
 
     const mediaOptions = state.media.map((m) => `<option value="${m.id}">${escHtml(m.name)}</option>`).join("");
 
@@ -953,16 +991,16 @@ function renderZonesList() {
         <span>${Math.round(zone.width * 100)}% × ${Math.round(zone.height * 100)}%</span>
       </div>
       <div class="zone-transition">
-        <label>Fade (ms)</label>
+        <label>${escHtml(Khan.t("zones.fade_ms", "Fade (ms)"))}</label>
         <input type="number" min="0" max="5000" value="${zone.transition_ms ?? 600}" data-zone-transition="${zoneIndex}" />
       </div>
       <div class="zone-actions">
-        <button class="delete-btn" data-zone-remove="${zoneIndex}">Delete Zone</button>
+        <button class="delete-btn" data-zone-remove="${zoneIndex}">${escHtml(Khan.t("zones.delete_zone", "Delete Zone"))}</button>
       </div>
       <div class="zone-add">
-        <select data-zone-media="${zoneIndex}"><option value="">Add media…</option>${mediaOptions}</select>
+        <select data-zone-media="${zoneIndex}"><option value="">${escHtml(Khan.t("zones.add_media_option", "Add media…"))}</option>${mediaOptions}</select>
         <input type="number" min="0" max="3600" value="10" data-zone-duration="${zoneIndex}" style="width:70px" />
-        <button class="save-btn" data-zone-add="${zoneIndex}">Add</button>
+        <button class="save-btn" data-zone-add="${zoneIndex}">${escHtml(Khan.t("zones.add_btn", "Add"))}</button>
       </div>
       <div class="zone-items">${itemsHtml}</div>
     `;
@@ -1006,17 +1044,24 @@ function normalizeDuration(value, fallback = 10) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function zoneDefaultName(n) {
+  return Khan.t("zones.default_name_n", "Zone {n}").replace("{n}", n);
+}
+
 function presetZones(type) {
-  if (type === "single")     setZones([{ name: "Full",   x: 0,    y: 0, width: 1,    height: 1,   items: [] }]);
-  if (type === "columns-2")  setZones([{ name: "Left",   x: 0,    y: 0, width: 0.5,  height: 1,   items: [] },
-                                        { name: "Right",  x: 0.5,  y: 0, width: 0.5,  height: 1,   items: [] }]);
-  if (type === "columns-3")  setZones([{ name: "Left",   x: 0,    y: 0, width: 0.33, height: 1,   items: [] },
-                                        { name: "Center", x: 0.33, y: 0, width: 0.34, height: 1,   items: [] },
-                                        { name: "Right",  x: 0.67, y: 0, width: 0.33, height: 1,   items: [] }]);
-  if (type === "rows-2")     setZones([{ name: "Top",    x: 0,    y: 0, width: 1,    height: 0.5, items: [] },
-                                        { name: "Bottom", x: 0,    y: 0.5, width: 1,  height: 0.5, items: [] }]);
-  if (type === "hero-side")  setZones([{ name: "Hero",   x: 0,    y: 0, width: 0.7,  height: 1,   items: [] },
-                                        { name: "Side",   x: 0.7,  y: 0, width: 0.3,  height: 1,   items: [] }]);
+  // Zone names are saved with the layout, so they are created in the
+  // language the person is working in.
+  const z = (key, fallback) => Khan.t(`zones.preset.${key}`, fallback);
+  if (type === "single")     setZones([{ name: z("full", "Full"),     x: 0,    y: 0, width: 1,    height: 1,   items: [] }]);
+  if (type === "columns-2")  setZones([{ name: z("left", "Left"),     x: 0,    y: 0, width: 0.5,  height: 1,   items: [] },
+                                        { name: z("right", "Right"),   x: 0.5,  y: 0, width: 0.5,  height: 1,   items: [] }]);
+  if (type === "columns-3")  setZones([{ name: z("left", "Left"),     x: 0,    y: 0, width: 0.33, height: 1,   items: [] },
+                                        { name: z("center", "Center"), x: 0.33, y: 0, width: 0.34, height: 1,   items: [] },
+                                        { name: z("right", "Right"),   x: 0.67, y: 0, width: 0.33, height: 1,   items: [] }]);
+  if (type === "rows-2")     setZones([{ name: z("top", "Top"),       x: 0,    y: 0, width: 1,    height: 0.5, items: [] },
+                                        { name: z("bottom", "Bottom"), x: 0,    y: 0.5, width: 1,  height: 0.5, items: [] }]);
+  if (type === "hero-side")  setZones([{ name: z("hero", "Hero"),     x: 0,    y: 0, width: 0.7,  height: 1,   items: [] },
+                                        { name: z("side", "Side"),     x: 0.7,  y: 0, width: 0.3,  height: 1,   items: [] }]);
 }
 
 async function openZonesEditor(screenId) {
@@ -1089,7 +1134,7 @@ async function openScreenAccessEditor(screenId) {
 async function loadZoneTemplates() {
   const select = document.getElementById("zone-template-select");
   if (!select) return;
-  select.innerHTML = `<option value="">Apply template…</option>`;
+  select.innerHTML = `<option value="">${escHtml(Khan.t("screens.template_apply_label", "Apply template…"))}</option>`;
   const templates = await api("/zone-templates");
   templates.forEach((t) => {
     const option = document.createElement("option");
@@ -1102,7 +1147,7 @@ async function loadZoneTemplates() {
 function bindZoneEditorEvents() {
   document.getElementById("zone-add")?.addEventListener("click", () => {
     const index = zonesState.zones.length + 1;
-    zonesState.zones.push({ id: `local-${Date.now()}`, name: `Zone ${index}`, x: 0.1, y: 0.1, width: 0.3, height: 0.3, sort_order: index, transition_ms: 600, items: [] });
+    zonesState.zones.push({ id: `local-${Date.now()}`, name: zoneDefaultName(index), x: 0.1, y: 0.1, width: 0.3, height: 0.3, sort_order: index, transition_ms: 600, items: [] });
     renderZonesCanvas();
     renderZonesList();
   });
@@ -1238,7 +1283,7 @@ function bindZoneEditorEvents() {
   window.addEventListener("mouseup", () => {
     if (zonesState.drawing?.preview) {
       const index = zonesState.zones.length + 1;
-      zonesState.zones.push({ id: `local-${Date.now()}`, name: `Zone ${index}`, ...zonesState.drawing.preview, sort_order: index, transition_ms: 600, items: [] });
+      zonesState.zones.push({ id: `local-${Date.now()}`, name: zoneDefaultName(index), ...zonesState.drawing.preview, sort_order: index, transition_ms: 600, items: [] });
       renderZonesList();
     }
     zonesState.dragging = null;
@@ -1257,13 +1302,14 @@ async function loadPlaylistItems(playlistId) {
   const itemsHtml = data.items.map((item) => `
     <div class="card" style="margin-bottom:6px">
       <div>${escHtml(item.name)}</div>
-      <div class="card-meta"><span>${item.duration_seconds}s</span></div>
-      <div class="card-actions">
-        <button class="delete-btn" data-item-id="${item.id}">Remove</button>
-      </div>
+      <div class="card-meta"><span>${escHtml(Khan.t("playlists.item_seconds", "{n}s").replace("{n}", item.duration_seconds))}</span></div>
+      ${canEditContent() ? `<div class="card-actions">
+        <button class="delete-btn" data-item-id="${item.id}">${escHtml(Khan.t("playlists.remove_item", "Remove"))}</button>
+      </div>` : ""}
     </div>
   `).join("");
-  card.innerHTML = `<h3>${escHtml(data.playlist.name)} Items</h3>${itemsHtml || "<div class='helper-text'>No items yet.</div>"}`;
+  card.innerHTML = `<h3>${escHtml(Khan.t("playlists.items_heading", "{name} — items").replace("{name}", data.playlist.name))}</h3>${
+    itemsHtml || `<div class='helper-text'>${escHtml(Khan.t("playlists.no_items", "No items yet."))}</div>`}`;
   container.appendChild(card);
   card.querySelectorAll("[data-item-id]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1321,7 +1367,7 @@ document.getElementById("screen-form").addEventListener("submit", async (e) => {
       await loadScreens();
       loadOrganization();   // plan card: "n / limit screens"
     } catch (err) {
-      toast(err.message || "Failed to add screen.", "error");
+      toast(err.message || Khan.t("screens.add_failed", "Failed to add screen."), "error");
     }
   });
 });
@@ -1629,7 +1675,7 @@ document.getElementById("setup-form")?.addEventListener("submit", async (e) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const code = data?.detail?.code || "";
-      err.textContent = Khan.t(`error.${code}`, data?.detail?.message || "Setup failed.");
+      err.textContent = Khan.t(`error.${code}`, data?.detail?.message || Khan.t("setup.failed", "Setup failed."));
       err.classList.remove("hidden");
       return;
     }
@@ -1775,7 +1821,7 @@ function signupResetDevOtpHint(otp) {
   const el = document.getElementById("signup-dev-otp");
   if (!el) return;
   if (otp) {
-    el.textContent = `Dev mode: your code is ${otp}`;
+    el.textContent = Khan.t("auth.dev_otp", "Dev mode: your code is {otp}").replace("{otp}", otp);
     el.classList.remove("hidden");
   } else {
     el.textContent = "";
@@ -1823,7 +1869,7 @@ document.getElementById("signup-verify-form").addEventListener("submit", async (
       signupShowStep("password");
     });
   } catch (err) {
-    toast(err.message || "Verification failed.", "error");
+    toast(err.message || Khan.t("error.verify_failed", "Verification failed."), "error");
   }
 });
 
@@ -1843,7 +1889,7 @@ document.getElementById("signup-resend").addEventListener("click", async (e) => 
     }
     toast(Khan.t("toast.new_code_sent"), "success");
   } catch (err) {
-    toast(err.message || "Couldn't resend code.", "error");
+    toast(err.message || Khan.t("error.code_resend_failed", "Couldn't resend code."), "error");
   }
 });
 
@@ -1885,7 +1931,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
       signupState.verification_token = "";
     });
   } catch (err) {
-    toast(err.message || "Sign-up failed.", "error");
+    toast(err.message || Khan.t("error.signup_failed", "Sign-up failed."), "error");
   }
 });
 
@@ -2005,6 +2051,8 @@ function renderPlanCard(org) {
   const status  = document.getElementById("plan-card-status");
   const trial   = document.getElementById("plan-card-trial");
 
+  // Plan names are product names and stay as they are in both languages
+  // (the landing page does the same).
   const planLabels = {
     starter: "Starter", growth: "Growth", business: "Business",
     pro: "Pro", enterprise: "Enterprise",
@@ -2013,19 +2061,24 @@ function renderPlanCard(org) {
   const used       = Number.isFinite(org.screens_used)  ? org.screens_used  : 0;
   const limit      = Number.isFinite(org.screen_limit) ? org.screen_limit : 0;
 
-  biz.textContent   = org.name || "Your organization";
-  tier.textContent  = `${tierLabel} plan`;
-  usage.textContent = `${used} / ${limit} screens`;
+  biz.textContent   = org.name || Khan.t("plan.org_fallback", "Your organization");
+  tier.textContent  = Khan.t("plan.tier_label", "{plan} plan").replace("{plan}", tierLabel);
+  usage.textContent = Khan.t("plan.usage", "{used} / {limit} screens")
+    .replace("{used}", used).replace("{limit}", limit);
 
-  status.textContent = org.subscription_status || "—";
-  status.className   = `plan-status plan-status-${(org.subscription_status || "unknown").toLowerCase()}`;
+  const subStatus = org.subscription_status || "";
+  status.textContent = subStatus ? Khan.t(`plan.status_${subStatus}`, subStatus) : "—";
+  status.className   = `plan-status plan-status-${(subStatus || "unknown").toLowerCase()}`;
 
   if (org.subscription_status === "trialing" && org.trial_ends_at) {
     const endsAt  = new Date(org.trial_ends_at);
     const daysLeft = Math.max(0, Math.ceil((endsAt.getTime() - Date.now()) / 86400000));
+    const date = formatDay(org.trial_ends_at);
     trial.textContent = daysLeft > 0
-      ? `Trial ends in ${daysLeft} day${daysLeft === 1 ? "" : "s"} (${endsAt.toLocaleDateString()}).`
-      : `Trial ended on ${endsAt.toLocaleDateString()}. Upgrade to keep your screens live.`;
+      ? Khan.t(daysLeft === 1 ? "plan.trial_ends_one" : "plan.trial_ends_other",
+               daysLeft === 1 ? "Trial ends in 1 day ({date})." : "Trial ends in {n} days ({date}).")
+          .replace("{n}", daysLeft).replace("{date}", date)
+      : Khan.t("plan.trial_ended", "Trial ended on {date}. Upgrade to keep your screens live.").replace("{date}", date);
     trial.classList.remove("hidden");
   } else {
     trial.classList.add("hidden");
@@ -2173,6 +2226,7 @@ async function boot() {
   const locale = Khan.detectInitialLocale(orgLocale);
   await Khan.loadLocale(locale);
   Khan.applyTranslations(document);
+  updateAuthUI();   // the role label in the header was rendered before the strings loaded
   showFlash();
 
   bindLangToggle();
@@ -2223,6 +2277,20 @@ function escHtml(str) {
 }
 function escAttr(str) {
   return String(str ?? "").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
+}
+/** A calendar date in the UI's language (Arabic as used in Kuwait). */
+function formatDay(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const locale = Khan.currentLocale() === "ar" ? "ar-KW" : "en-GB";
+  return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** Absolute URL of an uploaded file. The API serves /uploads; relative to the
+ *  dashboard origin the same path is answered by index.html. */
+function uploadUrl(filename) {
+  return `${API_BASE}/uploads/${encodeURIComponent(filename || "")}`;
 }
 function formatBytes(bytes) {
   if (bytes < 1024)       return `${bytes} B`;
@@ -2406,11 +2474,13 @@ const PLAN_TIERS = [
   { tier: "business", label: "Business", kwd: 8,  screens: 10 },
   { tier: "pro",      label: "Pro",      kwd: 15, screens: 25 },
 ];
+// saveKey: localized "save N months" badge for the longer terms.
 const BILLING_TERMS = [
-  { months: 1,  multiplier: 1,  saveLabel: "" },
-  { months: 6,  multiplier: 5,  saveLabel: "save 1 month" },
-  { months: 12, multiplier: 10, saveLabel: "save 2 months" },
+  { months: 1,  multiplier: 1,  saveKey: null,                  saveFallback: "" },
+  { months: 6,  multiplier: 5,  saveKey: "billing.save_1_month", saveFallback: "save 1 month" },
+  { months: 12, multiplier: 10, saveKey: "billing.save_2_months", saveFallback: "save 2 months" },
 ];
+const BILLING_TERM_LABEL_KEYS = { 1: "billing.term_monthly", 6: "billing.term_6mo", 12: "billing.term_12mo" };
 
 let billingCurrentTerm = 1;
 let billingPollTimer = null;
@@ -2423,6 +2493,19 @@ function billingAmountsFor(tier, months) {
   const kwd = plan.kwd * term.multiplier;
   const usdApprox = (kwd * KWD_TO_USD).toFixed(2);
   return { kwd, usdApprox };
+}
+
+function billingSaveLabel(term) {
+  return term && term.saveKey ? Khan.t(term.saveKey, term.saveFallback) : "";
+}
+
+function billingTermLabel(months) {
+  const key = BILLING_TERM_LABEL_KEYS[months];
+  return key ? Khan.t(key) : String(months);
+}
+
+function upToScreensLabel(n) {
+  return Khan.t("billing.up_to_screens", "up to {n} screens").replace("{n}", n);
 }
 
 function showBillingPanel() {
@@ -2438,59 +2521,93 @@ function renderBillingCurrent(org) {
     body.textContent = "—";
     return;
   }
-  const plan = PLAN_TIERS.find((p) => p.tier === org.plan) || { label: org.plan, screens: org.screen_limit };
+  const plan = PLAN_TIERS.find((p) => p.tier === org.plan) || { label: org.plan || "—", screens: org.screen_limit };
+  const parts = [`<strong>${escHtml(plan.label)}</strong>`];
   if (org.subscription_status === "trialing" && org.trial_ends_at) {
     const daysLeft = Math.max(0, Math.ceil((new Date(org.trial_ends_at) - new Date()) / 86400000));
-    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · Trial · ${daysLeft} day${daysLeft === 1 ? "" : "s"} left · up to ${plan.screens} screens`;
+    parts.push(escHtml(Khan.t("billing.trial_label", "Trial")));
+    parts.push(escHtml(Khan.t(daysLeft === 1 ? "billing.days_left_one" : "billing.days_left_other",
+      daysLeft === 1 ? "1 day left" : "{n} days left").replace("{n}", daysLeft)));
   } else if (org.paid_through_at) {
-    const ends = new Date(org.paid_through_at).toLocaleDateString();
-    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · paid through ${escHtml(ends)} · up to ${plan.screens} screens`;
-  } else {
-    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · up to ${plan.screens} screens`;
+    parts.push(escHtml(Khan.t("billing.paid_through", "paid through {date}").replace("{date}", formatDay(org.paid_through_at))));
   }
+  if (plan.screens != null) parts.push(escHtml(upToScreensLabel(plan.screens)));
+  body.innerHTML = parts.join(" · ");
 }
 
 function renderBillingTiers() {
   const grid = document.getElementById("billing-tier-grid");
   const termInfo = BILLING_TERMS.find((t) => t.months === billingCurrentTerm);
+  const saveLabel = billingSaveLabel(termInfo);
+  // POST /billing/checkout is admin-only: others see the prices, not a
+  // button that can only fail.
+  const canPay = isAdmin();
   grid.innerHTML = "";
   for (const plan of PLAN_TIERS) {
     const amounts = billingAmountsFor(plan.tier, billingCurrentTerm);
-    const saveMarkup = termInfo.saveLabel
-      ? `<span class="billing-tier-save">${escHtml(termInfo.saveLabel)}</span>` : "";
+    const saveMarkup = saveLabel
+      ? `<span class="billing-tier-save">${escHtml(saveLabel)}</span>` : "";
     const card = document.createElement("div");
     card.className = "billing-tier";
     card.innerHTML = `
       <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
-      <div class="billing-tier-limit">up to ${plan.screens} screens</div>
-      <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " / month" : ""}</div>
-      <div class="billing-tier-usd">≈ $${amounts.usdApprox}</div>
+      <div class="billing-tier-limit">${escHtml(upToScreensLabel(plan.screens))}</div>
+      <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " " + escHtml(Khan.t("billing.per_month", "/ month")) : ""}</div>
+      <div class="billing-tier-usd" dir="ltr">≈ $${amounts.usdApprox}</div>
       ${saveMarkup}
-      <button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
-        Pay ${amounts.kwd} KWD${termInfo.saveLabel ? " · " + escHtml(termInfo.saveLabel) : ""}
-      </button>
+      ${canPay ? `<button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
+        ${escHtml(Khan.t("billing.pay_btn", "Pay {amount} KWD").replace("{amount}", amounts.kwd))}${saveLabel ? " · " + escHtml(saveLabel) : ""}
+      </button>` : ""}
     `;
     grid.appendChild(card);
   }
+  if (!canPay && currentUser) {
+    const note = document.createElement("p");
+    note.className = "helper-text";
+    note.textContent = Khan.t("billing.admin_only", "Only an administrator can change the plan or see past payments.");
+    grid.appendChild(note);
+  }
+}
+
+function billingStatusLabel(status) {
+  return Khan.t(`billing.status_${status}`, status || "");
 }
 
 async function loadBillingHistory() {
   const body = document.getElementById("billing-history-body");
+  if (!isAdmin()) {            // GET /billing/history is admin-only
+    body.innerHTML = "";
+    return;
+  }
   try {
     const rows = await api("/billing/history");
     if (!rows.length) {
-      body.innerHTML = '<p class="billing-empty">No payments yet.</p>';
+      body.innerHTML = `<p class="billing-empty">${escHtml(Khan.t("billing.no_payments", "No payments yet."))}</p>`;
       return;
     }
     body.innerHTML = rows.map((r) => {
-      const when = new Date(r.updated_at || r.created_at).toLocaleDateString();
+      const plan = PLAN_TIERS.find((p) => p.tier === r.tier);
       return `<div class="billing-history-row ${r.status === 'failed' ? 'failed' : ''}">
-        <span>${escHtml(r.tier)} · ${r.term_months} month${r.term_months === 1 ? '' : 's'} · ${escHtml(when)}</span>
-        <span>${r.amount_kwd} KWD · ${escHtml(r.status)}</span>
+        <span>${escHtml(plan ? plan.label : r.tier)} · ${escHtml(billingTermLabel(r.term_months))} · ${escHtml(formatDay(r.updated_at || r.created_at))}</span>
+        <span>${escHtml(r.amount_kwd)} KWD · ${escHtml(billingStatusLabel(r.status))}</span>
       </div>`;
     }).join("");
   } catch (err) {
-    body.innerHTML = '<p class="billing-empty">Couldn\'t load history.</p>';
+    body.innerHTML = `<p class="billing-empty">${escHtml(Khan.t("billing.history_failed", "Couldn't load history."))}</p>`;
+  }
+}
+
+/** The org as the billing view needs it. GET /organization carries
+ *  paid_through_at today; /auth/me's organization is the fallback (and gains
+ *  the field too). */
+async function fetchBillingOrg() {
+  try {
+    const org = await api("/organization");
+    state.org = org;
+    return org;
+  } catch (_) {
+    const me = await api("/auth/me");
+    return me.organization;
   }
 }
 
@@ -2498,8 +2615,7 @@ async function showBilling() {
   showBillingPanel();
   renderBillingTiers();
   try {
-    const me = await api("/auth/me");
-    renderBillingCurrent(me.organization);
+    renderBillingCurrent(await fetchBillingOrg());
   } catch (err) { renderBillingCurrent(null); }
   loadBillingHistory();
   maybeResumeBillingStatus();
@@ -2529,7 +2645,7 @@ async function onBillingPay(tier) {
     window.location.href = data.payment_url;
   } catch (err) {
     buttons.forEach((b) => (b.disabled = false));
-    setBillingBanner("error", err?.data?.detail || err.message || "Payment failed to start.");
+    setBillingBanner("error", (err.isApiError && err.message) || Khan.t("billing.pay_failed", "Payment failed to start."));
   }
 }
 
@@ -2539,7 +2655,7 @@ function maybeResumeBillingStatus() {
   const trackid = params.get("trackid") || sessionStorage.getItem("billing_pending_trackid");
   if (!trackid || !status) return;
   sessionStorage.removeItem("billing_pending_trackid");
-  setBillingBanner("success", "Confirming payment…");
+  setBillingBanner("success", Khan.t("billing.confirming", "Confirming payment…"));
   billingPollStartedAt = Date.now();
   pollBillingStatus(trackid);
 }
@@ -2548,26 +2664,29 @@ async function pollBillingStatus(trackid) {
   try {
     const data = await api(`/billing/status/${encodeURIComponent(trackid)}`);
     if (data.status === "captured") {
-      setBillingBanner("success", `Plan upgraded · ${data.tier} · paid through ${new Date(data.paid_through_at).toLocaleDateString()}`);
-      const me = await api("/auth/me");
-      renderBillingCurrent(me.organization);
+      const plan = PLAN_TIERS.find((p) => p.tier === data.tier);
+      setBillingBanner("success", Khan.t("billing.upgraded", "Plan upgraded · {plan} · paid through {date}")
+        .replace("{plan}", plan ? plan.label : data.tier)
+        .replace("{date}", formatDay(data.paid_through_at)));
+      renderBillingCurrent(await fetchBillingOrg());
+      if (state.org) { renderPlanCard(state.org); SubscriptionBanner.update(state.org); }
       loadBillingHistory();
       history.replaceState({}, "", "/billing");
       return;
     }
     if (data.status === "failed") {
-      setBillingBanner("error", "Payment declined. You can try again.");
+      setBillingBanner("error", Khan.t("billing.declined", "Payment declined. You can try again."));
       history.replaceState({}, "", "/billing");
       return;
     }
     // still pending
     if (Date.now() - billingPollStartedAt > 15000) {
-      setBillingBanner("success", "Payment is still processing — check back in a minute.");
+      setBillingBanner("success", Khan.t("billing.still_processing", "Payment is still processing — check back in a minute."));
       return;
     }
     billingPollTimer = setTimeout(() => pollBillingStatus(trackid), 2000);
   } catch (err) {
-    setBillingBanner("error", "Couldn't confirm payment status.");
+    setBillingBanner("error", Khan.t("billing.status_unknown", "Couldn't confirm payment status."));
   }
 }
 
@@ -2666,7 +2785,7 @@ const MediaPicker = (() => {
           <h3>${Khan.t("media_picker.title", "Pick media")}</h3>
           <input class="media-picker-search" type="search"
                  placeholder="${Khan.t("media_picker.search_placeholder", "Search by name…")}" />
-          <button class="media-picker-close btn-ghost" aria-label="Close">✕</button>
+          <button class="media-picker-close btn-ghost" aria-label="${escAttr(Khan.t("common.close", "Close"))}">✕</button>
         </div>
         <div class="media-picker-chips"></div>
         <div class="media-picker-grid" aria-live="polite"></div>
@@ -2729,7 +2848,7 @@ const MediaPicker = (() => {
       grid.innerHTML = `
         <div class="media-picker-empty">
           <p>${Khan.t("media_picker.fetch_failed", "Couldn't load media.")}</p>
-          <button class="btn media-picker-retry">Retry</button>
+          <button class="btn media-picker-retry">${escHtml(Khan.t("media_picker.retry", "Retry"))}</button>
         </div>
       `;
       grid.querySelector(".media-picker-retry").addEventListener("click", loadMedia);
@@ -2871,7 +2990,7 @@ const MediaPicker = (() => {
         <div class="media-picker-advanced-row" data-media-id="${mid}">
           <span class="media-picker-advanced-idx">${i + 1}</span>
           <span class="media-picker-advanced-name">${safeName}</span>
-          <input type="number" min="1" max="3600" placeholder="default"
+          <input type="number" min="1" max="3600" placeholder="${escAttr(Khan.t("media_picker.duration_default", "default"))}"
                  value="${dur ?? ""}" class="media-picker-advanced-duration" />
         </div>
       `;
@@ -2931,16 +3050,16 @@ const Walls = (() => {
               ${c.screen_id ? "●" : ""}
             </div>`).join("")}
         </div>
-        <div class="walls-actions">
+        ${canEditContent() ? `<div class="walls-actions">
           <button class="btn btn-ghost" data-action="edit">${Khan.t("walls.edit", "Edit")}</button>
           <button class="btn btn-danger" data-action="delete">${Khan.t("walls.delete", "Delete")}</button>
-        </div>
+        </div>` : ""}
       </article>
     `).join("");
     root.querySelectorAll("[data-wall-id]").forEach(card => {
       const id = parseInt(card.dataset.wallId, 10);
-      card.querySelector('[data-action="edit"]').addEventListener("click", () => openEditor(id));
-      card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteWall(id));
+      card.querySelector('[data-action="edit"]')?.addEventListener("click", () => openEditor(id));
+      card.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteWall(id));
     });
   }
 
@@ -3533,17 +3652,21 @@ const Schedules = (() => {
       card.appendChild(name);
       const actions = document.createElement("div");
       actions.className = "schedule-card-actions";
-      const editBtn = document.createElement("button");
-      editBtn.className = "btn";
-      editBtn.textContent = Khan.t("schedules.editor.edit", "Edit");
-      editBtn.addEventListener("click", () => openEditor(s.id));
-      const delBtn = document.createElement("button");
-      delBtn.className = "btn btn-danger";
-      delBtn.textContent = Khan.t("schedules.editor.delete", "Delete");
-      delBtn.addEventListener("click", () => deleteSchedule(s.id, s.name));
-      actions.appendChild(editBtn);
-      actions.appendChild(delBtn);
-      card.appendChild(actions);
+      if (canEditContent()) {
+        const editBtn = document.createElement("button");
+        editBtn.className = "btn";
+        editBtn.textContent = Khan.t("schedules.editor.edit", "Edit");
+        editBtn.addEventListener("click", () => openEditor(s.id));
+        actions.appendChild(editBtn);
+      }
+      if (isAdmin()) {   // DELETE /schedules/{id} is admin-only
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn btn-danger";
+        delBtn.textContent = Khan.t("schedules.editor.delete", "Delete");
+        delBtn.addEventListener("click", () => deleteSchedule(s.id, s.name));
+        actions.appendChild(delBtn);
+      }
+      if (actions.children.length) card.appendChild(actions);
       container.appendChild(card);
     });
   }

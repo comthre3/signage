@@ -51,12 +51,13 @@ const Menus = (() => {
           <span class="muted">${escHtml(Khan.t("menus.card.items", "{n} items").replace("{n}", m.item_count))}</span>
           <span class="muted">${escHtml(rendered)}</span>
         </div>
-        <div class="menu-card-actions">
+        ${canEditContent() ? `<div class="menu-card-actions">
           <button class="btn" data-edit="${escAttr(m.id)}">${escHtml(Khan.t("menus.card.edit", "Edit"))}</button>
           <button class="btn btn-ghost delete-btn" data-delete="${escAttr(m.id)}">${escHtml(Khan.t("menus.card.delete", "Delete"))}</button>
-        </div>`;
-      card.querySelector("[data-edit]").addEventListener("click", () => openEditor(m.id));
-      card.querySelector("[data-delete]").addEventListener("click", () => removeMenu(m.id));
+        </div>` : ""}`;
+      // Every menu write is admin/editor; viewers get the list only.
+      card.querySelector("[data-edit]")?.addEventListener("click", () => openEditor(m.id));
+      card.querySelector("[data-delete]")?.addEventListener("click", () => removeMenu(m.id));
       el.appendChild(card);
     });
   }
@@ -300,7 +301,7 @@ const Menus = (() => {
       frame.onload = () => scalePreview();
     } catch (err) {
       frame.srcdoc = `<p style="font:14px system-ui;padding:12px;color:#a33">${
-        escHtml(err.message || "Preview failed")}</p>`;
+        escHtml(err.message || Khan.t("menus.editor.preview_failed", "Preview failed"))}</p>`;
     } finally {
       stage.classList.remove("loading");
     }
