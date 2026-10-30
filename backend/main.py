@@ -2077,6 +2077,13 @@ def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict 
             "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
             (hash_password(payload.password), user_id),
         )
+        # A reset is how an admin locks out a compromised account, so like
+        # /auth/change-password it ends the user's sessions and OAuth grants --
+        # sparing only the session making this request, when it resets itself.
+        execute("DELETE FROM sessions WHERE user_id = ? AND token <> ?",
+                (user_id, user.get("token") or ""))
+        from oauth import revoke_user_grants
+        revoke_user_grants(user_id)
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
             raise http_error(400, "invalid_role", "Invalid role")
