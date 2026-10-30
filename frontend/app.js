@@ -2927,12 +2927,14 @@ const MediaPicker = (() => {
     const idx = state.selection.indexOf(m.id);
     const checked = idx !== -1;
     const badge = checked ? `${idx + 1}` : "";
-    const pill = cls === "url" ? "URL" : cls.toUpperCase();
+    const pill = Khan.t(`media_picker.type_${cls}`, cls === "url" ? "URL" : cls.toUpperCase());
     let thumb = "";
+    // Same URL renderMedia uses: uploads live on the API origin.
+    const fileUrl = m.url ? `${API_BASE}${m.url}` : uploadUrl(m.filename);
     if (cls === "image") {
-      thumb = `<img src="/uploads/${attrEscape(m.filename)}" loading="lazy" alt="" />`;
+      thumb = `<img src="${attrEscape(fileUrl)}" loading="lazy" alt="" />`;
     } else if (cls === "video") {
-      thumb = `<video src="/uploads/${attrEscape(m.filename)}" preload="metadata" muted></video>`;
+      thumb = `<video src="${attrEscape(fileUrl)}" preload="metadata" muted></video>`;
     } else if (cls === "pdf") {
       thumb = `<div class="picker-thumb-pdf">PDF</div>`;
     } else if (cls === "url") {
@@ -3242,17 +3244,35 @@ const Walls = (() => {
     }
     const body = document.getElementById("walls-editor-body");
     document.getElementById("walls-editor-title").textContent = wall.name;
-    const playlists = wall.mirrored_mode === "synced_rotation" ? await api("/playlists") : [];
+    const synced = wall.mirrored_mode === "synced_rotation";
+    // Both sub-modes need the list: per-cell pickers for synced rotation, the
+    // wall's one playlist for same-playlist (which could not be changed
+    // after creation before).
+    const playlists = await api("/playlists");
+    const canEdit = canEditContent();
+    const samePlaylistPicker = synced ? "" : `
+      <label class="walls-mirrored-playlist">
+        ${Khan.t("walls.playlist", "Playlist")}
+        <select data-action="wall-playlist" ${canEdit ? "" : "disabled"}>
+          ${wall.mirrored_playlist_id ? "" : `<option value="" selected>${escHtml(Khan.t("walls.choose_playlist", "— Choose a playlist —"))}</option>`}
+          ${playlists.map(p =>
+            `<option value="${p.id}" ${p.id === wall.mirrored_playlist_id ? "selected" : ""}>${escHtml(p.name)}</option>`
+          ).join("")}
+        </select>
+      </label>
+      ${wall.mirrored_playlist_id ? "" : `<p class="helper-text">${escHtml(Khan.t("walls.no_playlist_warning",
+        "This wall has no playlist yet, so its screens have nothing to show. Choose one above."))}</p>`}`;
     body.innerHTML = `
       <div class="walls-editor-summary">
         <span class="walls-meta">
           ${wall.mode === "mirrored"
-            ? Khan.t("walls.mode_mirrored", "Mirrored") + (wall.mirrored_mode === "synced_rotation"
+            ? Khan.t("walls.mode_mirrored", "Mirrored") + (synced
                 ? " · " + Khan.t("walls.synced_rotation_short", "Synced rotation")
                 : " · " + Khan.t("walls.same_playlist_short", "Same playlist"))
             : Khan.t("walls.mode_spanned", "Spanned")}
           · ${wall.rows}×${wall.cols}
         </span>
+        ${samePlaylistPicker}
       </div>
       <div class="walls-editor-grid"
            style="grid-template-columns: repeat(${wall.cols}, 1fr);">
@@ -3271,7 +3291,19 @@ const Walls = (() => {
           playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
         }));
     });
-    mountModeSwitchButton(wall);
+    body.querySelector('select[data-action="wall-playlist"]')?.addEventListener("change", async (ev) => {
+      if (!ev.target.value) return;
+      const fields = { mirrored_playlist_id: parseInt(ev.target.value, 10) };
+      if (!wall.mirrored_mode) fields.mirrored_mode = "same_playlist";
+      try {
+        await api(`/walls/${wall.id}`, { method: "PATCH", body: JSON.stringify(fields) });
+        toast(Khan.t("walls.playlist_updated", "Wall playlist updated"), "success");
+        await renderEditor(wall.id);
+      } catch (err) {
+        toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
+      }
+    });
+    if (canEdit) mountModeSwitchButton(wall);
     refreshMosaic(wall.id);
   }
 
@@ -3447,9 +3479,15 @@ const Walls = (() => {
       </div>
     `;
     renderCanvasItemList(wall, list.items);
-    body.querySelector("#canvas-add-item").addEventListener("click",
-      () => openCanvasMediaPicker(wall));
-    mountModeSwitchButton(wall);
+    const addBtn = body.querySelector("#canvas-add-item");
+    if (canEditContent()) {
+      addBtn.addEventListener("click", () => openCanvasMediaPicker(wall));
+      mountModeSwitchButton(wall);
+    } else {
+      addBtn.remove();
+      body.querySelector("#canvas-item-save")?.remove();
+      body.querySelector("#canvas-item-delete")?.remove();
+    }
   }
 
   function renderCanvasItemList(wall, items) {
@@ -3461,7 +3499,7 @@ const Walls = (() => {
     root.innerHTML = items.map(it => `
       <li data-item-id="${it.id}">
         <span>${escHtml(it.media_name)}</span>
-        <small>${it.fit_mode} · ${it.duration_override_seconds || it.duration_seconds}s</small>
+        <small>${escHtml(Khan.t(`walls.fit_${it.fit_mode}`, it.fit_mode))} · ${escHtml(Khan.t("playlists.item_seconds", "{n}s").replace("{n}", it.duration_override_seconds || it.duration_seconds))}</small>
       </li>
     `).join("");
     root.querySelectorAll("[data-item-id]").forEach(li => {
@@ -3479,16 +3517,21 @@ const Walls = (() => {
     detail.querySelectorAll('input[name="fit"]').forEach(el => {
       el.checked = el.value === item.fit_mode;
     });
-    detail.querySelector("#canvas-item-save").onclick = () => saveCanvasItem(wall, item);
-    detail.querySelector("#canvas-item-delete").onclick = () => deleteCanvasItem(wall, item);
+    const saveBtn = detail.querySelector("#canvas-item-save");
+    const deleteBtn = detail.querySelector("#canvas-item-delete");
+    if (saveBtn) saveBtn.onclick = () => saveCanvasItem(wall, item);
+    if (deleteBtn) deleteBtn.onclick = () => deleteCanvasItem(wall, item);
     const preview = document.getElementById("canvas-preview-media");
+    // Uploads are served by the API, not by the dashboard's origin (where
+    // /uploads/... falls through to index.html and renders as a broken image).
+    const src = item.filename ? uploadUrl(item.filename) : "";
     if (item.mime_type.startsWith("video/")) {
-      preview.innerHTML = `<video src="${item.filename ? '/uploads/' + item.filename : ''}"
+      preview.innerHTML = `<video src="${escAttr(src)}"
         muted autoplay loop playsinline></video>`;
     } else if (item.mime_type === "application/pdf") {
       preview.innerHTML = `<div class="pdf-thumb">PDF — ${escHtml(item.media_name)}</div>`;
     } else {
-      preview.innerHTML = `<img src="/uploads/${item.filename || ''}" alt="" />`;
+      preview.innerHTML = `<img src="${escAttr(src)}" alt="" />`;
     }
   }
 
@@ -3519,7 +3562,7 @@ const Walls = (() => {
       await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {method: "DELETE"});
       await renderCanvasEditor(wall);
     } catch (err) {
-      toast(err.message || "delete failed", "error");
+      toast(err.message || Khan.t("walls.canvas_delete_failed", "Couldn't delete the item"), "error");
     }
   }
 
@@ -3547,11 +3590,14 @@ const Walls = (() => {
       toast(Khan.t("walls.canvas_added", "Item added"));
       await renderCanvasEditor(wall);
     } catch (err) {
-      toast(err.message || "add failed", "error");
+      toast(err.message || Khan.t("walls.canvas_add_failed", "Couldn't add the item"), "error");
     }
   }
 
-  function openModeChangeModal(wall, newMode) {
+  async function openModeChangeModal(wall, newMode) {
+    // A mirrored wall needs a sub-mode, and a same-playlist one needs its
+    // playlist: switching with neither left a wall that plays nothing.
+    const playlists = newMode === "mirrored" ? await api("/playlists") : [];
     const overlay = document.createElement("div");
     overlay.className = "modal";
     overlay.innerHTML = `
@@ -3560,6 +3606,21 @@ const Walls = (() => {
         <p>${Khan.t("walls.mode_change_confirm_body",
           "Switching this wall to {mode} will permanently delete its current playlist. Cell pairings stay.")
           .replace("{mode}", Khan.t(`walls.mode_${newMode}`, newMode))}</p>
+        ${newMode === "mirrored" ? `
+        <fieldset class="mirrored-fields">
+          <legend>${Khan.t("walls.mirrored_submode", "Mirrored sub-mode")}</legend>
+          <label><input type="radio" name="mode-change-submode" value="same_playlist" checked />
+            ${Khan.t("walls.same_playlist", "Same playlist on all screens")}</label>
+          <label><input type="radio" name="mode-change-submode" value="synced_rotation" />
+            ${Khan.t("walls.synced_rotation", "Different playlist per cell, synchronized rotation")}</label>
+          <label class="same-playlist-only">
+            ${Khan.t("walls.playlist", "Playlist")}
+            <select id="mode-change-playlist">
+              <option value="">${escHtml(Khan.t("walls.choose_playlist", "— Choose a playlist —"))}</option>
+              ${playlists.map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join("")}
+            </select>
+          </label>
+        </fieldset>` : ""}
         <p>${Khan.t("walls.mode_change_type_name_to_confirm",
           "Type the wall name to confirm:")}</p>
         <input id="mode-change-typed" autocomplete="off" />
@@ -3573,8 +3634,19 @@ const Walls = (() => {
     document.body.appendChild(overlay);
     const typed = overlay.querySelector("#mode-change-typed");
     const switchBtn = overlay.querySelector("#mode-change-switch");
-    typed.addEventListener("input", () => {
-      switchBtn.disabled = typed.value !== wall.name;
+    const playlistSel = overlay.querySelector("#mode-change-playlist");
+    const subMode = () => overlay.querySelector('input[name="mode-change-submode"]:checked')?.value;
+    const refreshSwitchEnabled = () => {
+      const needsPlaylist = newMode === "mirrored" && subMode() === "same_playlist";
+      switchBtn.disabled = typed.value !== wall.name || (needsPlaylist && !playlistSel.value);
+    };
+    typed.addEventListener("input", refreshSwitchEnabled);
+    playlistSel?.addEventListener("change", refreshSwitchEnabled);
+    overlay.querySelectorAll('input[name="mode-change-submode"]').forEach((el) => {
+      el.addEventListener("change", () => {
+        overlay.querySelector(".same-playlist-only").style.display = subMode() === "same_playlist" ? "" : "none";
+        refreshSwitchEnabled();
+      });
     });
     overlay.querySelector("#mode-change-cancel").addEventListener("click",
       () => overlay.remove());
@@ -3586,7 +3658,11 @@ const Walls = (() => {
         payload.bezel_h_pct = 0;
         payload.bezel_v_pct = 0;
       } else {
-        payload.mirrored_mode = "same_playlist";
+        payload.mirrored_mode = subMode() || "same_playlist";
+        if (payload.mirrored_mode === "same_playlist") {
+          if (!playlistSel.value) return;
+          payload.mirrored_playlist_id = parseInt(playlistSel.value, 10);
+        }
       }
       try {
         await api(`/walls/${wall.id}`, {method: "PATCH", body: JSON.stringify(payload)});
@@ -3595,7 +3671,7 @@ const Walls = (() => {
         await loadList();
         openEditor(wall.id);
       } catch (err) {
-        toast(err.message || "mode change failed", "error");
+        toast(err.message || Khan.t("walls.mode_change_failed", "Couldn't change the wall mode"), "error");
       }
     });
   }
