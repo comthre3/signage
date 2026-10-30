@@ -648,11 +648,18 @@ def _refresh_tokens(refresh_token: str, client_id: str) -> JSONResponse:
     if rotated != 1:
         return _oauth_error(400, "invalid_grant",
                             "Unknown or revoked refresh token")
+
+    # A grant lives only as long as the user who made it. The row is revoked
+    # above either way, so an orphan cannot be retried.
+    grantor = _grantor(matching)
+    if grantor is None:
+        return _oauth_error(400, "invalid_grant",
+                            "The user who authorized this client no longer exists")
     return _issue_tokens(
         client_id=matching["client_id"],
         org_id=matching["organization_id"],
         user_id=matching["user_id"],
-        scope=matching["scope"],
+        scope=_cap_scope(matching["scope"], grantor["role"]),
     )
 
 
@@ -682,6 +689,23 @@ def token(
 
 
 # ── Revocation ───────────────────────────────────────────────────────
+
+
+def revoke_user_grants(user_id: int) -> None:
+    """End every OAuth grant a user holds: live token pairs, and codes not
+    yet redeemed. Called on password change and on user deletion -- before
+    the DELETE, because oauth_tokens.user_id is ON DELETE SET NULL and the
+    rows can no longer be found by user afterwards."""
+    execute(
+        "UPDATE oauth_tokens SET revoked_at = now() "
+        "WHERE user_id = ? AND revoked_at IS NULL",
+        (user_id,),
+    )
+    execute(
+        "UPDATE oauth_authorization_codes SET consumed_at = now() "
+        "WHERE user_id = ? AND consumed_at IS NULL",
+        (user_id,),
+    )
 
 
 @router.post("/oauth/revoke")

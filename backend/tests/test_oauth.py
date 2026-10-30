@@ -1168,3 +1168,94 @@ def test_token_rejected_once_grantor_is_gone(client):
     execute("DELETE FROM users WHERE id = ?", (editor["id"],))
     r = client.get("/playlists", headers=bearer)
     assert r.status_code == 401, r.text
+
+
+# ── Removing a user / changing a password ends their OAuth grants ───
+
+
+def _refresh(client, tokens: dict):
+    return client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+        "client_id": tokens["client_id"],
+    })
+
+
+def _live_token_rows(client_id: str) -> list:
+    return query_all(
+        "SELECT id FROM oauth_tokens WHERE client_id = ? AND revoked_at IS NULL",
+        (client_id,),
+    )
+
+
+def test_deleting_user_revokes_their_oauth_tokens(client):
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    assert _live_token_rows(tokens["client_id"])
+
+    r = client.delete(f"/users/{editor['id']}", headers=_bearer(admin_token))
+    assert r.status_code == 200, r.text
+    assert _live_token_rows(tokens["client_id"]) == []
+    assert client.get("/playlists",
+                      headers=_bearer(tokens["access_token"])).status_code == 401
+    r = _refresh(client, tokens)
+    assert r.status_code == 400, r.text
+    assert r.json()["error"] == "invalid_grant"
+
+
+def test_password_change_revokes_oauth_tokens_and_codes(client):
+    session_token, _o, _u, _e = _signup_org(client)
+    tokens = _grant(client, session_token, requested="api:rw")
+    # A code issued but not yet redeemed must die too.
+    cid = _register_client(client)
+    verifier, challenge = _pkce_pair()
+    r = _consent_page(client, session_token, cid, challenge, "api:read")
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:read"},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+
+    r = client.post("/auth/change-password", headers=_bearer(session_token),
+                    json={"current_password": "Khanshoof2026Test",
+                          "new_password": "Khanshoof2026Rotated"})
+    assert r.status_code == 200, r.text
+
+    assert _live_token_rows(tokens["client_id"]) == []
+    assert client.get("/organization",
+                      headers=_bearer(tokens["access_token"])).status_code == 401
+    assert _refresh(client, tokens).status_code == 400
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 400, r.text
+
+
+def test_refresh_fails_once_grantor_is_gone(client):
+    """A row orphaned by ON DELETE SET NULL (a deletion before revocation
+    existed) must not be able to rotate itself forever."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    execute("DELETE FROM users WHERE id = ?", (editor["id"],))
+    r = _refresh(client, tokens)
+    assert r.status_code == 400, r.text
+    assert r.json()["error"] == "invalid_grant"
+    assert _live_token_rows(tokens["client_id"]) == []
+
+
+def test_refresh_caps_scope_to_grantors_current_role(client):
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    r = client.put(f"/users/{editor['id']}", headers=_bearer(admin_token),
+                   json={"role": "viewer"})
+    assert r.status_code == 200, r.text
+    r = _refresh(client, tokens)
+    assert r.status_code == 200, r.text
+    assert r.json()["scope"] == "api:read"

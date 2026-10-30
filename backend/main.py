@@ -1611,6 +1611,8 @@ def change_password(
         (hash_password(payload.new_password), user["id"]),
     )
     execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+    from oauth import revoke_user_grants
+    revoke_user_grants(user["id"])
     audit(request, action="auth.password_change", actor=user)
     return {"status": "password_changed"}
 
@@ -2079,6 +2081,8 @@ def delete_user(request: Request, user_id: int, user: dict = Depends(require_rol
     )
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    from oauth import revoke_user_grants
+    revoke_user_grants(user_id)    # first: oauth_tokens.user_id is ON DELETE SET NULL
     execute("DELETE FROM users WHERE id = ?", (user_id,))
     execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     audit(request, action="user.delete", actor=user,
