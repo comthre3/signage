@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -306,3 +307,27 @@ def test_callback_that_lost_a_race_does_not_extend_again(
     monkeypatch.setattr(main, "query_one", stale_read)
     _capture(client, trackid)
     assert _org_billing(org_id)["paid_through_at"] == once
+
+
+# ── Payments outlive the user who made them ───────────────────────────
+
+def test_deleting_a_user_who_paid_keeps_the_payment(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    owner = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    username = f"payer-{uuid.uuid4().hex[:8]}@example.com"
+    r = client.post("/users", headers=owner,
+                    json={"username": username, "password": "Khanshoof2026Payer", "role": "admin"})
+    assert r.status_code == 200, r.text
+    payer_id = r.json()["id"]
+    r = client.post("/auth/login", json={"username": username, "password": "Khanshoof2026Payer"})
+    assert r.status_code == 200, r.text
+    trackid = _pending_payment(client, {"token": r.json()["token"]}, "starter", 1, mock_niupay)
+    _capture(client, trackid)
+
+    r = client.delete(f"/users/{payer_id}", headers=owner)
+    assert r.status_code == 200, r.text
+    payment = query_one("SELECT status, user_id FROM payments WHERE trackid = ?", (trackid,))
+    assert payment == {"status": "captured", "user_id": None}
+    history = client.get("/billing/history", headers=owner).json()
+    assert [p["trackid"] for p in history] == [trackid]

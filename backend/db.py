@@ -781,3 +781,21 @@ def _init_db_locked(conn) -> None:
                 "ON CONFLICT (client_id) DO NOTHING",
                 (cid, name, uris_json),
             )
+
+        # payments.user_id was a plain REFERENCES users(id) (NO ACTION), so
+        # DELETE /users/{id} failed with a 500 for anyone who had ever started
+        # a checkout. A payment is the org's billing history and outlives the
+        # user who made it; only the link to the payer is cleared. Checked
+        # first so a boot that finds it done does not rebuild the constraint.
+        cursor.execute(
+            "SELECT confdeltype FROM pg_constraint "
+            "WHERE conname = 'payments_user_id_fkey' AND conrelid = 'payments'::regclass"
+        )
+        fk = cursor.fetchone()
+        if not fk or fk["confdeltype"] != "n":
+            cursor.execute("ALTER TABLE payments ALTER COLUMN user_id DROP NOT NULL")
+            cursor.execute("ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_user_id_fkey")
+            cursor.execute(
+                "ALTER TABLE payments ADD CONSTRAINT payments_user_id_fkey "
+                "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
+            )
