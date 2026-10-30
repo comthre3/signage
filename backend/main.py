@@ -2117,7 +2117,9 @@ def update_site(
     if payload.timezone is not None:
         try:
             ZoneInfo(payload.timezone)
-        except ZoneInfoNotFoundError:
+        # ValueError: a key that is not a zone name at all ("/etc/x", "../x",
+        # "Asia/", a non-TZif file such as "zone.tab").
+        except (ZoneInfoNotFoundError, ValueError):
             raise http_error(422, "site.timezone_invalid",
                              f"Unknown timezone: {payload.timezone}")
 
@@ -3031,7 +3033,7 @@ def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
         return _KUWAIT_TZ
     try:
         return ZoneInfo(row["timezone"])
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ValueError):     # ValueError: malformed key
         logger.warning("invalid_site_timezone site_id=%s tz=%s", site_id, row["timezone"])
         return _KUWAIT_TZ
 

@@ -51,6 +51,18 @@ def test_site_timezone_returns_kuwait_for_unknown_site():
     assert tz == ZoneInfo("Asia/Kuwait")
 
 
+def test_site_timezone_falls_back_for_malformed_stored_key(client, signed_up_org):
+    """A bad value already in the row (edited by hand, say) must not take
+    every screen at the site down: ZoneInfo raises ValueError for "Asia/"."""
+    from db import execute
+    bearer = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    r = client.post("/sites", headers=bearer, json={"name": "Hand-edited"})
+    assert r.status_code == 200, r.text
+    site_id = r.json()["id"]
+    execute("UPDATE sites SET timezone = ? WHERE id = ?", ("Asia/", site_id))
+    assert _site_timezone(site_id) == ZoneInfo("Asia/Kuwait")
+
+
 # ── resolve_active_playlist ───────────────────────────────────────────
 
 def test_resolve_no_schedule_returns_default_playlist():

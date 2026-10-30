@@ -295,6 +295,23 @@ def test_put_site_rejects_invalid_timezone(client, signed_up_org):
     assert r.json()["detail"]["code"] == "site.timezone_invalid"
 
 
+@pytest.mark.parametrize("tz", [
+    "/etc/x",         # absolute path
+    "../x",           # escapes the tz database
+    "Asia/",          # not a normalized key
+    "",
+    "zone.tab",       # a file in the tz database that is not a zone
+])
+def test_put_site_rejects_malformed_timezone_key(client, signed_up_org, tz):
+    """ZoneInfo raises ValueError, not ZoneInfoNotFoundError, for these."""
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/sites", headers=bearer, json={"name": "Malformed"})
+    site = r.json()
+    r = client.put(f"/sites/{site['id']}", headers=bearer, json={"timezone": tz})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "site.timezone_invalid"
+
+
 # ── Screen schedule_id ────────────────────────────────────────────────
 
 def test_put_screen_accepts_schedule_id(client, signed_up_org):
