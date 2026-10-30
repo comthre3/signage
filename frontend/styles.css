@@ -244,7 +244,12 @@ main {
   padding: 28px;
   box-shadow: var(--shadow-md);
   margin-bottom: 20px;
-  animation: fadeUp 0.25s ease both;
+  /* backwards, not both: a fill that outlives the animation leaves
+     transform: translateY(0) on every panel, and any transform makes the panel
+     the containing block for position:fixed descendants. The walls pairing and
+     API-key modals live inside panels, so they were sized and centred on the
+     panel instead of the viewport -- off-screen once the page was scrolled. */
+  animation: fadeUp 0.25s ease backwards;
 }
 
 .panel + .panel,
@@ -712,7 +717,13 @@ label {
   justify-content: center;
   z-index: 200;
   backdrop-filter: blur(4px);
+  /* A card taller than a phone screen (or one squeezed by the on-screen
+     keyboard) scrolls inside the overlay; margin:auto on the card centres it
+     without pushing its top out of reach the way align-items:center does. */
+  padding: 16px;
+  overflow-y: auto;
 }
+.modal > .modal-card { margin: auto; }
 
 .modal-card {
   background: var(--cream);
