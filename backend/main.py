@@ -1083,7 +1083,14 @@ def _ensure_setup_token() -> None:
 
 
 def _bootstrap_default_admin() -> None:
-    """Seed the first admin on an empty database.
+    """Seed the first admin on an empty database, if ADMIN_PASSWORD asks to.
+
+    Optional. With ADMIN_PASSWORD unset -- the default since redeploy.sh
+    stopped writing one -- nothing is seeded and the first administrator is
+    created in the browser with the one-time setup token. A value the password
+    policy refuses is logged and skipped the same way rather than raised:
+    raising here aborts startup, so uvicorn exits before the setup page can
+    ever be served and the backend crash-loops on a brand-new deployment.
 
     Runs under the migration advisory lock because every uvicorn worker
     executes startup(): without it, all workers would observe an empty users
@@ -1091,12 +1098,21 @@ def _bootstrap_default_admin() -> None:
     would crash on the UNIQUE constraint. The check is re-read inside the lock
     so only the first worker through does any work.
     """
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    if not admin_password:
+        return
     with advisory_lock():
-        existing = query_one("SELECT id FROM users LIMIT 1")
-        if not existing:
+        if needs_setup():
             admin_username = os.getenv("ADMIN_USERNAME", "admin")
-            admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
-            validate_password(admin_password)
+            try:
+                validate_password(admin_password)
+            except HTTPException as exc:
+                reason = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
+                logger.error(
+                    "ADMIN_PASSWORD not used (%s); no admin seeded. Create the "
+                    "first administrator in the browser with the setup token.",
+                    reason)
+                return
             org_row = query_one("SELECT id FROM organizations WHERE slug = ?", ("default",))
             if org_row:
                 default_org_id = org_row["id"]

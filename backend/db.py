@@ -448,12 +448,6 @@ def _init_db_locked(conn) -> None:
         cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS pdf_pages_status TEXT")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS duration_override_seconds INTEGER")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS fit_mode TEXT NOT NULL DEFAULT 'fit' CHECK (fit_mode IN ('fit','fill','stretch'))")
-        # API keys are high-entropy random tokens (secrets.token_urlsafe(24) =
-        # 192 bits), not user-chosen passwords, so they do not need a slow KDF.
-        # key_sha256 lets an authenticated request resolve with one indexed
-        # lookup instead of a PBKDF2-120k verification (~82ms of CPU each).
-        # Nullable: rows minted before this column are upgraded in place on
-        # their next successful use. See lookup_api_key() in main.py.
         # First-run setup. A deployment with no users publishes a one-time token
         # that must be presented to create the first administrator, so that
         # whoever merely reaches the URL first cannot claim the deployment.
@@ -467,8 +461,6 @@ def _init_db_locked(conn) -> None:
               CONSTRAINT setup_token_single_row CHECK (id = 1)
             )
         """)
-        cursor.execute("ALTER TABLE api_keys      ADD COLUMN IF NOT EXISTS key_sha256 TEXT")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_sha256 ON api_keys (key_sha256) WHERE key_sha256 IS NOT NULL")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_screens_wall_cell ON screens(wall_cell_id)")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sites_org       ON sites       (organization_id)")
@@ -664,6 +656,16 @@ def _init_db_locked(conn) -> None:
             "CREATE INDEX IF NOT EXISTS idx_api_keys_prefix "
             "ON api_keys (key_prefix)"
         )
+        # API keys are high-entropy random tokens (secrets.token_urlsafe(24) =
+        # 192 bits), not user-chosen passwords, so they do not need a slow KDF.
+        # key_sha256 lets an authenticated request resolve with one indexed
+        # lookup instead of a PBKDF2-120k verification (~82ms of CPU each).
+        # Nullable: rows minted before this column are upgraded in place on
+        # their next successful use. See lookup_api_key() in main.py.
+        # Must follow CREATE TABLE api_keys: ahead of it, a fresh database
+        # crashes on boot because the table does not exist yet.
+        cursor.execute("ALTER TABLE api_keys      ADD COLUMN IF NOT EXISTS key_sha256 TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_sha256 ON api_keys (key_sha256) WHERE key_sha256 IS NOT NULL")
 
         # ── Phase 2.5j: Social auth (Google + Apple) ────────────────────
         cursor.execute(

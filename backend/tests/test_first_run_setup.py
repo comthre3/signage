@@ -125,6 +125,32 @@ def test_reissuing_keeps_the_same_token(client, empty_deployment):
     assert query_one("SELECT token FROM setup_token WHERE id = 1")["token"] == empty_deployment.token
 
 
+def test_boot_without_admin_password_leaves_setup_to_the_browser(empty_deployment, monkeypatch):
+    """redeploy.sh no longer writes ADMIN_PASSWORD, so this is every fresh install.
+
+    Seeding used to fall back to a hardcoded 8-character default, which the
+    12-character policy rejects -- startup raised, uvicorn exited, and the
+    backend crash-looped before the browser setup could ever be reached.
+    """
+    import main
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("ADMIN_USERNAME", f"seed-{uuid.uuid4().hex[:8]}")
+    main._bootstrap_default_admin()
+    assert query_one("SELECT id FROM users WHERE username = ?",
+                     (os.environ["ADMIN_USERNAME"],)) is None
+    assert query_one("SELECT token FROM setup_token WHERE id = 1") is not None
+
+
+def test_boot_with_a_short_admin_password_does_not_crash(empty_deployment, monkeypatch):
+    """A weak ADMIN_PASSWORD is refused without taking the whole backend down."""
+    import main
+    monkeypatch.setenv("ADMIN_PASSWORD", "short")
+    monkeypatch.setenv("ADMIN_USERNAME", f"seed-{uuid.uuid4().hex[:8]}")
+    main._bootstrap_default_admin()
+    assert query_one("SELECT id FROM users WHERE username = ?",
+                     (os.environ["ADMIN_USERNAME"],)) is None
+
+
 def test_needs_setup_is_false_when_users_exist(client):
     """The unstubbed function, against the populated database the suite has."""
     import main
