@@ -624,13 +624,16 @@ def complete_social_signup(provider: str, payload: CompleteSocialSignup,
             "message": "This identity is already linked to another account.",
         })
 
+    # Same plan, and so the same screen limit, as an email signup.
+    from main import PLANS
     slug = _unique_slug(_slug(payload.business_name))
     trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
     execute(
         "INSERT INTO organizations (name, slug, plan, screen_limit, "
         "subscription_status, trial_ends_at, locale, created_at) "
-        "VALUES (?, ?, 'starter', 5, 'trialing', ?, 'en', now())",
-        (payload.business_name, slug, trial_ends_at),
+        "VALUES (?, ?, 'starter', ?, 'trialing', ?, 'en', now())",
+        (payload.business_name, slug, PLANS["starter"]["screen_limit"],
+         trial_ends_at),
     )
     org = query_one("SELECT * FROM organizations WHERE slug = ?", (slug,))
     execute(

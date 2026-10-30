@@ -556,6 +556,28 @@ def test_complete_signup_returns_trial_fields(client, google_env):
     assert org["can_write"] is True  # trial should be active
 
 
+def test_complete_signup_gets_the_starter_plan_screen_limit(client, google_env):
+    """A social signup lands on the same Starter plan as an email signup:
+    PLANS["starter"]'s screen limit, not one of its own."""
+    import uuid
+    from main import PLANS
+    from social_auth import _sign_stash
+    sfx = uuid.uuid4().hex[:8]
+    stash = _sign_stash(provider="google", subject_id=f"g-limit-{sfx}",
+                        email=f"limit-{sfx}@example.com", name=None)
+    r = client.post("/auth/google/complete-signup", json={
+        "stash_token": stash,
+        "business_name": f"LimitBiz {sfx}",
+    })
+    assert r.status_code == 200, r.text
+    org = r.json()["organization"]
+    assert org["plan"] == "starter"
+    assert org["screen_limit"] == PLANS["starter"]["screen_limit"]
+    row = query_one("SELECT plan, screen_limit FROM organizations WHERE id = ?",
+                    (org["id"],))
+    assert row["screen_limit"] == PLANS["starter"]["screen_limit"]
+
+
 def test_google_callback_user_cancels_redirects_gracefully(client, google_env):
     """Google sends ?error=access_denied when user cancels → 302 to auth-bounce."""
     r = client.get("/auth/google/callback",
