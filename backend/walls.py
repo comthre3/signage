@@ -238,12 +238,17 @@ def _with_urls(rows: list[dict]) -> list[dict]:
 
 
 def _load_same_playlist_items(wall_id: int) -> list[dict]:
+    # The org joins here and in _load_per_cell_items are a backstop: writes
+    # already refuse another org's playlist (main.require_org_rows), but this
+    # is what reaches the TVs, so it must never follow a bad reference.
     rows = query_all(
         """SELECT pi.id, pi.media_id,
                   COALESCE(pi.duration_override_seconds, pi.duration_seconds) AS duration_seconds,
                   pi.position, m.name, m.filename, m.mime_type
            FROM playlist_items pi
            JOIN walls w ON w.mirrored_playlist_id = pi.playlist_id
+           JOIN playlists p ON p.id = pi.playlist_id
+                           AND p.organization_id = w.organization_id
            JOIN media m ON m.id = pi.media_id
            WHERE w.id = ?
            ORDER BY pi.position, pi.id""",
@@ -264,8 +269,11 @@ def _load_per_cell_items(wall_id: int) -> dict[tuple[int, int], list[dict]]:
                       COALESCE(pi.duration_override_seconds, pi.duration_seconds) AS duration_seconds,
                       pi.position, m.name, m.filename, m.mime_type
                FROM playlist_items pi JOIN media m ON m.id = pi.media_id
-               WHERE pi.playlist_id = ? ORDER BY pi.position, pi.id""",
-            (cell["playlist_id"],),
+               JOIN playlists p ON p.id = pi.playlist_id
+               WHERE pi.playlist_id = ?
+                 AND p.organization_id = (SELECT organization_id FROM walls WHERE id = ?)
+               ORDER BY pi.position, pi.id""",
+            (cell["playlist_id"], wall_id),
         )
         out[(cell["row_index"], cell["col_index"])] = _with_urls(rows)
     return out

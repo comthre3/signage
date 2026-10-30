@@ -176,3 +176,26 @@ def test_concurrent_redeems_cannot_overshoot_the_limit(client, monkeypatch):
     _slow_token(monkeypatch)
     assert _redeem_concurrently(codes) == [200, 402]
     assert _screen_count(oid) == 1
+
+
+def test_deleting_a_wall_removes_its_cell_screens_and_canvas_playlist(client):
+    """Cell screens exist only for their cell; left behind they count toward the
+    plan with no device, as unpair already recognises. A spanned wall's canvas
+    playlist likewise belongs to the wall and would linger in the Playlists list."""
+    oid, h = _org()
+    wall = _wall(client, h, oid)
+    res = client.post("/walls/cells/redeem", json={"code": _code(client, h, wall["id"])})
+    assert res.status_code == 200, res.text
+    kept = client.post("/screens", json={"name": "ordinary"}, headers=h).json()
+
+    spanned = client.post("/walls", json={
+        "name": "S", "mode": "spanned", "rows": 1, "cols": 2,
+        "canvas_width_px": 1920, "canvas_height_px": 1080}, headers=h).json()
+
+    for w in (wall, spanned):
+        assert client.delete(f"/walls/{w['id']}", headers=h).status_code == 204
+
+    screens = query_all("SELECT id FROM screens WHERE organization_id = ?", (oid,))
+    assert [s["id"] for s in screens] == [kept["id"]]
+    assert query_one("SELECT id FROM playlists WHERE id = ?", (spanned["spanned_playlist_id"],)) is None
+    assert query_one("SELECT id FROM playlists WHERE id = ?", (wall["mirrored_playlist_id"],))

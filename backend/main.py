@@ -3521,7 +3521,32 @@ def delete_wall(request: Request, wall_id: int,
                      (wall_id, org_id(user)))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall not found")
-    execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+    # Its cell screens were created by redeem for those cells alone, and its
+    # canvas playlist by create_wall for this wall alone (unpair_wall_cell has
+    # the same reasoning). Left behind, the screens count toward the plan with
+    # no device, and the playlist lingers in the Playlists list.
+    paired = query_all(
+        "SELECT row_index, col_index, id, screen_id FROM wall_cells "
+        "WHERE wall_id = ? AND screen_id IS NOT NULL",
+        (wall_id,),
+    )
+    with transaction():
+        execute(
+            "DELETE FROM screens WHERE organization_id = ? AND wall_cell_id IN "
+            "(SELECT id FROM wall_cells WHERE wall_id = ?)",
+            (wall["organization_id"], wall_id),
+        )
+        execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+        if wall.get("spanned_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ? AND organization_id = ? AND kind = 'wall_canvas'",
+                    (wall["spanned_playlist_id"], wall["organization_id"]))
+    for cell in paired:
+        try:
+            from walls import broadcast_bye  # type: ignore
+            broadcast_bye(wall_id, cell["row_index"], cell["col_index"], "wall_deleted")
+        except Exception:
+            logger.exception("wall_bye_failed wall_id=%s cell=%s,%s",
+                             wall_id, cell["row_index"], cell["col_index"])
     audit(request, action="wall.delete", actor=user,
           target_type="wall", target_id=wall_id,
           details={"name": (wall or {}).get("name")})
