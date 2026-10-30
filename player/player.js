@@ -58,7 +58,7 @@ const cachePrefix = "signage_cache_";
 // ── Connection indicator (Phase 2.5d) ─────────────────────────────────
 const ConnectionStatus = (() => {
   let lastFrameAt = 0;     // Date.now() of last successful WS frame OR API success
-  let wsState = "closed";  // "open" | "connecting" | "closed"
+  let wsState = "none";    // "none" (no wall socket) | "open" | "connecting" | "closed"
   let timer = null;
   const dot = () => document.getElementById("connection-indicator");
 
@@ -67,6 +67,14 @@ const ConnectionStatus = (() => {
 
   function compute() {
     const ageMs = Date.now() - lastFrameAt;
+    // Playlist and zones screens have no socket: the age of the last API
+    // answer is the whole signal. They poll every 15s, so green survives one
+    // slow or missed poll. Without this a healthy screen showed amber forever.
+    if (wsState === "none") {
+      if (ageMs < 45_000)    return "green";
+      if (ageMs < 5 * 60_000) return "amber";
+      return "red";
+    }
     if (wsState === "open" && ageMs < 30_000)     return "green";
     if (wsState === "open" && ageMs < 5 * 60_000) return "amber";
     if (wsState === "connecting")                 return "amber";
@@ -900,7 +908,7 @@ function leaveWallMode() {
   clearTimeout(wallReconnectTimer);
   wallReconnectTimer = null;
   closeWallSocket();
-  ConnectionStatus.setWs("closed");
+  ConnectionStatus.setWs("none");
   clearWallPicture();
   wallSpannedGeometry = null;
 }
