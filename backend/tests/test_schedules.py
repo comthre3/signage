@@ -198,6 +198,46 @@ def test_post_rule_rejects_playlist_from_other_org(client, signed_up_org):
     assert r.status_code in (404, 422)
 
 
+# ── Overlap across midnight ───────────────────────────────────────────
+# A wrap-midnight rule runs on its own days until midnight and on the FOLLOWING
+# day until end_time; the overlap check must judge it the way the resolver
+# plays it. Bits: Mon=1 ... Fri=16, Sat=32, Sun=64.
+
+def _put_two_rules(client, signed_up_org, a, b):
+    bearer = _bearer(signed_up_org["token"])
+    pl = _create_playlist(client, signed_up_org)
+    r = client.post("/schedules", headers=bearer, json={"name": "Midnight"})
+    sid = r.json()["id"]
+    rules = [dict(rule, playlist_id=pl, position=i) for i, rule in enumerate((a, b))]
+    return client.put(f"/schedules/{sid}/rules", headers=bearer,
+                      json={"rules": rules})
+
+
+def test_post_rule_rejects_overlap_spilling_into_next_day(client, signed_up_org):
+    """Friday 22:00-02:00 is still on at Saturday 01:00."""
+    r = _put_two_rules(client, signed_up_org,
+                       {"start_time": "22:00", "end_time": "02:00", "days_of_week": 16},
+                       {"start_time": "01:00", "end_time": "03:00", "days_of_week": 32})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "schedule.rule_overlap"
+
+
+def test_post_rule_rejects_sunday_night_spilling_into_monday(client, signed_up_org):
+    r = _put_two_rules(client, signed_up_org,
+                       {"start_time": "22:00", "end_time": "02:00", "days_of_week": 64},
+                       {"start_time": "01:00", "end_time": "03:00", "days_of_week": 1})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "schedule.rule_overlap"
+
+
+def test_post_rule_allows_wrap_rule_and_its_own_days_early_morning(client, signed_up_org):
+    """Friday 01:00-03:00 ends long before Friday 22:00-02:00 begins."""
+    r = _put_two_rules(client, signed_up_org,
+                       {"start_time": "22:00", "end_time": "02:00", "days_of_week": 16},
+                       {"start_time": "01:00", "end_time": "03:00", "days_of_week": 16})
+    assert r.status_code == 200, r.text
+
+
 # ── Site timezone ─────────────────────────────────────────────────────
 
 def test_default_site_timezone_is_kuwait(client, signed_up_org):

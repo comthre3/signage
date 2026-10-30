@@ -2979,27 +2979,32 @@ def _time_in_window(now: _time_type, start: _time_type, end: _time_type) -> bool
     return now >= start or now < end
 
 
-def _time_windows_overlap(s1, e1, s2, e2) -> bool:
-    """True iff the two TIME windows overlap. Both may wrap midnight."""
-    def expand(s, e):
-        if s <= e:
-            return [(s, e)]
-        return [(s, _time_type(23, 59, 59, 999999)), (_time_type(0, 0), e)]
-    for a_s, a_e in expand(s1, e1):
-        for b_s, b_e in expand(s2, e2):
-            if a_s < b_e and b_s < a_e:
-                return True
-    return False
+def _next_days(days: int) -> int:
+    """The day after each day in a Mon=bit0..Sun=bit6 mask (Sunday -> Monday)."""
+    return ((days << 1) | (days >> 6)) & 0x7F
+
+
+def _rule_pieces(rule: dict) -> list:
+    """A rule as (days_of_week, start, end) pieces, none wrapping midnight.
+
+    A rule that wraps midnight belongs to the day it STARTS on: Friday
+    22:00-02:00 is Friday night, so its after-midnight piece runs on Saturday.
+    This is how resolve_active_playlist plays it.
+    """
+    s, e, days = rule["start_time"], rule["end_time"], rule["days_of_week"]
+    if s <= e:
+        return [(days, s, e)]
+    return [(days, s, _time_type(23, 59, 59, 999999)),
+            (_next_days(days), _time_type(0, 0), e)]
 
 
 def _rules_overlap(a: dict, b: dict) -> bool:
-    """True iff rules a and b share at least one day AND time windows overlap."""
-    if not (a["days_of_week"] & b["days_of_week"]):
-        return False
-    return _time_windows_overlap(
-        a["start_time"], a["end_time"],
-        b["start_time"], b["end_time"],
-    )
+    """True iff rules a and b are ever active on the same day at the same time."""
+    for a_days, a_s, a_e in _rule_pieces(a):
+        for b_days, b_s, b_e in _rule_pieces(b):
+            if a_days & b_days and a_s < b_e and b_s < a_e:
+                return True
+    return False
 
 
 def _parse_time(s: str) -> _time_type:
@@ -3037,6 +3042,7 @@ def resolve_active_playlist(screen: dict) -> Optional[int]:
     site_tz = _site_timezone(screen.get("site_id"))
     now_local = datetime.now(site_tz)
     weekday_bit = 1 << now_local.weekday()      # Mon=0..Sun=6
+    yesterday_bit = 1 << ((now_local.weekday() - 1) % 7)
     now_t = now_local.time()
 
     rules = query_all(
@@ -3045,9 +3051,14 @@ def resolve_active_playlist(screen: dict) -> Optional[int]:
         (screen["schedule_id"],),
     )
     for rule in rules:
-        if not (rule["days_of_week"] & weekday_bit):
+        start, end = rule["start_time"], rule["end_time"]
+        # Past midnight, a wrapping rule is still the night it started on:
+        # at Saturday 01:00, Friday 22:00-02:00 needs Friday's bit, not
+        # Saturday's (see _rule_pieces, which the overlap check uses).
+        day_bit = yesterday_bit if start > end and now_t < start else weekday_bit
+        if not (rule["days_of_week"] & day_bit):
             continue
-        if _time_in_window(now_t, rule["start_time"], rule["end_time"]):
+        if _time_in_window(now_t, start, end):
             return rule["playlist_id"]
 
     return screen.get("playlist_id")            # fallback to default
