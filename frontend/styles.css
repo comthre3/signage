@@ -2421,11 +2421,13 @@ code, kbd, samp, pre,
   cursor: not-allowed;
 }
 
-/* Phase 2.5f — subscription banner */
+/* Phase 2.5f — subscription banner
+   In normal flow above the header, not sticky: both were sticky at top 0, so
+   once the page scrolled the header (z-index 50) parked on top of the banner,
+   hiding its Subscribe link, with only a sliver of a two-line banner showing
+   underneath. Now it simply scrolls away with the page. */
 .sub-banner {
-  position: sticky;
-  inset-block-start: 0;
-  z-index: 20;
+  position: relative;
   padding: 10px 16px;
   display: flex;
   align-items: center;
