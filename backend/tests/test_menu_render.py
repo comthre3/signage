@@ -125,6 +125,90 @@ def test_render_endpoint_creates_media_and_skips_unchanged(client, monkeypatch, 
     assert failed and failed[0]["status"] == "failed" and "503" in failed[0]["error"]
 
 
+def _renderer(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr(main, "RENDERER_URL", "http://renderer.test")
+    monkeypatch.setattr(main, "RENDERER_TOKEN", "t")
+    monkeypatch.setattr(main, "UPLOAD_DIR", str(tmp_path))
+
+
+def _board(client, headers, menu_id):
+    """The en/16:9 board the API calls current -- what the playlist is built from."""
+    renders = client.get(f"/menus/{menu_id}/renders", headers=headers).json()["items"]
+    return next(r for r in renders if (r["kind"], r["language"], r["aspect"]) == ("board", "en", "16:9"))
+
+
+def _set_price(client, headers, menu_id, price):
+    tree = client.get(f"/menus/{menu_id}", headers=headers).json()
+    tree["categories"][0]["items"][0]["price"] = price
+    r = client.put(f"/menus/{menu_id}", json=tree, headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+BOARD_EN = {"languages": ["en"], "aspects": ["16:9"], "kinds": ["board"]}
+
+
+@respx.mock
+def test_reverted_menu_renders_again_and_its_board_becomes_current(client, monkeypatch, tmp_path):
+    # 2.750 → 3.000 → back to 2.750. The original 2.750 row is still 'ready',
+    # but the newest row for the slot (the one served) is the 3.000 board.
+    import json
+    from menu_render import plan_renders
+    _renderer(monkeypatch, tmp_path)
+    prices_rendered = []
+
+    def render(request):
+        html = json.loads(request.content)["html"]
+        prices_rendered.append("3.000" if "3.000" in html else "2.750")
+        return httpx.Response(200, content=PNG)
+
+    respx.post("http://renderer.test/render").mock(side_effect=render)
+    headers, _ = _org(client)
+    menu_id = _menu_with_items(client, headers)
+
+    client.post(f"/menus/{menu_id}/render", json=BOARD_EN, headers=headers)
+    _set_price(client, headers, menu_id, "3.000")
+    client.post(f"/menus/{menu_id}/render", json=BOARD_EN, headers=headers)
+    three = _board(client, headers, menu_id)
+    tree = _set_price(client, headers, menu_id, "2.750")
+    client.post(f"/menus/{menu_id}/render", json=BOARD_EN, headers=headers)
+
+    assert prices_rendered == ["2.750", "3.000", "2.750"]
+    board = _board(client, headers, menu_id)
+    want = plan_renders(tree, tree["template"], ["en"], ["16:9"], ["board"])[0].render_hash
+    assert board["status"] == "ready" and board["render_hash"] == want
+    assert board["media_id"] and board["media_id"] != three["media_id"]
+    pl = client.post(f"/menus/{menu_id}/playlist", headers=headers).json()
+    assert [i["media_id"] for i in pl["items"]] == [board["media_id"]]
+
+    # and rendering the reverted menu again is still a no-op
+    client.post(f"/menus/{menu_id}/render", json=BOARD_EN, headers=headers)
+    assert len(prices_rendered) == 3
+
+
+@respx.mock
+def test_board_whose_png_was_deleted_renders_again(client, monkeypatch, tmp_path):
+    # menu_renders.media_id is ON DELETE SET NULL: deleting the PNG from the
+    # media library leaves a 'ready' row with no media behind it.
+    _renderer(monkeypatch, tmp_path)
+    route = respx.post("http://renderer.test/render").mock(return_value=httpx.Response(200, content=PNG))
+    headers, _ = _org(client)
+    menu_id = _menu_with_items(client, headers)
+
+    client.post(f"/menus/{menu_id}/render", json=BOARD_EN, headers=headers)
+    gone = _board(client, headers, menu_id)["media_id"]
+    assert client.delete(f"/media/{gone}", headers=headers).status_code == 200
+    client.post(f"/menus/{menu_id}/render", json=BOARD_EN, headers=headers)
+
+    assert route.call_count == 2
+    board = _board(client, headers, menu_id)
+    assert board["status"] == "ready" and board["media_id"] and board["media_id"] != gone
+    r = client.post(f"/menus/{menu_id}/playlist", headers=headers)
+    assert r.status_code == 200, r.text
+    assert [i["media_id"] for i in r.json()["items"]] == [board["media_id"]]
+
+
 def test_render_requires_renderer(client, monkeypatch):
     import main
     monkeypatch.setattr(main, "RENDERER_URL", "")
