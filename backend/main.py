@@ -4490,6 +4490,9 @@ def billing_checkout(
 
 
 class BillingCallbackBody(BaseModel):
+    # A JSON callback may carry the ids as numbers; store them as text.
+    model_config = {"coerce_numbers_to_str": True}
+
     result: str | None = None
     trackid: str | None = None
     paymentID: str | None = None
@@ -4503,10 +4506,20 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
     raw_body = await request.body()
     if not _verify_billing_callback(raw_body, request.headers, s):
         raise HTTPException(status_code=404)
-    try:
-        body_dict = json.loads(raw_body) if raw_body else {}
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    # NiuPay's request endpoint accepts only form-encoding (see billing.py), so
+    # its callback may arrive as a form too: a form body and a JSON one get the
+    # same handling. Verification above is on the raw bytes either way.
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
+        form = await request.form()
+        body_dict = {k: v for k, v in form.items() if isinstance(v, str)}
+    else:
+        try:
+            body_dict = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        if not isinstance(body_dict, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
     body = BillingCallbackBody(**body_dict)
 
     if body.trackid and body.trackid != trackid:

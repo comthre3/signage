@@ -1,7 +1,10 @@
+import hashlib
+import hmac
 import os
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
@@ -331,3 +334,103 @@ def test_deleting_a_user_who_paid_keeps_the_payment(
     assert payment == {"status": "captured", "user_id": None}
     history = client.get("/billing/history", headers=owner).json()
     assert [p["trackid"] for p in history] == [trackid]
+
+
+# ── NiuPay may post its callback form-encoded, like its request API ───
+
+def _callback_fields(trackid: str, result: str = "CAPTURED") -> dict:
+    return {"result": result, "trackid": trackid, "paymentID": "6555084431783610",
+            "tranid": "t", "ref": "r", "niutrack": "n"}
+
+
+def _payment(trackid: str) -> dict:
+    return query_one(
+        "SELECT status, niupay_result, niupay_payment_id FROM payments WHERE trackid = ?",
+        (trackid,),
+    )
+
+
+def test_callback_accepts_form_encoded_body(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    trackid = _pending_payment(client, signed_up_org, "growth", 6, mock_niupay)
+    r = client.post(f"/billing/callback/{trackid}?s={SECRET}", data=_callback_fields(trackid))
+    assert r.status_code == 200, r.text
+    assert _payment(trackid) == {"status": "captured", "niupay_result": "CAPTURED",
+                                 "niupay_payment_id": "6555084431783610"}
+    org = _org_billing(signed_up_org["org"]["id"])
+    assert org["plan"] == "growth"
+    assert org["subscription_status"] == "active"
+
+
+def test_callback_accepts_multipart_form_body(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    trackid = _pending_payment(client, signed_up_org, "starter", 1, mock_niupay)
+    r = client.post(f"/billing/callback/{trackid}?s={SECRET}",
+                    files={k: (None, v) for k, v in _callback_fields(trackid).items()})
+    assert r.status_code == 200, r.text
+    assert _payment(trackid)["status"] == "captured"
+
+
+def test_form_encoded_failure_marks_payment_failed(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    trackid = _pending_payment(client, signed_up_org, "starter", 1, mock_niupay)
+    r = client.post(f"/billing/callback/{trackid}?s={SECRET}",
+                    data=_callback_fields(trackid, result="NOT CAPTURED"))
+    assert r.status_code == 200, r.text
+    assert _payment(trackid)["status"] == "failed"
+
+
+def test_form_encoded_callback_with_wrong_trackid_is_rejected(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    trackid = _pending_payment(client, signed_up_org, "starter", 1, mock_niupay)
+    r = client.post(f"/billing/callback/{trackid}?s={SECRET}", data=_callback_fields("pay_other"))
+    assert r.status_code == 400
+    assert _payment(trackid)["status"] == "pending"
+
+
+def test_form_encoded_callback_with_wrong_secret_is_404(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    trackid = _pending_payment(client, signed_up_org, "starter", 1, mock_niupay)
+    r = client.post(f"/billing/callback/{trackid}?s=wrong", data=_callback_fields(trackid))
+    assert r.status_code == 404
+    assert _payment(trackid)["status"] == "pending"
+
+
+def test_form_encoded_callback_verified_by_hmac_over_the_raw_body(
+    client: TestClient, signed_up_org: dict, mock_niupay, monkeypatch
+):
+    monkeypatch.setenv("BILLING_WEBHOOK_SECRET", "test_hmac_secret_789")
+    trackid = _pending_payment(client, signed_up_org, "starter", 1, mock_niupay)
+    body = urlencode(_callback_fields(trackid)).encode()
+    headers = {"Content-Type": "application/x-www-form-urlencoded",
+               "X-Niupay-Signature": hmac.new(b"test_hmac_secret_789", body, hashlib.sha256).hexdigest()}
+
+    r = client.post(f"/billing/callback/{trackid}", content=body + b"&x=1", headers=headers)
+    assert r.status_code == 404                       # the signature covers the exact bytes
+    r = client.post(f"/billing/callback/{trackid}", content=body, headers=headers)
+    assert r.status_code == 200, r.text
+    assert _payment(trackid)["status"] == "captured"
+
+
+def test_json_callback_with_numeric_ids_is_accepted(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    trackid = _pending_payment(client, signed_up_org, "starter", 1, mock_niupay)
+    r = client.post(f"/billing/callback/{trackid}?s={SECRET}",
+                    json={**_callback_fields(trackid), "paymentID": 6555084431783610, "tranid": 42})
+    assert r.status_code == 200, r.text
+    assert _payment(trackid)["niupay_payment_id"] == "6555084431783610"
+
+
+def test_callback_body_that_is_not_an_object_is_rejected(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    trackid = _pending_payment(client, signed_up_org, "starter", 1, mock_niupay)
+    r = client.post(f"/billing/callback/{trackid}?s={SECRET}", json=["CAPTURED", trackid])
+    assert r.status_code == 400
+    assert _payment(trackid)["status"] == "pending"
