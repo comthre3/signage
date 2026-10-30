@@ -186,6 +186,19 @@ def _session_user_from_cookie(request: Request) -> Optional[dict]:
     return _session_lookup(token)
 
 
+# A grant can never exceed what the granting user could do in a session.
+# Viewers are read-only everywhere, so read-only is all they can delegate;
+# editors and admins may grant api:rw (and every endpoint still applies its
+# own role gate to the token -- see require_api_scope in main.py).
+_SCOPE_RANK = {"api:read": 1, "api:rw": 2}
+_ROLE_MAX_SCOPE = {"admin": "api:rw", "editor": "api:rw", "viewer": "api:read"}
+
+
+def _cap_scope(scope: str, role: Optional[str]) -> str:
+    ceiling = _ROLE_MAX_SCOPE.get(role or "", "api:read")
+    return scope if _SCOPE_RANK[scope] <= _SCOPE_RANK[ceiling] else ceiling
+
+
 @router.get("/oauth/authorize")
 def authorize(
     request: Request,
@@ -262,7 +275,8 @@ def authorize(
         client_name=client_row["client_name"],
         organization_name=(org_row or {}).get("name", "your organization"),
         user_email=user["username"],
-        requested_scope=scope,
+        requested_scope=_cap_scope(scope, user.get("role")),
+        allow_rw=_cap_scope("api:rw", user.get("role")) == "api:rw",
         request_id=request_id,
     )
     return HTMLResponse(html)
@@ -410,8 +424,9 @@ def authorize_decision(
         qs = urlencode({"error": "access_denied", "state": pending["state"]})
         return RedirectResponse(f"{pending['redirect_uri']}?{qs}", status_code=302)
 
-    if scope not in ("api:read", "api:rw"):
+    if scope not in _SCOPE_RANK:
         scope = pending["scope"]
+    scope = _cap_scope(scope, user.get("role"))
 
     code = secrets.token_urlsafe(32)
     code_hash = _hash_token(code)
@@ -695,9 +710,31 @@ def revoke(
 # ── Access-token lookup (used by get_api_authed in main.py) ──────────
 
 
+def _grantor(row: dict) -> Optional[dict]:
+    """The user a token was granted by, shaped like main._session_lookup's
+    user dict, or None if they no longer exist in the token's org."""
+    if row.get("user_id") is None:
+        return None
+    user = query_one(
+        "SELECT id, username, is_admin, role, organization_id FROM users "
+        "WHERE id = ? AND organization_id = ?",
+        (row["user_id"], row["organization_id"]),
+    )
+    if not user:
+        return None
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "is_admin": bool(user["is_admin"]),
+        "role": user.get("role") or ("admin" if user["is_admin"] else "viewer"),
+        "organization_id": user["organization_id"],
+    }
+
+
 def lookup_oauth_access_token(token: str) -> Optional[dict]:
-    """Return active oauth_tokens row if token matches; else None.
-    Fire-and-forget last_used_at update."""
+    """Return the active oauth_tokens row the token matches, with the
+    granting user under "user"; None if no live token matches or its user
+    is gone. Fire-and-forget last_used_at update."""
     if not token:
         return None
     # Quickly reject API keys (handled separately in get_api_authed).
@@ -716,6 +753,12 @@ def lookup_oauth_access_token(token: str) -> Optional[dict]:
         upgrade = row is not None
     if not row:
         return None
+    # The token acts for the user who granted it. If that user is gone
+    # (user_id is ON DELETE SET NULL) or has left the org, it is dead.
+    grantor = _grantor(row)
+    if grantor is None:
+        return None
+    row["user"] = grantor
     try:
         if upgrade:
             execute(

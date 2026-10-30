@@ -1031,3 +1031,140 @@ def test_legacy_token_can_be_revoked(client, monkeypatch):
     assert r.status_code == 200
     assert query_one("SELECT revoked_at FROM oauth_tokens WHERE id = ?",
                      (row_id,))["revoked_at"] is not None
+
+
+# ── A token acts as the user who granted it, with that user's role ──
+import re
+
+
+def _bearer(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _add_member(client, admin_token: str, role: str) -> dict:
+    """Admin adds a user with `role`; returns {id, username, password, token}."""
+    username = f"{role}-{uuid.uuid4().hex[:8]}@example.com"
+    password = "Khanshoof2026Member"
+    r = client.post("/users", headers=_bearer(admin_token),
+                    json={"username": username, "password": password,
+                          "role": role})
+    assert r.status_code in (200, 201), r.text
+    user_id = r.json()["id"]
+    r = client.post("/auth/login",
+                    json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    return {"id": user_id, "username": username, "password": password,
+            "token": r.json()["token"]}
+
+
+def _consent_page(client, session_token: str, cid: str, challenge: str,
+                  scope: str):
+    return client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": scope, "state": "s",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, cookies={"oauth_session": session_token}, follow_redirects=False)
+
+
+def _grant(client, session_token: str, requested: str = "api:rw",
+           chosen: str | None = None) -> dict:
+    """Authorize as the session's user, allow, exchange. Returns the token
+    response plus client_id."""
+    cid = _register_client(client)
+    verifier, challenge = _pkce_pair()
+    r = _consent_page(client, session_token, cid, challenge, requested)
+    assert r.status_code == 200, r.text
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": chosen or requested},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 200, r.text
+    return {**r.json(), "client_id": cid}
+
+
+def test_viewer_consent_offers_read_only(client):
+    admin_token, *_ = _signup_org(client)
+    viewer = _add_member(client, admin_token, "viewer")
+    cid = _register_client(client)
+    _v, challenge = _pkce_pair()
+    r = _consent_page(client, viewer["token"], cid, challenge, "api:rw")
+    assert r.status_code == 200, r.text
+    rw_input = re.search(r'<input[^>]*value="api:rw"[^>]*>', r.text).group(0)
+    assert "disabled" in rw_input
+    read_input = re.search(r'<input[^>]*value="api:read"[^>]*>', r.text).group(0)
+    assert "checked" in read_input
+
+
+def test_viewer_cannot_grant_rw(client):
+    """Even posting scope=api:rw at consent, a viewer's grant is api:read."""
+    admin_token, *_ = _signup_org(client)
+    viewer = _add_member(client, admin_token, "viewer")
+    tokens = _grant(client, viewer["token"], requested="api:rw", chosen="api:rw")
+    assert tokens["scope"] == "api:read"
+    r = client.post("/playlists", headers=_bearer(tokens["access_token"]),
+                    json={"name": "viewer write"})
+    assert r.status_code == 403, r.text
+    r = client.get("/playlists", headers=_bearer(tokens["access_token"]))
+    assert r.status_code == 200, r.text
+
+
+def test_editor_token_cannot_do_admin_only_write(client):
+    """DELETE /schedules is admin-only for sessions; an editor's api:rw
+    token must not get around that."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    r = client.post("/schedules", headers=_bearer(admin_token),
+                    json={"name": "admin only delete"})
+    assert r.status_code in (200, 201), r.text
+    sid = r.json()["id"]
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    assert tokens["scope"] == "api:rw"
+    bearer = _bearer(tokens["access_token"])
+
+    r = client.post("/playlists", headers=bearer, json={"name": "editor ok"})
+    assert r.status_code in (200, 201), r.text    # editors may write content
+    r = client.delete(f"/schedules/{sid}", headers=bearer)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "insufficient_role"
+    r = client.delete(f"/schedules/{sid}", headers=_bearer(admin_token))
+    assert r.status_code == 204, r.text
+
+
+def test_token_follows_grantors_current_role(client):
+    """Demoting the user who granted a token takes effect on the token."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    bearer = _bearer(tokens["access_token"])
+    r = client.post("/playlists", headers=bearer, json={"name": "before"})
+    assert r.status_code in (200, 201), r.text
+
+    r = client.put(f"/users/{editor['id']}", headers=_bearer(admin_token),
+                   json={"role": "viewer"})
+    assert r.status_code == 200, r.text
+    r = client.post("/playlists", headers=bearer, json={"name": "after"})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "insufficient_role"
+
+
+def test_token_rejected_once_grantor_is_gone(client):
+    """oauth_tokens.user_id is ON DELETE SET NULL: a row orphaned that way
+    must stop authenticating, not carry on as an org-level credential."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    bearer = _bearer(tokens["access_token"])
+    assert client.get("/playlists", headers=bearer).status_code == 200
+    execute("DELETE FROM users WHERE id = ?", (editor["id"],))
+    r = client.get("/playlists", headers=bearer)
+    assert r.status_code == 401, r.text
