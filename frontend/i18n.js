@@ -25,6 +25,11 @@
     return v;
   }
 
+  // True when the loaded locale has a string for `key`. Lets callers prefer a
+  // translation when one exists and fall back to something better than the
+  // bare key (e.g. a backend message) when it does not.
+  function has(key) { return _strings[key] != null; }
+
   function applyTranslations(root) {
     const r = root || document;
     r.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
@@ -46,15 +51,21 @@
     return locale;
   }
 
+  // Precedence: the person's own explicit choice, then the organization's
+  // default, then the browser. The cookie is only ever written by a language
+  // toggle (here, on the landing page or the player), so it IS that explicit
+  // choice. It used to lose to the org locale, which made the toggle a no-op
+  // for everyone whose org was set to the other language -- every non-admin,
+  // and admins whose org PATCH failed (402 on an expired subscription).
   function detectInitialLocale(orgLocale) {
-    if (ALLOWED.includes(orgLocale)) return orgLocale;
     const m = document.cookie.match(/(?:^|; )khanshoof_lang=(en|ar)\b/);
     if (m) return m[1];
+    if (ALLOWED.includes(orgLocale)) return orgLocale;
     const browser = (navigator.language || "en").slice(0, 2).toLowerCase();
     return browser === "ar" ? "ar" : "en";
   }
 
   function currentLocale() { return _locale; }
 
-  window.Khan = { loadLocale, t, applyTranslations, setLocale, detectInitialLocale, currentLocale };
+  window.Khan = { loadLocale, t, has, applyTranslations, setLocale, detectInitialLocale, currentLocale };
 })();

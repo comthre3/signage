@@ -14,7 +14,7 @@
     <div id="subscription-banner" class="sub-banner hidden" role="status" aria-live="polite">
       <span id="subscription-banner-text"></span>
       <a id="subscription-banner-cta" href="#" class="sub-banner-cta"></a>
-      <button id="subscription-banner-dismiss" class="sub-banner-dismiss" aria-label="Dismiss">×</button>
+      <button id="subscription-banner-dismiss" class="sub-banner-dismiss" aria-label="Dismiss" data-i18n-aria-label="sub_banner.dismiss_aria">×</button>
     </div>
     <div id="toast-container"></div>
 
@@ -51,6 +51,23 @@
     </header>
 
     <main>
+      <!-- Outside #dashboard on purpose: the "⚙ Connection" button is in the
+           header on the sign-in screen too, where #dashboard is hidden. -->
+      <section id="connection-panel" class="panel hidden">
+        <h2 data-i18n="auth.connection_settings">Connection Settings</h2>
+        <form id="connection-form">
+          <select id="connection-mode">
+            <option value="local" data-i18n="auth.connection_local">Local / Tailscale</option>
+            <option value="external" data-i18n="auth.connection_external">Cloudflare</option>
+          </select>
+          <input type="text" id="connection-api"    placeholder="API Base URL" data-i18n-placeholder="auth.connection_api" dir="auto" />
+          <input type="text" id="connection-player" placeholder="Player Base URL" data-i18n-placeholder="auth.connection_player" dir="auto" />
+          <button type="submit" data-i18n="auth.connection_save">Save</button>
+          <button type="button" id="connection-reset" class="secondary-btn" data-i18n="auth.connection_reset">Reset</button>
+        </form>
+        <div class="helper-text" data-i18n="auth.connection_reload_note">Changes take effect after page reload.</div>
+      </section>
+
       <!-- Shown only on a deployment that has no users yet. Replaces the whole
            sign-in panel, because there is nothing to sign in to. -->
       <section id="setup-panel" class="panel hidden">
@@ -265,27 +282,13 @@
           </div>
           <div id="plan-card-trial" class="helper-text hidden"></div>
         </section>
-        <section id="connection-panel" class="panel hidden">
-          <h2 data-i18n="auth.connection_settings">Connection Settings</h2>
-          <form id="connection-form">
-            <select id="connection-mode">
-              <option value="local" data-i18n="auth.connection_local">Local / Tailscale</option>
-              <option value="external" data-i18n="auth.connection_external">Cloudflare</option>
-            </select>
-            <input type="text" id="connection-api"    placeholder="API Base URL" data-i18n-placeholder="auth.connection_api" dir="auto" />
-            <input type="text" id="connection-player" placeholder="Player Base URL" data-i18n-placeholder="auth.connection_player" dir="auto" />
-            <button type="submit" data-i18n="auth.connection_save">Save</button>
-            <button type="button" id="connection-reset" class="secondary-btn" data-i18n="auth.connection_reset">Reset</button>
-          </form>
-          <div class="helper-text" data-i18n="auth.connection_reload_note">Changes take effect after page reload.</div>
-        </section>
 
         <section id="sites" class="panel">
           <h2 data-i18n="sites.heading">Sites</h2>
           <form id="site-form">
             <input type="text" id="site-name" placeholder="Site name" data-i18n-placeholder="sites.name_placeholder" required dir="auto" />
             <input type="text" id="site-slug" placeholder="Slug (optional)" data-i18n-placeholder="sites.slug_placeholder" dir="auto" />
-            <select id="site-timezone-select" aria-label="Timezone"></select>
+            <select id="site-timezone-select" aria-label="Timezone" data-i18n-aria-label="site.field.timezone"></select>
             <button type="submit" data-i18n="sites.add_btn">Add Site</button>
           </form>
           <div id="sites-list" class="list"></div>
@@ -387,7 +390,7 @@
             <button type="submit" data-i18n="media.add_website">Add Website</button>
           </form>
           <form id="media-form" class="dropzone">
-            <input type="file" id="media-file" />
+            <input type="file" id="media-file" accept="image/*,video/*,application/pdf" />
             <div class="dropzone-content">
               <div class="dropzone-title" data-i18n="media.dropzone_title">Drag &amp; drop files here</div>
               <div class="dropzone-subtitle" data-i18n="media.dropzone_subtitle">or click to select — images &amp; video</div>
