@@ -394,6 +394,7 @@
             <div class="dropzone-content">
               <div class="dropzone-title" data-i18n="media.dropzone_title">Drag &amp; drop files here</div>
               <div class="dropzone-subtitle" data-i18n="media.dropzone_subtitle">or click to select — images &amp; video</div>
+              <div class="dropzone-file" id="media-file-name" dir="auto" aria-live="polite"></div>
             </div>
             <button type="submit" class="secondary-btn" data-i18n="media.upload_btn">Upload</button>
           </form>
@@ -481,6 +482,7 @@
             </label>
 
             <h3 data-i18n="schedules.editor.rules">Rules</h3>
+            <div class="scroll-x">
             <table class="schedule-rules-table">
               <thead>
                 <tr>
@@ -493,6 +495,7 @@
               </thead>
               <tbody id="schedule-rules-tbody"></tbody>
             </table>
+            </div>
             <button id="schedule-add-rule-btn" class="btn" data-i18n="schedules.editor.add_rule">+ Add rule</button>
 
             <div class="schedule-editor-actions">
@@ -541,6 +544,7 @@
             <button id="audit-filter-apply" data-i18n="audit_log.filter.apply">Apply</button>
           </div>
 
+          <div class="scroll-x">
           <table class="audit-log-table">
             <thead>
               <tr>
@@ -554,6 +558,7 @@
             </thead>
             <tbody id="audit-log-tbody"></tbody>
           </table>
+          </div>
 
           <div class="audit-log-pagination">
             <button id="audit-page-newer" data-i18n="audit_log.pagination.newer">← Newer</button>

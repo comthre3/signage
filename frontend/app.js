@@ -1218,8 +1218,18 @@ function bindZoneEditorEvents() {
   });
   document.getElementById("zones-cancel")?.addEventListener("click", closeZonesEditor);
 
+  // Pointer events rather than mouse events, so a finger can draw, move and
+  // resize zones too (touch never produces a mousemove while dragging). The
+  // canvas captures the pointer -- re-rendering replaces the zone elements
+  // under the finger, and capture keeps the moves coming anyway -- and has
+  // touch-action: none in the CSS so the drag does not scroll the page.
   const canvas = document.getElementById("zones-canvas");
-  canvas?.addEventListener("mousedown", (event) => {
+  canvas?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
     const handle  = event.target.closest(".zone-handle");
     const zoneEl  = event.target.closest(".zone-block");
     if (!zoneEl) return;
@@ -1229,15 +1239,16 @@ function bindZoneEditorEvents() {
     const original   = { ...zonesState.zones[zoneIndex] };
     zonesState.dragging = { zoneIndex, handle: handle ? handle.dataset.handle : "move", startX: event.clientX, startY: event.clientY, original, canvasRect };
   });
-  canvas?.addEventListener("mousedown", (event) => {
+  canvas?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
     if (event.target.closest(".zone-block")) return;
     const canvasRect = canvas.getBoundingClientRect();
     const startX = clamp((event.clientX - canvasRect.left) / canvasRect.width, 0, 1);
     const startY = clamp((event.clientY - canvasRect.top)  / canvasRect.height, 0, 1);
     zonesState.drawing = { startX, startY, canvasRect };
   });
-  window.addEventListener("mousemove", (event) => {
-    if (!zonesState.dragging) return;
+  window.addEventListener("pointermove", (event) => {
+    if (!event.isPrimary || !zonesState.dragging) return;
     const { zoneIndex, handle, startX, startY, original, canvasRect } = zonesState.dragging;
     const deltaX = (event.clientX - startX) / canvasRect.width;
     const deltaY = (event.clientY - startY) / canvasRect.height;
@@ -1271,8 +1282,8 @@ function bindZoneEditorEvents() {
     }
     renderZonesCanvas();
   });
-  window.addEventListener("mousemove", (event) => {
-    if (!zonesState.drawing) return;
+  window.addEventListener("pointermove", (event) => {
+    if (!event.isPrimary || !zonesState.drawing) return;
     const { startX, startY, canvasRect } = zonesState.drawing;
     const currentX = clamp((event.clientX - canvasRect.left) / canvasRect.width, 0, 1);
     const currentY = clamp((event.clientY - canvasRect.top)  / canvasRect.height, 0, 1);
@@ -1283,15 +1294,23 @@ function bindZoneEditorEvents() {
     };
     renderZonesCanvas();
   });
-  window.addEventListener("mouseup", () => {
-    if (zonesState.drawing?.preview) {
+  const endZoneDrag = (event) => {
+    if (!event.isPrimary) return;
+    const drawn = event.type === "pointerup" && zonesState.drawing?.preview;
+    if (drawn) {
       const index = zonesState.zones.length + 1;
       zonesState.zones.push({ id: `local-${Date.now()}`, name: zoneDefaultName(index), ...zonesState.drawing.preview, sort_order: index, transition_ms: 600, items: [] });
       renderZonesList();
     }
+    const hadPreview = !!zonesState.drawing?.preview;
     zonesState.dragging = null;
     zonesState.drawing  = null;
-  });
+    // Swap the dashed preview for the real zone (or drop it on cancel); left
+    // in place it was a dead element that could not be moved or resized.
+    if (hadPreview) renderZonesCanvas();
+  };
+  window.addEventListener("pointerup", endZoneDrag);
+  window.addEventListener("pointercancel", endZoneDrag);
 }
 
 /* ── Playlist items ─────────────────────────────────────────── */
@@ -1384,6 +1403,7 @@ document.getElementById("media-form").addEventListener("submit", async (e) => {
   await withLoading(btn, async () => {
     await uploadMediaFile(file);
     input.value = "";
+    document.getElementById("media-file-name").textContent = "";
     toast(Khan.t("toast.media_uploaded"), "success");
     await loadMedia();
   });
@@ -1420,6 +1440,11 @@ document.getElementById("media-url-form").addEventListener("submit", async (e) =
 });
 
 const mediaForm = document.getElementById("media-form");
+// The file input is invisible, so echo the picked file's name -- on a phone
+// there is otherwise no sign the pick registered before tapping Upload.
+document.getElementById("media-file")?.addEventListener("change", (e) => {
+  document.getElementById("media-file-name").textContent = e.target.files[0]?.name || "";
+});
 mediaForm?.addEventListener("dragover", (e) => { e.preventDefault(); mediaForm.classList.add("dropzone-active"); });
 mediaForm?.addEventListener("dragleave", ()  => mediaForm.classList.remove("dropzone-active"));
 mediaForm?.addEventListener("drop", async (e) => {
@@ -3277,9 +3302,11 @@ const Walls = (() => {
         </span>
         ${samePlaylistPicker}
       </div>
-      <div class="walls-editor-grid"
-           style="grid-template-columns: repeat(${wall.cols}, 1fr);">
-        ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+      <div class="scroll-x">
+        <div class="walls-editor-grid"
+             style="grid-template-columns: repeat(${wall.cols}, 1fr);">
+          ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+        </div>
       </div>
     `;
     body.querySelectorAll(".walls-editor-cell").forEach(el => {

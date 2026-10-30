@@ -99,6 +99,15 @@ body::before {
 /* ── Utility ─────────────────────────────────────────────────── */
 .hidden { display: none !important; }
 
+/* Wraps content that is inherently wider than a phone (data tables, wall
+   grids) so it scrolls sideways inside its own box instead of dragging the
+   whole page sideways with it. */
+.scroll-x {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
 /* ── Header ─────────────────────────────────────────────────── */
 header {
   position: sticky;
@@ -244,7 +253,12 @@ main {
   padding: 28px;
   box-shadow: var(--shadow-md);
   margin-bottom: 20px;
-  animation: fadeUp 0.25s ease both;
+  /* backwards, not both: a fill that outlives the animation leaves
+     transform: translateY(0) on every panel, and any transform makes the panel
+     the containing block for position:fixed descendants. The walls pairing and
+     API-key modals live inside panels, so they were sized and centred on the
+     panel instead of the viewport -- off-screen once the page was scrolled. */
+  animation: fadeUp 0.25s ease backwards;
 }
 
 .panel + .panel,
@@ -443,6 +457,9 @@ textarea {
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
   min-width: 0;
 }
+/* Never wider than the container (a size=20 field in the Arabic font at 16px
+   is wider than a phone). Zero specificity so component max-widths still win. */
+:where(input, select, textarea) { max-width: 100%; }
 
 input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 select:focus,
@@ -577,6 +594,10 @@ label {
   display: grid;
   gap: 10px;
 }
+/* Grid items default to min-width:auto, i.e. never narrower than their widest
+   field -- a 20-character input in the Arabic font is wider than a 360px
+   phone, so user cards spilled off the screen. */
+.list > * { min-width: 0; }
 
 .card {
   border: 1.5px solid var(--cream-border);
@@ -712,7 +733,13 @@ label {
   justify-content: center;
   z-index: 200;
   backdrop-filter: blur(4px);
+  /* A card taller than a phone screen (or one squeezed by the on-screen
+     keyboard) scrolls inside the overlay; margin:auto on the card centres it
+     without pushing its top out of reach the way align-items:center does. */
+  padding: 16px;
+  overflow-y: auto;
 }
+.modal > .modal-card { margin: auto; }
 
 .modal-card {
   background: var(--cream);
@@ -867,6 +894,9 @@ label {
   margin-bottom: 16px;
   overflow: hidden;
   cursor: crosshair;
+  /* Drawing, moving and resizing zones are pointer drags; without this a
+     finger on the canvas scrolls the page and the browser cancels the drag. */
+  touch-action: none;
 }
 
 .zones-canvas-grid {
@@ -907,7 +937,15 @@ label {
   border-radius: 50%;
   box-shadow: 0 0 0 2px var(--cream);
 }
-.zone-handle-left   { left: -5px;   top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+/* The dot is the visual; the hit area is this larger invisible ring. Zone
+   coordinates are physical screen positions, so handles stay left/right in RTL. */
+.zone-handle::after {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+}
+.zone-handle-left  { left: -5px;   top: 50%; transform: translateY(-50%); cursor: ew-resize; }
 .zone-handle-right  { right: -5px;  top: 50%; transform: translateY(-50%); cursor: ew-resize; }
 .zone-handle-top    { top: -5px;    left: 50%; transform: translateX(-50%); cursor: ns-resize; }
 .zone-handle-bottom { bottom: -5px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
@@ -1046,7 +1084,23 @@ label {
   height: 100%;
 }
 
+/* The invisible file input above spans the whole drop zone so a tap anywhere
+   opens the picker -- but it was also on top of the Upload button, so tapping
+   Upload reopened the picker and the form never submitted. Lift the button. */
+.dropzone > button {
+  position: relative;
+  z-index: 1;
+}
+
 .dropzone-content { text-align: center; pointer-events: none; }
+
+.dropzone-file {
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--plum);
+  overflow-wrap: anywhere;
+}
+.dropzone-file:empty { display: none; }
 
 .dropzone-title {
   font-family: var(--font-display);
@@ -1634,7 +1688,7 @@ label {
   font-weight: 600;
   font-size: 14px;
   cursor: pointer;
-  min-height: 40px;
+  min-height: 44px;
 }
 .billing-term.active {
   background: var(--peach-deep);
@@ -1753,7 +1807,7 @@ code, kbd, samp, pre,
 /* Walls */
 .walls-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 16px;
   margin-block-start: 12px;
 }
@@ -1789,6 +1843,9 @@ code, kbd, samp, pre,
   border-radius: 8px;
   aspect-ratio: 16/9;
   max-width: 800px;
+  /* Grow to fit the cells' content rather than letting the last columns
+     spill out of the dark frame; the .scroll-x wrapper scrolls the excess. */
+  min-width: min-content;
 }
 .walls-editor-cell {
   background: #444;
@@ -1798,7 +1855,11 @@ code, kbd, samp, pre,
   align-items: center; justify-content: center;
   padding: 8px; cursor: pointer;
   font-size: 0.9em;
+  text-align: center;
 }
+/* .btn inherits its colour, which here is the cell's light grey -- on the
+   cream button that left "Pair this screen" all but invisible. */
+.walls-editor-cell .btn { color: var(--plum); }
 .walls-editor-cell.empty {
   border-color: #888;
   background: #333;
@@ -1923,8 +1984,12 @@ code, kbd, samp, pre,
 }
 .canvas-editor-grid {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: minmax(0, 280px) minmax(0, 1fr);
   gap: 16px;
+}
+/* Side by side, a phone left the wall preview a sliver beside the 280px rail. */
+@media (max-width: 768px) {
+  .canvas-editor-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .canvas-editor-rail ul { list-style: none; padding: 0; margin: 0; }
 .canvas-editor-rail li {
@@ -2267,7 +2332,7 @@ code, kbd, samp, pre,
 /* Phase 2.5e — schedules */
 .schedules-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 16px;
 }
 .schedule-card {
@@ -2335,6 +2400,10 @@ code, kbd, samp, pre,
   font-size: 12px;
   word-break: break-all;
   max-width: 30ch;
+  /* JSON, so always laid out LTR -- in Arabic the bidi algorithm moved the
+     opening brace and quotes to the far end of each line. */
+  direction: ltr;
+  min-width: 24ch;
 }
 .audit-log-empty {
   text-align: center;
@@ -2352,11 +2421,13 @@ code, kbd, samp, pre,
   cursor: not-allowed;
 }
 
-/* Phase 2.5f — subscription banner */
+/* Phase 2.5f — subscription banner
+   In normal flow above the header, not sticky: both were sticky at top 0, so
+   once the page scrolled the header (z-index 50) parked on top of the banner,
+   hiding its Subscribe link, with only a sliver of a two-line banner showing
+   underneath. Now it simply scrolls away with the page. */
 .sub-banner {
-  position: sticky;
-  inset-block-start: 0;
-  z-index: 20;
+  position: relative;
   padding: 10px 16px;
   display: flex;
   align-items: center;
@@ -2383,7 +2454,7 @@ code, kbd, samp, pre,
 /* Phase 2.5h — API keys */
 .api-keys-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 16px;
   margin-block-start: 16px;
 }
@@ -2526,7 +2597,7 @@ code, kbd, samp, pre,
 
 /* ── Menus ─────────────────────────────────────────────── */
 .panel-actions { display: flex; gap: 8px; }
-.menus-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-block-start: 16px; }
+.menus-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 14px; margin-block-start: 16px; }
 .menu-card { border: 1px solid var(--cream-border, #E8DCC6); border-radius: 14px; padding: 16px; background: var(--bg-card, #fff); }
 .menu-card h3 { margin: 0 0 8px; }
 .menu-card-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; margin-block-end: 12px; }
@@ -2564,8 +2635,10 @@ code, kbd, samp, pre,
 .colour-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .logo-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-.menu-editor-grid { display: grid; grid-template-columns: 340px 1fr; gap: 24px; margin-top: 14px; }
-@media (max-width: 1000px) { .menu-editor-grid { grid-template-columns: 1fr; } }
+/* minmax(0, …): a plain 1fr track grows to its content's min-content width, so
+   the wide items table stretched the whole editor past the screen edge. */
+.menu-editor-grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 24px; margin-top: 14px; }
+@media (max-width: 1000px) { .menu-editor-grid { grid-template-columns: minmax(0, 1fr); } }
 .panel-sub { border: 1px solid var(--cream-border, #E8DCC6); border-radius: 14px; padding: 16px; }
 .colour-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .colour-row input[type="color"] { width: 100%; height: 36px; padding: 0; border: 0; background: none; }
@@ -2584,17 +2657,127 @@ code, kbd, samp, pre,
 .menu-items { width: 100%; border-collapse: collapse; font-size: 13px; }
 .menu-items th { text-align: start; font-weight: 600; padding: 4px; }
 .menu-items td { padding: 2px; }
-.menu-items input:not([type="checkbox"]) { width: 100%; min-width: 80px; }
+/* The full :not() chain matches the base form-control rule's specificity;
+   with only :not([type="checkbox"]) its min-width:0 won, so this min-width
+   never applied and every cell collapsed to two or three letters. The table
+   scrolls inside its .scroll-x wrapper instead. */
+.menu-items input:not([type="checkbox"]):not([type="radio"]):not([type="file"]) { width: 100%; min-width: 80px; }
 .price-input { max-width: 90px; }
 .badges-cell { white-space: nowrap; }
 .badges-cell label { margin-inline-end: 6px; font-size: 12px; }
 .editor-actions { display: flex; gap: 8px; margin-top: 16px; }
 .render-options { display: grid; gap: 6px; margin: 8px 0 12px; }
 .render-options label { margin-inline-end: 12px; }
-.renders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.renders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 12px; }
 .render-card { border: 1px solid var(--cream-border, #E8DCC6); border-radius: 12px; overflow: hidden; background: #000; }
 .render-card img { width: 100%; display: block; }
 .render-ph { aspect-ratio: 16 / 9; display: grid; place-items: center; color: #fff; }
 .render-card.status-failed .render-ph { background: #5A1F1F; }
 .render-meta { display: flex; gap: 6px; align-items: center; padding: 8px; background: var(--bg-card, #fff); flex-wrap: wrap; }
 .stale-note { grid-column: 1 / -1; }
+
+/* ── Phones and touch screens ─────────────────────────────────
+   Kept together at the end so they override the desktop-sized component
+   rules above. Width queries handle layout; (pointer: coarse) handles
+   finger-sized targets, so a narrow desktop window keeps its compact UI. */
+
+/* iOS Safari zooms the page when a focused field's text is under 16px and
+   does not zoom back out. Component rules set 11–15px all over the place,
+   hence one !important floor here; the large pairing-code field keeps its own. */
+@media (pointer: coarse), (max-width: 768px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]):not(.pair-code-input),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Toasts span the screen less a gutter. At a fixed 360px max-width plus a 24px
+   inset, a long message on a 360px phone started 24px off-screen. */
+.toast { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  #toast-container {
+    inset-inline: 12px;
+    bottom: 12px;
+    max-width: none;
+  }
+  .toast { max-width: none; }
+}
+
+@media (max-width: 768px) {
+  /* Bigger nav buttons no longer fit the old 300px cap; scroll if needed. */
+  .header-row.nav-open {
+    max-height: calc(100vh - 72px);
+    max-height: calc(100dvh - 72px);
+    overflow-y: auto;
+  }
+  .walls-editor-header,
+  .panel-header,
+  .row-between { flex-wrap: wrap; gap: 8px; }
+}
+
+@media (max-width: 480px) {
+  /* Tighter wall cells so a 4-column wall still fits a 360px screen; wider
+     walls scroll inside their .scroll-x wrapper. */
+  .walls-editor-grid { gap: 4px; padding: 6px; }
+  .walls-editor-cell { padding: 4px; }
+  .walls-editor-cell .btn { padding: 6px; }
+
+  /* Category names get full-width rows; move/remove buttons share the third. */
+  .menu-cat-head { grid-template-columns: repeat(3, auto); justify-content: start; }
+  .menu-cat-head input { grid-column: 1 / -1; }
+}
+
+/* Fingertip-sized targets: 44px, Apple's minimum and WCAG 2.5.5. */
+@media (pointer: coarse) {
+  button,
+  .btn,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]) {
+    min-height: 44px;
+  }
+  button,
+  .btn { min-width: 44px; }
+
+  nav { gap: 8px; }
+  nav button { padding-block: 0; padding-inline: 14px; }
+
+  /* Links that act as buttons rather than sitting inside running text. */
+  .sub-banner-cta,
+  .card > div > a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .sub-banner-cta { justify-content: center; min-width: 44px; padding-inline: 4px; }
+  .sub-banner { padding-block: 2px; padding-inline: 16px 4px; }
+
+  /* A checkbox or radio is tapped through its label, so size the label.
+     :where() keeps this at zero specificity so labels that already have a
+     display (e.g. stacked .radio-row) keep their layout. */
+  :where(label:has(> input[type="checkbox"]), label:has(> input[type="radio"])) {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] { width: 20px; height: 20px; }
+  .dow-checkbox { min-width: 44px; margin-inline-end: 12px; }
+
+  .card-actions { gap: 8px; }
+  .card-actions button { font-size: 13px; padding: 10px 14px; }
+  /* Destructive actions go to the far end of their row instead of sitting a
+     few pixels from Preview or Edit. */
+  :is(.card-actions, .walls-actions, .schedule-card-actions, .menu-card-actions) > :is(.delete-btn, .btn-danger) {
+    margin-inline-start: auto;
+  }
+
+  /* Larger zone handles, with a 44px invisible hit ring (see .zone-handle::after). */
+  .zone-handle { width: 16px; height: 16px; }
+  .zone-handle-left   { left: -8px; }
+  .zone-handle-right  { right: -8px; }
+  .zone-handle-top    { top: -8px; }
+  .zone-handle-bottom { bottom: -8px; }
+  .zone-handle::after { inset: -14px; }
+}

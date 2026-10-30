@@ -179,7 +179,7 @@ const Menus = (() => {
         <button class="btn btn-ghost" data-cat-down title="${escAttr(Khan.t("menus.editor.move_down", "Move down"))}">↓</button>
         <button class="btn btn-ghost delete-btn" data-cat-remove>${escHtml(Khan.t("menus.editor.remove", "Remove"))}</button>
       </div>
-      <table class="menu-items">
+      <div class="scroll-x"><table class="menu-items">
         <thead><tr>
           <th>${escHtml(Khan.t("menus.editor.col.name_en", "Name (EN)"))}</th><th>${escHtml(Khan.t("menus.editor.col.name_ar", "Name (AR)"))}</th>
           <th>${escHtml(Khan.t("menus.editor.col.desc_en", "Description (EN)"))}</th><th>${escHtml(Khan.t("menus.editor.col.desc_ar", "Description (AR)"))}</th>
@@ -187,7 +187,7 @@ const Menus = (() => {
           <th>${escHtml(Khan.t("menus.editor.col.badges", "Badges"))}</th><th>${escHtml(Khan.t("menus.editor.col.available", "Available"))}</th><th></th>
         </tr></thead>
         <tbody>${c.items.map((it, ii) => itemHtml(it, ii)).join("")}</tbody>
-      </table>
+      </table></div>
       <button class="btn" data-add-item>${escHtml(Khan.t("menus.editor.add_item", "+ Item"))}</button>
     </div>`;
   }
