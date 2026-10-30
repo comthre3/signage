@@ -95,9 +95,18 @@ body {
 .hidden { display: none !important; }
 
 /* ── Pairing view ────────────────────────────────────────────── */
+/* Sized in --u, a viewport unit chosen per orientation so the whole view —
+   mascot to "Have a code from admin?" — fits any TV without scrolling, which a
+   TV cannot do: 1 --u is 1vh on a 16:9 landscape screen (the height is what
+   runs out there) and is width-bound in portrait and on narrower screens.
+   It used to be laid out in px clamps that overflowed #player (overflow:
+   hidden) at 1280x720 and even 1920x1080, cutting off the mascot and the
+   admin-code link. */
 .pairing {
+  --u: min(1vh, 0.5625vw);
   position: absolute;
   inset: 0;
+  overflow: hidden;
   background:
     radial-gradient(1200px 800px at 70% 30%, #FDF3D6 0%, transparent 60%),
     radial-gradient(900px 600px at 20% 80%, #F4B9A1 0%, transparent 55%),
@@ -107,62 +116,90 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: clamp(16px, 2vh, 32px);
-  padding: clamp(24px, 4vh, 64px);
+  gap: calc(var(--u) * 2.2);
+  padding: calc(var(--u) * 3) 4vw;
   z-index: 10;
   font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  text-align: center;
+}
+
+@media (orientation: portrait) {
+  .pairing { --u: min(0.75vh, 1.2vw); }
+}
+
+.pairing-header {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 2);
 }
 
 .pairing-brand {
   font-family: 'IBM Plex Serif', Georgia, serif;
-  font-size: clamp(28px, 3.5vh, 48px);
+  font-size: max(20px, calc(var(--u) * 5));
   font-weight: 700;
   letter-spacing: 0.5px;
   color: #3E2B4F;
+  margin: 0;
+  line-height: 1.1;
 }
 
 .pairing-intro {
-  font-size: clamp(16px, 2.2vh, 24px);
+  font-size: max(14px, calc(var(--u) * 2.6));
   color: #5D4A66;
   margin: 0;
 }
 
+.pairing-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 4);
+}
+
+@media (orientation: portrait) {
+  .pairing-row { flex-direction: column; gap: calc(var(--u) * 2.2); }
+}
+
 .pairing-code {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: clamp(72px, 14vh, 220px);
+  font-size: max(36px, calc(var(--u) * 13));
+  line-height: 1.15;
   font-weight: 700;
-  letter-spacing: clamp(6px, 1vh, 16px);
+  letter-spacing: calc(var(--u) * 1);
   color: #3E2B4F;
   background: #FFFFFF;
-  padding: clamp(12px, 2vh, 28px) clamp(24px, 4vw, 56px);
-  border-radius: 20px;
+  padding: calc(var(--u) * 2) calc(var(--u) * 4);
+  border-radius: calc(var(--u) * 2.5);
   border: 3px solid #E09478;
   box-shadow: 0 10px 30px rgba(62, 43, 79, 0.12);
+  white-space: nowrap;
 }
 
 .pairing-qr {
   background: #FFFFFF;
-  padding: clamp(12px, 1.6vh, 20px);
-  border-radius: 16px;
+  padding: calc(var(--u) * 1.6);
+  border-radius: calc(var(--u) * 2);
   border: 1px solid #E8DCC6;
   box-shadow: 0 10px 30px rgba(62, 43, 79, 0.12);
+  line-height: 0;
 }
 
 .pairing-qr img,
 .pairing-qr canvas {
   display: block;
-  width: clamp(200px, 28vh, 420px);
-  height: clamp(200px, 28vh, 420px);
+  width: max(140px, calc(var(--u) * 34));
+  height: max(140px, calc(var(--u) * 34));
   image-rendering: pixelated;
 }
 
 .pairing-steps {
-  font-size: clamp(14px, 1.8vh, 22px);
+  font-size: max(12px, calc(var(--u) * 2.3));
   color: #5D4A66;
-  max-width: 560px;
-  padding-inline-start: 24px;
-  line-height: 1.6;
+  max-width: min(92vw, calc(var(--u) * 90));
+  padding-inline-start: 1.4em;
+  line-height: 1.5;
   margin: 0;
+  text-align: start;
 }
 
 .pairing-steps strong {
@@ -171,15 +208,15 @@ body {
 }
 
 .pairing-meta {
-  font-size: clamp(12px, 1.4vh, 16px);
+  font-size: max(12px, calc(var(--u) * 1.8));
   color: #A89382;
   margin: 0;
 }
 
 /* ── Animated Khanshoof mascot on pairing view ──────────────── */
 .pairing-face {
-  width: clamp(120px, 16vh, 200px);
-  height: clamp(120px, 16vh, 200px);
+  width: max(48px, calc(var(--u) * 10));
+  height: max(48px, calc(var(--u) * 10));
   image-rendering: pixelated;
   display: block;
   animation: pairingFaceCycle 4.8s steps(1, end) infinite;
@@ -216,8 +253,8 @@ code, kbd, samp, pre,
 
 /* Pairing — "Have a code from admin?" affordance (Task 11) */
 .admin-code-affordance {
-  margin-block-start: 1.5em;
   text-align: center;
+  font-size: max(12px, calc(var(--u, 1vh) * 1.8));
 }
 .admin-code-affordance .link {
   background: none;
