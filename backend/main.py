@@ -2214,7 +2214,9 @@ def list_screens(
 ) -> list[dict]:
     oid = principal.organization_id
     user = principal.user or {}
-    if user.get("is_admin") or principal.scope != "session":
+    # Per-user visibility applies to anything acting as a user -- a session
+    # or an OAuth token -- and org-wide reads only to API keys (no user).
+    if user.get("is_admin") or principal.user is None:
         rows = query_all(
             """
             SELECT screens.*, sites.name AS site_name, playlists.name AS playlist_name
@@ -2310,7 +2312,7 @@ def update_screen(
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     user = principal.user or {}
-    if principal.scope == "session" and not user.get("is_admin"):
+    if principal.user is not None and not user.get("is_admin"):
         require_screen_access(screen_id, user)
 
     # Only what the request names is written, so a concurrent change to any
@@ -2365,7 +2367,7 @@ def list_screen_zones(
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     user = principal.user or {}
-    if not user.get("is_admin") and principal.scope == "session":
+    if principal.user is not None and not user.get("is_admin"):
         require_screen_access(screen_id, user)
     zones = get_screen_zones(screen_id)
     return {"zones": zones}

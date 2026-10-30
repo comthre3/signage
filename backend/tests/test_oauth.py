@@ -1435,3 +1435,20 @@ def test_scope_with_nothing_recognised_is_invalid(client):
         }, follow_redirects=False)
         assert r.status_code == 302, (scope, r.text)
         assert "error=invalid_scope" in r.headers["location"]
+
+
+def test_oauth_token_sees_only_the_screens_its_user_can_see(client):
+    """A token acts as its user: an editor's token must not list, read or edit
+    screens that the editor's own session cannot reach."""
+    admin_token, *_ = _signup_org(client)
+    hidden = client.post("/screens", json={"name": "admin-only"},
+                         headers=_bearer(admin_token)).json()
+    editor = _add_member(client, admin_token, "editor")
+    access = _grant(client, editor["token"])["access_token"]
+
+    listed = client.get("/screens", headers=_bearer(access)).json()
+    assert hidden["id"] not in [s["id"] for s in listed]
+    r = client.get(f"/screens/{hidden['id']}/zones", headers=_bearer(access))
+    assert r.status_code == 403, r.text
+    r = client.put(f"/screens/{hidden['id']}", json={"name": "x"}, headers=_bearer(access))
+    assert r.status_code == 403, r.text
