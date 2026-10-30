@@ -908,3 +908,126 @@ def test_authorization_code_single_use(client):
         "client_id": flow["client_id"], "code_verifier": flow["verifier"],
     })
     assert r2.status_code == 400
+
+
+# ── Token storage: indexed SHA-256, never a PBKDF2 scan ─────────────
+
+
+def _sha(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _exchange(client, flow) -> dict:
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_tokens_and_codes_are_stored_as_sha256(client):
+    flow = _full_authorize_flow(client)
+    code_row = query_one(
+        "SELECT id FROM oauth_authorization_codes WHERE code_hash = ?",
+        (_sha(flow["code"]),),
+    )
+    assert code_row is not None
+    tokens = _exchange(client, flow)
+    row = query_one(
+        "SELECT refresh_token_hash FROM oauth_tokens WHERE access_token_hash = ?",
+        (_sha(tokens["access_token"]),),
+    )
+    assert row is not None
+    assert row["refresh_token_hash"] == _sha(tokens["refresh_token"])
+
+
+def test_bearer_misses_run_no_key_derivation(client, signed_up_org, monkeypatch):
+    """Every dashboard request is a bearer that is not an API key, so it is
+    first tried as an OAuth access token. That miss -- and misses on
+    /oauth/token and /oauth/revoke, which anyone can call -- must not
+    PBKDF2-verify against every live token."""
+    import main
+    flow = _full_authorize_flow(client)
+    _exchange(client, flow)                 # at least one live token exists
+    calls = []
+    real = main.verify_password
+    monkeypatch.setattr(main, "verify_password",
+                        lambda *a: calls.append(a) or real(*a))
+
+    r = client.get("/organization",
+                   headers={"Authorization": f"Bearer {signed_up_org['token']}"})
+    assert r.status_code == 200, r.text
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token", "refresh_token": "not-a-token",
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 400
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": "not-a-code",
+        "redirect_uri": flow["redirect_uri"], "client_id": flow["client_id"],
+        "code_verifier": "v",
+    })
+    assert r.status_code == 400
+    r = client.post("/oauth/revoke", data={"token": "not-a-token"})
+    assert r.status_code == 200
+    assert calls == []
+
+
+def _make_legacy(tokens: dict) -> int:
+    """Rewrite a token row the way a pre-SHA-256 deployment stored it."""
+    from main import hash_password
+    row = query_one("SELECT id FROM oauth_tokens WHERE access_token_hash = ?",
+                    (_sha(tokens["access_token"]),))
+    execute(
+        "UPDATE oauth_tokens SET access_token_hash = ?, refresh_token_hash = ? "
+        "WHERE id = ?",
+        (hash_password(tokens["access_token"]),
+         hash_password(tokens["refresh_token"]), row["id"]),
+    )
+    return row["id"]
+
+
+def test_legacy_access_token_works_and_is_upgraded_in_place(client, monkeypatch):
+    import oauth
+    flow = _full_authorize_flow(client)
+    tokens = _exchange(client, flow)
+    row_id = _make_legacy(tokens)
+    monkeypatch.setitem(oauth._legacy_live, "access", True)
+    monkeypatch.setitem(oauth._legacy_live, "refresh", True)
+
+    r = client.get("/organization",
+                   headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    assert r.status_code == 200, r.text
+    row = query_one("SELECT access_token_hash FROM oauth_tokens WHERE id = ?",
+                    (row_id,))
+    assert row["access_token_hash"] == _sha(tokens["access_token"])
+
+    # The legacy refresh token still rotates (and the new pair is SHA-256).
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200, r.text
+    new = r.json()
+    assert query_one("SELECT id FROM oauth_tokens WHERE access_token_hash = ?",
+                     (_sha(new["access_token"]),)) is not None
+    assert query_one("SELECT revoked_at FROM oauth_tokens WHERE id = ?",
+                     (row_id,))["revoked_at"] is not None
+
+
+def test_legacy_token_can_be_revoked(client, monkeypatch):
+    import oauth
+    flow = _full_authorize_flow(client)
+    tokens = _exchange(client, flow)
+    row_id = _make_legacy(tokens)
+    monkeypatch.setitem(oauth._legacy_live, "access", True)
+    monkeypatch.setitem(oauth._legacy_live, "refresh", True)
+    r = client.post("/oauth/revoke", data={
+        "token": tokens["refresh_token"], "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200
+    assert query_one("SELECT revoked_at FROM oauth_tokens WHERE id = ?",
+                     (row_id,))["revoked_at"] is not None

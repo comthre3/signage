@@ -414,8 +414,7 @@ def authorize_decision(
         scope = pending["scope"]
 
     code = secrets.token_urlsafe(32)
-    from main import hash_password
-    code_hash = hash_password(code)
+    code_hash = _hash_token(code)
     expires = datetime.now(timezone.utc) + timedelta(minutes=10)
     execute(
         """
@@ -453,13 +452,60 @@ def _pkce_matches(verifier: str, challenge: str) -> bool:
 
 
 def _hash_token(token: str) -> str:
-    from main import hash_password
-    return hash_password(token)
+    """SHA-256 of an authorization code / access token / refresh token.
+
+    These are secrets.token_urlsafe(32) -- 256 bits from the CSPRNG -- not
+    user-chosen passwords, so a slow KDF buys nothing against guessing. What
+    it did cost: a random salt makes the stored value unsearchable, so every
+    lookup PBKDF2-verified against every live row (~82ms each), and every
+    dashboard request is tried as an OAuth token before it is tried as a
+    session. A fixed hash is looked up with one indexed equality instead.
+    Same reasoning as hash_api_key() in main.py.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _verify_token_hash(token: str, hashed: str) -> bool:
+    """PBKDF2 check, for rows written before tokens were SHA-256 indexed."""
     from main import verify_password
     return verify_password(token, hashed)
+
+
+# Rows minted before _hash_token became SHA-256 hold a PBKDF2 "salt$digest"
+# (SHA-256 hex never contains "$"). They are still honoured until they
+# expire: an access token is upgraded in place on its next use, a refresh
+# token is rotated into a SHA-256 pair. Nothing writes PBKDF2 any more, so
+# once a scan finds no live legacy row there can never be one again, and the
+# flag turns the fallback off for the life of the process -- after at most
+# an hour (access) / 90 days (refresh) a miss costs no key derivation at all.
+_legacy_live = {"access": True, "refresh": True}
+
+_TOKEN_COLUMNS = (
+    "id, client_id, organization_id, user_id, scope, "
+    "access_expires_at, refresh_expires_at, revoked_at"
+)
+
+
+def _legacy_match(kind: str, token: str,
+                  client_id: Optional[str] = None) -> Optional[dict]:
+    if not _legacy_live[kind]:
+        return None
+    hash_col = "access_token_hash" if kind == "access" else "refresh_token_hash"
+    exp_col = "access_expires_at" if kind == "access" else "refresh_expires_at"
+    rows = query_all(
+        f"SELECT {_TOKEN_COLUMNS}, {hash_col} AS stored_hash FROM oauth_tokens "
+        f"WHERE revoked_at IS NULL AND {exp_col} > now() "
+        f"AND strpos({hash_col}, '$') > 0"
+    )
+    if not rows:
+        _legacy_live[kind] = False
+        return None
+    for row in rows:
+        if client_id is not None and row["client_id"] != client_id:
+            continue
+        if _verify_token_hash(token, row["stored_hash"]):
+            return row
+    return None
 
 
 _TOKEN_NO_CACHE_HEADERS = {
@@ -513,42 +559,20 @@ def _issue_tokens(client_id: str, org_id: int, user_id: Optional[int],
 def _exchange_authorization_code(
     code: str, client_id: str, redirect_uri: str, code_verifier: str,
 ) -> JSONResponse:
-    # PBKDF2 with random salt → lookup-key is not stable. Fetch by client_id
-    # and iterate verify. Filter to live codes only so the iteration set stays
-    # tightly bounded; post-iteration checks below defend against TOCTOU.
-    candidates = query_all(
-        "SELECT id, code_hash, client_id, organization_id, user_id, scope, "
-        "       redirect_uri, code_challenge, expires_at, consumed_at "
+    # Codes live ten minutes, so there is no PBKDF2 fallback for them: a code
+    # minted before the deploy that switched to SHA-256 just fails and the
+    # client restarts the flow.
+    matching = query_one(
+        "SELECT id, client_id, organization_id, user_id, scope, "
+        "       redirect_uri, code_challenge "
         "FROM oauth_authorization_codes "
-        "WHERE client_id = ? "
-        "  AND consumed_at IS NULL "
-        "  AND expires_at > now()",
-        (client_id,),
+        "WHERE code_hash = ? AND client_id = ? "
+        "  AND consumed_at IS NULL AND expires_at > now()",
+        (_hash_token(code), client_id),
     )
-    matching = None
-    for row in candidates:
-        if _verify_token_hash(code, row["code_hash"]):
-            matching = row
-            break
     if not matching:
         return _oauth_error(400, "invalid_grant",
                             "Unknown, expired, or already-used authorization code")
-
-    if matching["consumed_at"] is not None:
-        return _oauth_error(400, "invalid_grant",
-                            "Authorization code already used")
-
-    # Expiry check
-    expires = matching["expires_at"]
-    if hasattr(expires, "isoformat"):
-        expires_dt = expires
-    else:
-        expires_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
-    if expires_dt.tzinfo is None:
-        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-    if expires_dt < datetime.now(timezone.utc):
-        return _oauth_error(400, "invalid_grant",
-                            "Authorization code expired")
 
     if matching["redirect_uri"] != redirect_uri:
         return _oauth_error(400, "invalid_grant",
@@ -558,10 +582,15 @@ def _exchange_authorization_code(
         return _oauth_error(400, "invalid_grant",
                             "PKCE verifier did not match")
 
-    execute(
-        "UPDATE oauth_authorization_codes SET consumed_at = now() WHERE id = ?",
+    # Consume atomically: of two concurrent exchanges only one updates a row.
+    consumed = execute(
+        "UPDATE oauth_authorization_codes SET consumed_at = now() "
+        "WHERE id = ? AND consumed_at IS NULL AND expires_at > now()",
         (matching["id"],),
     )
+    if consumed != 1:
+        return _oauth_error(400, "invalid_grant",
+                            "Authorization code already used")
 
     return _issue_tokens(
         client_id=matching["client_id"],
@@ -572,17 +601,13 @@ def _exchange_authorization_code(
 
 
 def _refresh_tokens(refresh_token: str, client_id: str) -> JSONResponse:
-    candidates = query_all(
-        "SELECT id, refresh_token_hash, client_id, organization_id, user_id, "
-        "       scope, refresh_expires_at, revoked_at "
-        "FROM oauth_tokens WHERE client_id = ? AND revoked_at IS NULL",
-        (client_id,),
+    matching = query_one(
+        f"SELECT {_TOKEN_COLUMNS} FROM oauth_tokens "
+        "WHERE refresh_token_hash = ? AND client_id = ? AND revoked_at IS NULL",
+        (_hash_token(refresh_token), client_id),
     )
-    matching = None
-    for row in candidates:
-        if _verify_token_hash(refresh_token, row["refresh_token_hash"]):
-            matching = row
-            break
+    if not matching:
+        matching = _legacy_match("refresh", refresh_token, client_id)
     if not matching:
         return _oauth_error(400, "invalid_grant",
                             "Unknown or revoked refresh token")
@@ -598,10 +623,16 @@ def _refresh_tokens(refresh_token: str, client_id: str) -> JSONResponse:
         return _oauth_error(400, "invalid_grant",
                             "Refresh token expired")
 
-    execute(
-        "UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
+    # Rotate atomically: a refresh token replayed concurrently yields one new
+    # pair, not two.
+    rotated = execute(
+        "UPDATE oauth_tokens SET revoked_at = now() "
+        "WHERE id = ? AND revoked_at IS NULL",
         (matching["id"],),
     )
+    if rotated != 1:
+        return _oauth_error(400, "invalid_grant",
+                            "Unknown or revoked refresh token")
     return _issue_tokens(
         client_id=matching["client_id"],
         org_id=matching["organization_id"],
@@ -645,20 +676,19 @@ def revoke(
     token_type_hint: Optional[str] = Form(None),
 ):
     """RFC 7009: revoke an access or refresh token. Always returns 200."""
-    candidates = query_all(
-        "SELECT id, access_token_hash, refresh_token_hash, revoked_at "
-        "FROM oauth_tokens WHERE revoked_at IS NULL "
-        "AND (client_id = ? OR ?::text IS NULL)",
-        (client_id, client_id),
+    hashed = _hash_token(token)
+    revoked = execute(
+        "UPDATE oauth_tokens SET revoked_at = now() "
+        "WHERE (access_token_hash = ? OR refresh_token_hash = ?) "
+        "AND revoked_at IS NULL AND (client_id = ? OR ?::text IS NULL)",
+        (hashed, hashed, client_id, client_id),
     )
-    for row in candidates:
-        if _verify_token_hash(token, row["access_token_hash"]) or \
-           _verify_token_hash(token, row["refresh_token_hash"]):
-            execute(
-                "UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
-                (row["id"],),
-            )
-            break
+    if not revoked:
+        row = (_legacy_match("access", token, client_id)
+               or _legacy_match("refresh", token, client_id))
+        if row:
+            execute("UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
+                    (row["id"],))
     return Response(status_code=200)
 
 
@@ -673,22 +703,34 @@ def lookup_oauth_access_token(token: str) -> Optional[dict]:
     # Quickly reject API keys (handled separately in get_api_authed).
     if token.startswith("khan_live_"):
         return None
-    candidates = query_all(
-        "SELECT id, access_token_hash, organization_id, user_id, scope, "
-        "       access_expires_at, revoked_at "
-        "FROM oauth_tokens "
-        "WHERE revoked_at IS NULL AND access_expires_at > now()"
+    hashed = _hash_token(token)
+    row = query_one(
+        f"SELECT {_TOKEN_COLUMNS} FROM oauth_tokens "
+        "WHERE access_token_hash = ? "
+        "  AND revoked_at IS NULL AND access_expires_at > now()",
+        (hashed,),
     )
-    for row in candidates:
-        if _verify_token_hash(token, row["access_token_hash"]):
-            try:
-                execute(
-                    "UPDATE oauth_tokens SET last_used_at = now() WHERE id = ?",
-                    (row["id"],),
-                )
-            except Exception as exc:
-                from main import logger
-                logger.warning("oauth_token_last_used_update_failed id=%s err=%s",
-                               row["id"], exc)
-            return row
-    return None
+    upgrade = False
+    if not row:
+        row = _legacy_match("access", token)
+        upgrade = row is not None
+    if not row:
+        return None
+    try:
+        if upgrade:
+            execute(
+                "UPDATE oauth_tokens SET access_token_hash = ?, "
+                "last_used_at = now() WHERE id = ?",
+                (hashed, row["id"]),
+            )
+        else:
+            execute(
+                "UPDATE oauth_tokens SET last_used_at = now() WHERE id = ?",
+                (row["id"],),
+            )
+    except Exception as exc:
+        from main import logger
+        logger.warning("oauth_token_last_used_update_failed id=%s err=%s",
+                       row["id"], exc)
+    row.pop("stored_hash", None)
+    return row
