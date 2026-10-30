@@ -40,6 +40,29 @@ def connect() -> psycopg.Connection:
     raise RuntimeError(f"Could not connect to Postgres: {last_err}")
 
 
+# Connection budget. connect() keeps one connection per thread for that
+# thread's life, so a worker can hold as many connections as it has threads
+# that touch the database: anyio's threadpool, which runs every sync route and
+# dependency, plus the event-loop thread (startup, the reminder tick, async
+# routes calling these helpers directly). Past Postgres's max_connections,
+# connect() retries for 30s and the request fails, so the pool size is set
+# here rather than left to anyio's default (also 40 today, so concurrency is
+# unchanged -- this pins the number the budget is computed from):
+#
+#   per worker:  THREADPOOL_SIZE 40 + 1 event-loop thread   =  41
+#   backend:     WEB_CONCURRENCY 4 x 41                     = 164
+#
+# Postgres's default max_connections is 100. docker-compose.yml raises it from
+# these same numbers; change either one only together with it.
+THREADPOOL_SIZE = int(os.getenv("THREADPOOL_SIZE", "40"))
+
+
+async def bound_threadpool() -> None:
+    """Startup hook: cap this worker's threadpool at THREADPOOL_SIZE."""
+    import anyio.to_thread
+    anyio.to_thread.current_default_thread_limiter().total_tokens = THREADPOOL_SIZE
+
+
 # SQL strings here are static literals, so the same handful of strings are
 # translated over and over -- this ran a per-character Python loop on every
 # query. Caching makes a repeat call ~138x cheaper. Bounded so that any

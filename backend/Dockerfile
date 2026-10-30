@@ -19,7 +19,9 @@ EXPOSE 8000
 
 # --workers: rate-limit and reminder state is shared (Redis / Postgres advisory
 #   lock + ON CONFLICT claims), so workers no longer multiply either. Override
-#   with WEB_CONCURRENCY; 1 restores single-process behavior.
+#   with WEB_CONCURRENCY; 1 restores single-process behavior. Each worker can
+#   hold THREADPOOL_SIZE + 1 Postgres connections: raising it means raising
+#   max_connections in docker-compose.yml (budget in db.py).
 # --proxy-headers + --forwarded-allow-ips: the API sits behind the Cloudflare
 #   tunnel, so without these request.client.host is the tunnel's address for
 #   every caller. Scoped to the tunnel's own peer address rather than "*":

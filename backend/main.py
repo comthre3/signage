@@ -124,6 +124,10 @@ limiter = ratelimit.build_limiter(_RATE_LIMITS_ENABLED)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Threads are Postgres connections here; see the budget in db.py.
+from db import bound_threadpool
+app.add_event_handler("startup", bound_threadpool)
+
 from social_auth import attach_social_auth
 attach_social_auth(app)
 
