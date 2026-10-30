@@ -160,3 +160,54 @@ def test_switching_a_mirrored_wall_keeps_the_users_own_playlist(client):
         "mode": "spanned", "canvas_width_px": 3840, "canvas_height_px": 2160})
     assert r.status_code == 200, r.text
     assert query_one("SELECT id FROM playlists WHERE id = ?", (playlist["id"],))
+
+
+def test_a_wall_created_spanned_cannot_smuggle_in_another_orgs_playlist(client):
+    """create_wall only checked mirrored_playlist_id for mirrored walls, but stored it for any.
+
+    A spanned wall carrying another org's id, then switched to mirrored, played
+    that org's playlist: the PATCH body itself named no foreign id at all.
+    """
+    a, b = _two_orgs(client)
+    b_playlist = _make(client, b, "/playlists", {"name": "B private"})
+    r = client.post("/walls", headers=_bearer(a["token"]), json={
+        "name": "W", "mode": "spanned", "rows": 1, "cols": 2,
+        "canvas_width_px": 1920, "canvas_height_px": 1080,
+        "mirrored_mode": "same_playlist", "mirrored_playlist_id": b_playlist["id"]})
+    if r.status_code in (200, 201):
+        wall = r.json()
+        client.patch(f"/walls/{wall['id']}", json={"mode": "mirrored"},
+                     headers=_bearer(a["token"]))
+        row = query_one("SELECT mirrored_playlist_id FROM walls WHERE id = ?", (wall["id"],))
+        assert row["mirrored_playlist_id"] != b_playlist["id"]
+    else:
+        assert r.status_code == 404, r.text
+
+
+def test_a_wall_whose_playlist_was_deleted_can_still_be_renamed(client):
+    """mirrored_playlist_id is ON DELETE SET NULL; unrelated edits must not be refused."""
+    a, _ = _two_orgs(client)
+    playlist = _make(client, a, "/playlists", {"name": "Soon gone"})
+    wall = _mirrored_wall(client, a, playlist["id"])
+    r = client.delete(f"/playlists/{playlist['id']}", headers=_bearer(a["token"]))
+    assert r.status_code in (200, 204), r.text
+    r = client.patch(f"/walls/{wall['id']}", json={"name": "Renamed"}, headers=_bearer(a["token"]))
+    assert r.status_code == 200, r.text
+
+
+def _member(client, org, role):
+    suffix = uuid.uuid4().hex[:8]
+    creds = {"username": f"{role}-{suffix}@example.com", "password": "Khanshoof2026Pass"}
+    r = client.post("/users", headers=_bearer(org["token"]), json={**creds, "role": role})
+    assert r.status_code in (200, 201), r.text
+    return client.post("/auth/login", json=creds).json()["token"]
+
+
+def test_an_editor_cannot_change_a_screen_outside_their_access(client):
+    """Editors only see screens they own or reach through a group; writes must agree."""
+    a, _ = _two_orgs(client)
+    screen = _make(client, a, "/screens", {"name": "Admin's screen"})
+    editor = _member(client, a, "editor")
+    r = client.put(f"/screens/{screen['id']}", json={"name": "hijacked"}, headers=_bearer(editor))
+    assert r.status_code == 403, r.text
+    assert query_one("SELECT name FROM screens WHERE id = ?", (screen["id"],))["name"] == "Admin's screen"

@@ -2059,7 +2059,7 @@ def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict 
     )
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if payload.password:
+    if payload.password is not None:
         validate_password(payload.password)
         execute(
             "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
@@ -2288,38 +2288,30 @@ def update_screen(
     )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
+    user = principal.user or {}
+    if principal.scope == "session" and not user.get("is_admin"):
+        require_screen_access(screen_id, user)
 
-    # The references are nullable, so model_fields_set separates an explicit
-    # null ("No playlist", "Unassigned" -- clear it) from a field the caller
-    # left out (keep it). Each is checked against the caller's org first.
-    refs = {}
+    # Only what the request names is written, so a concurrent change to any
+    # other column is not overwritten from this request's earlier read. The
+    # references are nullable: model_fields_set separates an explicit null
+    # ("No playlist", "Unassigned" -- clear it) from a field left out (keep
+    # it), and each is checked against the caller's org first.
+    changes = {}
+    if payload.name:
+        changes["name"] = payload.name
+    for column in ("location", "resolution", "orientation"):
+        if getattr(payload, column) is not None:
+            changes[column] = getattr(payload, column)
     for column, table in (("site_id", "sites"), ("playlist_id", "playlists"),
                           ("owner_user_id", "users"), ("schedule_id", "schedules")):
         if column in payload.model_fields_set:
-            refs[column] = getattr(payload, column)
-            require_org_rows(table, [refs[column]], oid)
-        else:
-            refs[column] = screen[column]
+            changes[column] = getattr(payload, column)
+            require_org_rows(table, [changes[column]], oid)
 
-    execute(
-        """
-        UPDATE screens
-        SET name = ?, location = ?, resolution = ?, orientation = ?,
-            site_id = ?, playlist_id = ?, owner_user_id = ?, schedule_id = ?
-        WHERE id = ?
-        """,
-        (
-            payload.name or screen["name"],
-            payload.location if payload.location is not None else screen["location"],
-            payload.resolution if payload.resolution is not None else screen["resolution"],
-            payload.orientation if payload.orientation is not None else screen["orientation"],
-            refs["site_id"],
-            refs["playlist_id"],
-            refs["owner_user_id"],
-            refs["schedule_id"],
-            screen_id,
-        ),
-    )
+    if changes:
+        sets = ", ".join(f"{column} = ?" for column in changes)
+        execute(f"UPDATE screens SET {sets} WHERE id = ?", (*changes.values(), screen_id))
 
     return sanitize_screen(query_one("SELECT * FROM screens WHERE id = ?", (screen_id,)))
 
@@ -3351,6 +3343,10 @@ def _validate_spanned_fields(payload: WallCreate) -> None:
 def create_wall(request: Request, payload: WallCreate,
                 user: dict = Depends(require_roles("admin", "editor")),
                 _sub: dict = Depends(require_active_subscription)) -> dict:
+    # Only the current mode's fields are stored. A spanned wall used to keep
+    # whatever mirrored_* it was sent, unchecked, and switching it to mirrored
+    # later played that playlist -- another organization's, if so named.
+    mirrored_mode = mirrored_playlist_id = spanned_playlist_id = None
     if payload.mode == "spanned":
         _validate_spanned_fields(payload)
     elif payload.mode == "mirrored":
@@ -3360,17 +3356,13 @@ def create_wall(request: Request, payload: WallCreate,
         if payload.mirrored_mode == "same_playlist" and not payload.mirrored_playlist_id:
             raise http_error(422, "wall.mirrored_playlist_required",
                              "Same-playlist mirrored walls need a playlist.")
-        if payload.mirrored_playlist_id is not None:
-            own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
-                            (payload.mirrored_playlist_id, org_id(user)))
-            if not own:
-                raise http_error(404, "playlist.not_found", "Playlist not found")
+        require_org_rows("playlists", [payload.mirrored_playlist_id], org_id(user))
+        mirrored_mode, mirrored_playlist_id = payload.mirrored_mode, payload.mirrored_playlist_id
 
     now = utc_now_iso()
 
     # For spanned walls, auto-create the wall_canvas playlist BEFORE the wall row,
     # so we can FK the wall to it atomically.
-    spanned_playlist_id = payload.spanned_playlist_id
     if payload.mode == "spanned":
         spanned_playlist_id = execute(
             "INSERT INTO playlists (organization_id, name, kind, created_at) "
@@ -3391,7 +3383,7 @@ def create_wall(request: Request, payload: WallCreate,
         (org_id(user), payload.name, payload.mode, payload.rows, payload.cols,
          payload.canvas_width_px, payload.canvas_height_px, bezel_enabled,
          payload.bezel_h_pct, payload.bezel_v_pct,
-         spanned_playlist_id, payload.mirrored_mode, payload.mirrored_playlist_id,
+         spanned_playlist_id, mirrored_mode, mirrored_playlist_id,
          now, now),
     )
     for r in range(payload.rows):
@@ -3452,11 +3444,22 @@ def patch_wall(wall_id: int, payload: WallUpdate,
     if mode_change and wall["mode"] == "mirrored":
         fields["mirrored_playlist_id"] = None
         fields["mirrored_mode"] = None
+    elif mode_change:
+        # Entering mirrored: its settings come from this request alone, never
+        # from values left on the row while it was spanned.
+        fields.setdefault("mirrored_mode", None)
+        fields.setdefault("mirrored_playlist_id", None)
     after = {**wall, **fields}
-    if (after["mode"] == "mirrored" and after.get("mirrored_mode") == "same_playlist"
-            and not after.get("mirrored_playlist_id")):
-        raise http_error(422, "wall.mirrored_playlist_required",
-                         "Same-playlist mirrored walls need a playlist.")
+    # Checked only when this request touches the mirrored setup: the playlist
+    # is ON DELETE SET NULL, and a wall whose playlist was deleted must still
+    # accept a rename or a bezel change.
+    if after["mode"] == "mirrored" and {"mode", "mirrored_mode", "mirrored_playlist_id"} & set(fields):
+        if not after.get("mirrored_mode"):
+            raise http_error(422, "wall.mirrored_mode_required",
+                             "Mirrored walls need a sub-mode (same_playlist or synced_rotation).")
+        if after["mirrored_mode"] == "same_playlist" and not after.get("mirrored_playlist_id"):
+            raise http_error(422, "wall.mirrored_playlist_required",
+                             "Same-playlist mirrored walls need a playlist.")
 
     if mode_change:
         if wall["mode"] == "spanned" and wall.get("spanned_playlist_id"):

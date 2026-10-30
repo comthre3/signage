@@ -224,7 +224,7 @@ def test_signup_rejects_password_too_short(client, unique_business):
     assert r.json()["detail"]["code"] == "password_too_short"
 
 
-@pytest.mark.parametrize("password", ["short", "Aa1aaaaaaa"])
+@pytest.mark.parametrize("password", ["", "short", "Aa1aaaaaaa"])
 def test_admin_created_user_short_password_gets_the_policy_error(client, signed_up_org, password):
     """Every too-short password gets the structured code the dashboard localizes.
 

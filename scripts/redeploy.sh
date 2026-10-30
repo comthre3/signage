@@ -147,8 +147,8 @@ adminpw="$(envget ADMIN_PASSWORD)"
 ADMIN_PW_SHORT=0
 if [ -n "$adminpw" ] && [ "${#adminpw}" -lt 12 ]; then
   ADMIN_PW_SHORT=1
-  warn "ADMIN_PASSWORD is ${#adminpw} chars (minimum 12). Harmless for an existing
-        database, but a FRESH deployment would crash while seeding the first admin."
+  warn "ADMIN_PASSWORD is ${#adminpw} chars (minimum 12). The backend ignores it, so
+        a fresh deployment seeds no admin from it and offers browser setup instead."
 else
   ok "ADMIN_PASSWORD length acceptable"
 fi
@@ -303,16 +303,17 @@ else
   warn "could not determine the docker gateway; leaving FORWARDED_ALLOW_IPS as-is"
 fi
 
-# Now that Postgres is reachable, settle the ADMIN_PASSWORD question: only a
-# database with no users will run the bootstrap that rejects a short password.
+# Now that Postgres is reachable, say what a short ADMIN_PASSWORD means here.
+# The backend logs and skips a password the policy refuses (it used to crash),
+# so this is advice, not a reason to stop. An empty answer is a fresh database
+# whose users table does not exist yet.
 if [ "$ADMIN_PW_SHORT" -eq 1 ]; then
   users="$($COMPOSE exec -T postgres psql -U sawwii -d sawwii -tAc \
            "SELECT count(*) FROM users" 2>/dev/null | tr -d '[:space:]' || echo "")"
   if [ -z "$users" ] || [ "$users" = "0" ]; then
-    fail "ADMIN_PASSWORD is too short and this database has no users yet, so the
-          backend will crash seeding the first admin. Set a password of at least
-          12 characters in .env and re-run."
-    die "refusing to deploy into a guaranteed crash loop"
+    warn "ADMIN_PASSWORD is too short to seed the first admin, so none will be
+          seeded: create one in the browser with the setup token from
+          'docker compose logs backend' (or data/setup-token.txt)."
   else
     ok "short ADMIN_PASSWORD is inert here ($users existing users; bootstrap will not run)"
   fi
