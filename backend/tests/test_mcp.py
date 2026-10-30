@@ -634,3 +634,40 @@ def test_full_e2e_oauth_then_mcp_tool_call(mcp_client):
                           bearer=access_token)
     playlists = _result_data(body)
     assert any(p["id"] == created["id"] for p in playlists)
+
+
+# ── khanshoof_get_screen ──────────────────────────────────────────────
+
+
+def test_get_screen_returns_the_screen(mcp_client):
+    """There is no GET /screens/{id}; the tool used to call it and 404/405
+    on every screen."""
+    flow = _full_authorize_flow(mcp_client)
+    r = mcp_client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": flow["code"],
+        "redirect_uri": flow["redirect_uri"], "client_id": flow["client_id"],
+        "code_verifier": flow["verifier"],
+    })
+    access = r.json()["access_token"]
+    r = mcp_client.post("/screens", json={"name": "Lobby TV"},
+                        headers={"Authorization": f"Bearer {flow['session_token']}"})
+    assert r.status_code == 200, r.text
+    screen_id = r.json()["id"]
+
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_screen",
+                          args={"screen_id": screen_id}, bearer=access)
+    screen = _result_data(body)
+    assert screen["id"] == screen_id
+    assert screen["name"] == "Lobby TV"
+    assert "playlist_id" in screen
+    assert "token" not in screen          # same sanitizing as list_screens
+
+
+def test_get_screen_unknown_id_is_not_found(mcp_client):
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_screen",
+                          args={"screen_id": 987654321}, bearer=access_token)
+    r = body.get("result") or {}
+    assert r.get("isError") is True or "error" in body, body
+    text = json.dumps(body).lower()
+    assert "not found" in text, body

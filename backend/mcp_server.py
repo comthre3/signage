@@ -194,7 +194,17 @@ def attach_mcp(app) -> None:
     @mcp.tool()
     async def khanshoof_get_screen(ctx: Context, screen_id: int) -> dict:
         """Get details for a single screen by id, including its current playlist."""
-        return await _dispatch(app, ctx, "GET", f"/screens/{screen_id}")
+        # There is no GET /screens/{id}; the list carries the same fields
+        # (site_name, playlist_name included) under the same access rules.
+        screens = await _dispatch(app, ctx, "GET", "/screens")
+        for screen in screens or []:
+            if screen.get("id") == screen_id:
+                return screen
+        raise McpError(ErrorData(
+            code=_APP_ERROR,
+            message=f"Screen not found: {screen_id}",
+            data={"http_status": 404, "path": f"/screens/{screen_id}"},
+        ))
 
     @mcp.tool()
     async def khanshoof_get_screen_zones(ctx: Context, screen_id: int) -> dict:
