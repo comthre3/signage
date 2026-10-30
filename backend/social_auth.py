@@ -216,10 +216,12 @@ async def verify_google_id_token(id_token: str, audience: str) -> dict:
 
 async def verify_apple_id_token(id_token: str, audience: str) -> dict:
     # Apple always sets email_verified=true (they own the email)
+    # Apple signs ID tokens with the RSA keys in its JWKS. ES256 is only for
+    # the client_secret JWT we sign with our own .p8 key.
     return await _verify_id_token(
         id_token,
         jwks_url="https://appleid.apple.com/auth/keys",
-        algorithm="ES256",
+        algorithm="RS256",
         audience=audience,
         issuer="https://appleid.apple.com",
     )

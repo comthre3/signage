@@ -119,35 +119,43 @@ def google_test_keypair():
 
 @pytest.fixture(scope="session")
 def apple_test_keypair(tmp_path_factory):
-    """Generate an EC P-256 keypair for Apple signing + write .p8 to disk."""
-    priv = ec.generate_private_key(ec.SECP256R1())
+    """Two keys, as with the real Apple: our EC P-256 .p8 (written to disk)
+    signs the client_secret JWT, and Apple's own RSA key -- published in
+    its JWKS, like https://appleid.apple.com/auth/keys -- signs ID tokens
+    with RS256."""
+    p8 = ec.generate_private_key(ec.SECP256R1())
+    p8_path = tmp_path_factory.mktemp("apple") / "key.p8"
+    p8_path.write_bytes(p8.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+
+    priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     priv_pem = priv.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    p8_path = tmp_path_factory.mktemp("apple") / "key.p8"
-    p8_path.write_bytes(priv_pem)
     pub = priv.public_key().public_numbers()
 
-    def _b64url_uint(n: int, size: int) -> str:
-        b = n.to_bytes(size, "big")
+    def _b64url_uint(n: int) -> str:
+        b = n.to_bytes((n.bit_length() + 7) // 8, "big")
         return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
     jwks = {"keys": [{
-        "kty": "EC",
-        "kid": "apple-test-kid",
+        "kty": "RSA",
+        "kid": "apple-idtoken-test-kid",
         "use": "sig",
-        "alg": "ES256",
-        "crv": "P-256",
-        "x": _b64url_uint(pub.x, 32),
-        "y": _b64url_uint(pub.y, 32),
+        "alg": "RS256",
+        "n": _b64url_uint(pub.n),
+        "e": _b64url_uint(pub.e),
     }]}
     return {
         "priv_pem": priv_pem,
         "p8_path": str(p8_path),
         "jwks": jwks,
-        "kid": "apple-test-kid",
+        "kid": "apple-idtoken-test-kid",
     }
 
 
@@ -210,7 +218,7 @@ def _sign_apple_id_token(apple_test_keypair, *, sub: str, email: str,
         "exp": int(time.time()) + exp_delta,
     }
     return jwt.encode(payload, apple_test_keypair["priv_pem"],
-                      algorithm="ES256",
+                      algorithm="RS256",
                       headers={"kid": apple_test_keypair["kid"]})
 
 
@@ -733,6 +741,22 @@ def test_apple_start_redirects_with_state_cookie(client, apple_env):
     assert loc.startswith("https://appleid.apple.com/auth/authorize?")
     assert "client_id=com.test.khanshoof" in loc
     assert "response_mode=form_post" in loc
+
+
+def test_verify_apple_id_token_accepts_rs256(apple_env, respx_mock):
+    """Apple signs ID tokens with RS256 (its JWKS holds RSA keys)."""
+    import asyncio
+    import respx
+    respx_mock.get("https://appleid.apple.com/auth/keys").mock(
+        return_value=respx.MockResponse(200, json=apple_env["jwks"])
+    )
+    id_token = _sign_apple_id_token(apple_env, sub="a-rs256",
+                                    email="rs256@privaterelay.appleid.com")
+    assert jwt.get_unverified_header(id_token)["alg"] == "RS256"
+    from social_auth import verify_apple_id_token, _clear_jwks_cache
+    _clear_jwks_cache()
+    payload = asyncio.run(verify_apple_id_token(id_token, "com.test.khanshoof"))
+    assert payload["sub"] == "a-rs256"
 
 
 def test_apple_callback_post_form_new_user(client, apple_env, respx_mock):
