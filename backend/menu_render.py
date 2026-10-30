@@ -100,7 +100,9 @@ def build_html(tree: dict, template_id: str, kind: str, language: str, aspect: s
         if language == "ar":
             return ar or en
         if language == "bi" and ar and ar != en:
-            return Markup(f"{escape(en or ar)}<span class=\"ar\">{escape(ar)}</span>")
+            # en may be empty (optional taglines/descriptions): the Arabic is
+            # then printed once, still in its .ar span for the RTL styling.
+            return Markup(f"{escape(en)}<span class=\"ar\">{escape(ar)}</span>")
         return en or ar
 
     def money(price) -> str:

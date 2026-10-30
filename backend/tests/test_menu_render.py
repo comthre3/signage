@@ -40,6 +40,36 @@ def test_board_html_escapes_and_localises():
     assert "Classics" in html_bi and "الكلاسيكية" in html_bi
 
 
+def test_bilingual_prints_each_language_once():
+    import copy
+    from menu_render import build_html
+    tree = copy.deepcopy(TREE)
+    tree["brand"]["tagline_en"] = ""                       # English optional, Arabic given
+    item = tree["categories"][0]["items"][0]
+    item["description_en"], item["description_ar"] = None, "عجينة مخمرة ٤٨ ساعة"
+    for kind, kw in (("board", {}), ("promo", {"item_id": 100})):
+        html = build_html(tree, "dark-classic", kind, "bi", "16:9", **kw)
+        assert html.count("عجينة مخمرة ٤٨ ساعة") == 1, kind
+        # Arabic-only text keeps the .ar span, which is what sets direction: rtl
+        assert '<span class="ar">عجينة مخمرة ٤٨ ساعة</span>' in html, kind
+    html = build_html(tree, "dark-classic", "board", "bi", "16:9")
+    assert html.count("فرن حطب · السالمية") == 1
+    assert html.count("Classics") == 1 and html.count("الكلاسيكية") == 1
+
+
+def test_bilingual_escapes_both_languages():
+    import copy
+    from menu_render import build_html
+    tree = copy.deepcopy(TREE)
+    item = tree["categories"][0]["items"][0]
+    item["name_ar"] = "<img src=x onerror=alert(1)>"
+    item["description_ar"] = "<b>حار</b>"                 # no English: the Arabic-only path
+    html = build_html(tree, "dark-classic", "board", "bi", "16:9")
+    assert "<script>x" not in html and "<img src=x" not in html and "<b>" not in html
+    assert "&lt;script&gt;" in html and "&lt;img src=x onerror=alert(1)&gt;" in html
+    assert "&lt;b&gt;حار&lt;/b&gt;" in html
+
+
 def test_category_and_promo_kinds():
     from menu_render import build_html, featured_items
     assert [i["id"] for i in featured_items(TREE)] == [100]
