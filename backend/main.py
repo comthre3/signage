@@ -22,7 +22,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPExcepti
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from billing import create_knet_request
@@ -118,20 +118,9 @@ app = FastAPI(
 _RATE_LIMITS_ENABLED = os.getenv("RATE_LIMITS_ENABLED", "1").lower() in ("1", "true", "yes")
 
 # Counters live in Redis so every uvicorn worker shares one budget; without it
-# an advertised "10/minute" would be 10 per worker. storage_uri() returns None
-# when Redis is unreachable, which leaves slowapi on per-process memory -- the
-# pre-Redis behavior, rather than an outage or no limit at all.
-# The key is ratelimit.client_ip, NOT get_remote_address: behind the tunnel
-# every request shares one TCP peer, so get_remote_address made these limits a
-# single global bucket instead of per-caller.
-_limiter_storage = ratelimit.storage_uri() if _RATE_LIMITS_ENABLED else None
-limiter = Limiter(
-    key_func=ratelimit.client_ip,
-    enabled=_RATE_LIMITS_ENABLED,
-    storage_uri=_limiter_storage,
-)
-if _RATE_LIMITS_ENABLED and _limiter_storage is None:
-    logger.warning("rate_limiter_using_in_process_storage redis_unavailable=1")
+# an advertised "10/minute" would be 10 per worker. How the limiter keys and
+# degrades when Redis is unreachable is in ratelimit.build_limiter.
+limiter = ratelimit.build_limiter(_RATE_LIMITS_ENABLED)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 

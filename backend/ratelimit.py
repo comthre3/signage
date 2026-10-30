@@ -28,6 +28,9 @@ import threading
 import time
 from collections import defaultdict
 
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+
 logger = logging.getLogger("khanshoof.ratelimit")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -42,12 +45,17 @@ _redis_unhealthy_until = 0.0
 _redis_lock = threading.Lock()
 
 
+# Both Redis clients -- ours and slowapi's -- get these. Without them redis-py
+# waits forever on a Redis that accepts connections but never answers, which
+# holds the worker thread instead of falling back.
+_REDIS_TIMEOUTS = {"socket_connect_timeout": 0.25, "socket_timeout": 0.25}
+
+
 def _connect():
     import redis  # imported lazily so the module is importable without redis
     return redis.Redis.from_url(
         REDIS_URL,
-        socket_connect_timeout=0.25,
-        socket_timeout=0.25,
+        **_REDIS_TIMEOUTS,
         health_check_interval=30,
         decode_responses=True,
     )
@@ -82,17 +90,50 @@ def _mark_unhealthy(exc):
     logger.warning("redis_unavailable_falling_back err=%s", exc)
 
 
-def storage_uri() -> str | None:
-    """Redis URI for slowapi, or None to let it use in-process memory."""
-    client = get_redis()
-    if client is None:
-        return None
-    try:
-        client.ping()
-        return REDIS_URL
-    except Exception as exc:
-        _mark_unhealthy(exc)
-        return None
+class _FailoverLimiter(Limiter):
+    """slowapi's switch to memory is one flag shared by the worker's threads,
+    and only a request that finds it unset is retried in memory. Requests
+    already in flight on Redis when it dies find it set by whichever failed
+    first, and slowapi re-raises theirs. Retry those in memory as well.
+
+    (slowapi's swallow_errors is no help: on a decorated route it skips setting
+    request.state.view_rate_limit, which the decorator then reads -- a 500.)
+    """
+
+    def _check_request_limit(self, request, endpoint_func, in_middleware=True):
+        try:
+            super()._check_request_limit(request, endpoint_func, in_middleware)
+        except RateLimitExceeded:
+            raise
+        except Exception:
+            if not self._storage_dead:
+                raise
+            super()._check_request_limit(request, endpoint_func, in_middleware)
+
+
+def build_limiter(enabled: bool) -> Limiter:
+    """The slowapi Limiter behind the @limiter.limit routes (login, signup,
+    pairing).
+
+    slowapi re-raises storage errors by default, so a Redis that died after
+    startup turned every one of those routes into a 500. With
+    in_memory_fallback_enabled it instead switches to per-process memory with
+    the same limits, and probes Redis with backoff (1s, doubling to 32s) to
+    switch back once Redis recovers. Redis is given as the storage even when
+    it is down at boot, so a worker started during an outage still returns to
+    the shared budget.
+
+    The key is client_ip, NOT get_remote_address: behind the tunnel every
+    request shares one TCP peer, so get_remote_address made these limits a
+    single global bucket instead of per-caller.
+    """
+    return _FailoverLimiter(
+        key_func=client_ip,
+        enabled=enabled,
+        storage_uri=REDIS_URL if enabled else None,
+        storage_options=dict(_REDIS_TIMEOUTS) if enabled else {},
+        in_memory_fallback_enabled=True,
+    )
 
 
 def client_ip(request) -> str:
