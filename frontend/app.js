@@ -2098,7 +2098,7 @@ async function showPairView(initialCode) {
   codeInput.value    = normalizePairCode(initialCode);
   newNameInput.value = "";
   newNameInput.classList.add("hidden");
-  existingSel.innerHTML = '<option value="">— Pick a screen —</option>';
+  existingSel.innerHTML = `<option value="">${escHtml(Khan.t("pair.pick_screen", "— Pick a screen —"))}</option>`;
 
   let screens = [];
   try {
@@ -2112,7 +2112,7 @@ async function showPairView(initialCode) {
   for (const s of screens) {
     const opt = document.createElement("option");
     opt.value = String(s.id);
-    opt.textContent = s.name || `Screen #${s.id}`;
+    opt.textContent = s.name || Khan.t("pair.screen_n", "Screen #{id}").replace("{id}", s.id);
     existingSel.appendChild(opt);
   }
 
@@ -2263,33 +2263,58 @@ function showPairError(message) {
   el.classList.remove("hidden");
 }
 
+// POST /screens/claim answers with plain-string details, so the status code
+// picks the message and the text only separates cases sharing a status
+// (both 404s; the expired and already-bound 400s -- the backend's wording is
+// "already bound to another display").
 function mapPairErrorMessage(err) {
-  const detail = (err && err.data && typeof err.data.detail === "string")
-    ? err.data.detail
-    : (err?.message || "");
+  const detail = (err && err.data && typeof err.data.detail === "string") ? err.data.detail : "";
   const status = err?.status;
+  if (!status) {
+    return Khan.t("pair.error.network", "Can't reach the server. Please try again.");
+  }
   if (status === 404 && /pairing code/i.test(detail)) {
-    return "That code isn't recognised. Check the TV screen and try again.";
+    return Khan.t("pair.error.unknown_code", "That code isn't recognised. Check the TV screen and try again.");
+  }
+  if (status === 404) {
+    return Khan.t("pair.error.screen_missing", "That screen no longer exists. Pick another one.");
   }
   if (status === 400 && /expired/i.test(detail)) {
-    return "Code expired. Refresh the TV to get a new one.";
+    return Khan.t("pair.error.expired", "Code expired. Refresh the TV to get a new one.");
+  }
+  if (status === 400 && /already bound|another display|different screen/i.test(detail)) {
+    return Khan.t("pair.error.bound_elsewhere", "This code belongs to a different display. Refresh the TV to get a new one.");
   }
   if (status === 409) {
-    return "That code's been used. Refresh the TV to get a new one.";
-  }
-  if (status === 400 && /bound to a different screen/i.test(detail)) {
-    return "This code belongs to a different display. Refresh the TV to get a new one.";
+    return Khan.t("pair.error.used", "That code's been used. Refresh the TV to get a new one.");
   }
   if (status === 402) {
-    return "You've hit your plan's screen limit. Upgrade to add more.";
+    // plan_limit or an expired subscription: both arrive already localized.
+    return err.message;
   }
   if (status === 403) {
-    return "Your account doesn't have permission to pair displays.";
+    return Khan.t("pair.error.forbidden", "Your account doesn't have permission to pair displays.");
   }
-  if (!status) {
-    return "Can't reach server. Please try again.";
+  if (status === 422) {
+    return Khan.t("pair.error.bad_code", "Enter the full code shown on the TV.");
   }
-  return "Something went wrong — please try again.";
+  return (err.isApiError && err.message) || Khan.t("error.generic", "Something went wrong. Please try again.");
+}
+
+/** Ask the public endpoint the TV itself polls whether `code` can still be
+ *  claimed, so an expired or unknown code fails before a new screen is
+ *  created for it. Only a definite "no" counts; a rate limit or network
+ *  hiccup falls through to the claim, which has the final word. */
+async function pairCodeRejection(code) {
+  let res;
+  try { res = await fetch(`${API_BASE}/screens/poll/${encodeURIComponent(code)}`); }
+  catch (_) { return null; }
+  if (res.status === 404) return { status: 404, data: { detail: "Unknown pairing code" } };
+  if (!res.ok) return null;
+  const body = await res.json().catch(() => null);
+  if (body?.status === "expired") return { status: 400, data: { detail: "Pairing code expired." } };
+  if (body?.status === "paired") return { status: 400, data: { detail: "already bound to another display" } };
+  return null;
 }
 
 async function onPairSubmit(e) {
@@ -2300,22 +2325,27 @@ async function onPairSubmit(e) {
   const target = document.querySelector('input[name="pair-target"]:checked')?.value;
 
   await withLoading(btn, async () => {
+    let createdScreen = null;
     try {
       let screenId = null;
       let screenName = "";
 
       if (target === "new") {
+        const rejection = await pairCodeRejection(code);
+        if (rejection) throw Object.assign(new Error(""), rejection, { isApiError: true });
         const name = document.getElementById("pair-new-name").value.trim();
         const screen = await api("/screens", {
           method: "POST",
           body: JSON.stringify({ name }),
         });
+        createdScreen = screen;
         screenId = screen.id;
         screenName = screen.name || name;
       } else {
         const sel = document.getElementById("pair-existing-select");
         screenId = Number(sel.value);
-        screenName = sel.options[sel.selectedIndex]?.textContent || `Screen #${screenId}`;
+        screenName = sel.options[sel.selectedIndex]?.textContent
+          || Khan.t("pair.screen_n", "Screen #{id}").replace("{id}", screenId);
       }
 
       await api("/screens/claim", {
@@ -2325,9 +2355,25 @@ async function onPairSubmit(e) {
 
       document.getElementById("pair-success-name").textContent = screenName;
       setPairState("success");
+      if (createdScreen) loadOrganization();   // plan card usage
     } catch (err) {
       console.error(err);
-      showPairError(mapPairErrorMessage(err));
+      let message = mapPairErrorMessage(err);
+      if (createdScreen) {
+        // The claim failed after we created a screen for it. Left in place it
+        // is an unpaired screen counting against the plan's limit.
+        try {
+          await api(`/screens/${createdScreen.id}`, { method: "DELETE" });
+        } catch (cleanupErr) {
+          // Deleting screens is admin-only; an editor can create one but not
+          // remove it, so say what was left behind.
+          console.warn("could not remove the screen created for a failed pairing", cleanupErr);
+          message += " " + Khan.t("pair.error.orphan_left",
+            "A screen named \"{name}\" was created but couldn't be removed; an admin can delete it under Screens.")
+            .replace("{name}", createdScreen.name || "");
+        }
+      }
+      showPairError(message);
     }
   });
 }
