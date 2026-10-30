@@ -22,6 +22,9 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPExcepti
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
+from starlette.responses import FileResponse, StreamingResponse
+import anyio
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -165,8 +168,60 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+class RangedStaticFiles(StaticFiles):
+    """StaticFiles that also answers a single byte range with 206.
+
+    Starlette 0.37 ignores Range and always sends the whole file with a 200.
+    Video elements seek with Range requests -- a wall cell seeking to the
+    shared timeline position of an uncached video jumped back to the start --
+    and iOS Safari will not play video at all from a server that cannot
+    answer them. Path resolution (and so traversal protection) stays
+    StaticFiles' own: only a FileResponse it already decided to send is
+    narrowed. Multiple or malformed ranges get the whole file, as RFC 9110
+    permits.
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code != 200 or not isinstance(response, FileResponse):
+            return response
+        response.headers["Accept-Ranges"] = "bytes"
+        match = _RANGE_RE.match(Headers(scope=scope).get("range", "").strip())
+        if scope["method"] != "GET" or not match or match.groups() == ("", ""):
+            return response
+        size = os.stat(response.path).st_size
+        first, last = match.groups()
+        if first:
+            start, end = int(first), min(int(last), size - 1) if last else size - 1
+        else:
+            start, end = max(size - int(last), 0), size - 1
+        if start >= size or start > end:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        headers = {k: v for k, v in response.headers.items()
+                   if k.lower() in ("etag", "last-modified", "accept-ranges")}
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        headers["Content-Length"] = str(end - start + 1)
+        return StreamingResponse(_file_slice(response.path, start, end - start + 1),
+                                 status_code=206, headers=headers,
+                                 media_type=response.media_type)
+
+
+async def _file_slice(path: str, start: int, length: int, chunk: int = 256 * 1024):
+    async with await anyio.open_file(path, "rb") as f:
+        await f.seek(start)
+        while length > 0:
+            data = await f.read(min(chunk, length))
+            if not data:
+                break
+            length -= len(data)
+            yield data
+
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.mount("/uploads", RangedStaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 attach_walls(app)
 app.include_router(oauth_router)
