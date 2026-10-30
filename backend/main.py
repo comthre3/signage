@@ -1026,12 +1026,14 @@ class ChangePasswordRequest(BaseModel):
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=8)
+    password: str  # policy enforced by validate_password(), see UserUpdate
     role: str = "viewer"
 
 
 class UserUpdate(BaseModel):
-    password: Optional[str] = Field(default=None, min_length=8)
+    # Length is validate_password()'s job: a Field minimum here answers first,
+    # with raw English the dashboard cannot localize, quoting the wrong number.
+    password: Optional[str] = None
     role: Optional[str] = None
 
 

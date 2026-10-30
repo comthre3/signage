@@ -224,6 +224,25 @@ def test_signup_rejects_password_too_short(client, unique_business):
     assert r.json()["detail"]["code"] == "password_too_short"
 
 
+@pytest.mark.parametrize("password", ["short", "Aa1aaaaaaa"])
+def test_admin_created_user_short_password_gets_the_policy_error(client, signed_up_org, password):
+    """Every too-short password gets the structured code the dashboard localizes.
+
+    A Pydantic min_length of 8 used to answer first for anything under 8, with
+    raw English text quoting the wrong minimum -- the policy is 12.
+    """
+    headers = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    r = client.post("/users", headers=headers,
+                    json={"username": f"u-{len(password)}-{os.urandom(3).hex()}",
+                          "password": password, "role": "viewer"})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "password_too_short"
+    r = client.put(f"/users/{signed_up_org['user']['id']}", headers=headers,
+                   json={"password": password})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "password_too_short"
+
+
 def test_signup_rejects_password_no_lowercase(client, unique_business):
     vt = _signup_through_otp(client, unique_business)
     r = client.post("/auth/signup/complete",
