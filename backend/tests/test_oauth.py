@@ -1372,3 +1372,66 @@ def test_expired_pending_authorization_is_refused(client):
                     follow_redirects=False)
     assert r.status_code == 400
     assert "Authorization expired" in r.text
+
+
+# ── Scope lists ─────────────────────────────────────────────────────
+
+
+def _checked_scope(html: str) -> str:
+    return re.search(r'<input[^>]*value="(api:[a-z]+)"[^>]*\bchecked\b', html).group(1)
+
+
+def _flow_with_scope(client, session_token: str, scope: str) -> dict:
+    """Request `scope`, submit whatever the consent page pre-selects (as a
+    user clicking Allow would), and exchange the code."""
+    cid = _register_client(client)
+    verifier, challenge = _pkce_pair()
+    r = _consent_page(client, session_token, cid, challenge, scope)
+    assert r.status_code == 200, r.text
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": _checked_scope(r.text)},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_space_separated_scopes_grant_the_highest(client):
+    """MCP SDKs request every entry of scopes_supported, space-separated."""
+    session_token, *_ = _signup_org(client)
+    assert _flow_with_scope(client, session_token, "api:read api:rw")["scope"] == "api:rw"
+    assert _flow_with_scope(client, session_token, "api:rw api:read")["scope"] == "api:rw"
+
+
+def test_space_separated_scopes_capped_for_viewer(client):
+    admin_token, *_ = _signup_org(client)
+    viewer = _add_member(client, admin_token, "viewer")
+    assert _flow_with_scope(client, viewer["token"], "api:read api:rw")["scope"] == "api:read"
+
+
+def test_unrecognised_scopes_are_ignored_alongside_known_ones(client):
+    session_token, *_ = _signup_org(client)
+    assert _flow_with_scope(client, session_token, "api:read offline_access")["scope"] == "api:read"
+
+
+def test_scope_with_nothing_recognised_is_invalid(client):
+    cid = _register_client(client)
+    _v, challenge = _pkce_pair()
+    for scope in ("admin", "", "   "):
+        r = client.get("/oauth/authorize", params={
+            "response_type": "code", "client_id": cid,
+            "redirect_uri": "http://localhost:5173/oauth/callback",
+            "scope": scope, "state": "s",
+            "code_challenge": challenge, "code_challenge_method": "S256",
+        }, follow_redirects=False)
+        assert r.status_code == 302, (scope, r.text)
+        assert "error=invalid_scope" in r.headers["location"]

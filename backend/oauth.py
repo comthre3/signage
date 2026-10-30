@@ -231,6 +231,15 @@ _SCOPE_RANK = {"api:read": 1, "api:rw": 2}
 _ROLE_MAX_SCOPE = {"admin": "api:rw", "editor": "api:rw", "viewer": "api:read"}
 
 
+def _parse_scope(raw: Optional[str]) -> Optional[str]:
+    """The highest scope named in a space-separated scope list (RFC 6749
+    §3.3), or None if it names none we know. MCP SDKs request every entry of
+    scopes_supported, i.e. "api:read api:rw". Unknown entries are ignored,
+    which §3.3 allows; the response's scope field says what was granted."""
+    known = [s for s in (raw or "").split() if s in _SCOPE_RANK]
+    return max(known, key=_SCOPE_RANK.__getitem__) if known else None
+
+
 def _cap_scope(scope: str, role: Optional[str]) -> str:
     ceiling = _ROLE_MAX_SCOPE.get(role or "", "api:read")
     return scope if _SCOPE_RANK[scope] <= _SCOPE_RANK[ceiling] else ceiling
@@ -272,7 +281,8 @@ def authorize(
         })
         return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
-    if scope not in ("api:read", "api:rw"):
+    scope = _parse_scope(scope)
+    if scope is None:
         qs = urlencode({"error": "invalid_scope", "state": state})
         return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
@@ -454,9 +464,7 @@ def authorize_decision(
         qs = urlencode({"error": "access_denied", "state": pending["state"]})
         return RedirectResponse(f"{pending['redirect_uri']}?{qs}", status_code=302)
 
-    if scope not in _SCOPE_RANK:
-        scope = pending["scope"]
-    scope = _cap_scope(scope, user.get("role"))
+    scope = _cap_scope(_parse_scope(scope) or pending["scope"], user.get("role"))
 
     code = secrets.token_urlsafe(32)
     code_hash = _hash_token(code)
