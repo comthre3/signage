@@ -3513,6 +3513,22 @@ def pair_wall_cell(wall_id: int, row: int, col: int,
 @app.post("/walls/cells/redeem")
 @limiter.limit("30/minute")
 def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
+    """Bind the TV that typed ``code`` to its wall cell.
+
+    A cell's screen is a screens row like any other, so a new one is subject to
+    the plan's screen_limit exactly as in create_screen. Re-pairing a cell
+    reuses its screen and rotates the token -- which unplugs the TV that held
+    it -- instead of adding a second screen that would keep claiming the cell
+    and counting toward the limit.
+
+    Everything after the cheap checks is one transaction: the code is claimed
+    with a conditional UPDATE so two concurrent redeems of it cannot both win,
+    and the organization row is locked so concurrent redeems of different codes
+    cannot together overshoot the limit. A refusal rolls the claim back, so the
+    code still works after an upgrade.
+    """
+    from db import connect as _db_connect
+
     row = query_one("SELECT * FROM wall_pairing_codes WHERE code = ?", (payload.code,))
     if not row:
         raise http_error(404, "wall.pair_code_unknown", "Code not recognized")
@@ -3530,25 +3546,67 @@ def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
     wall = query_one("SELECT * FROM walls WHERE id = ?", (row["wall_id"],))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall is gone")
+    oid = wall["organization_id"]
 
-    name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
-    pair_code = generate_unique_pair_code()
-    screen_token = generate_unique_token()
-    screen_id = execute(
-        """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (wall["organization_id"], name, pair_code, screen_token, now.isoformat()),
-    )
-    cell = query_one(
-        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
-        (row["wall_id"], row["row_index"], row["col_index"]),
-    )
-    execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
-    execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
-    execute(
-        "UPDATE wall_pairing_codes SET status = 'claimed', claimed_at = ? WHERE id = ?",
-        (now.isoformat(), row["id"]),
-    )
+    with _db_connect().transaction():
+        claimed = execute(
+            "UPDATE wall_pairing_codes SET status = 'claimed', claimed_at = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (now.isoformat(), row["id"]),
+        )
+        if not claimed:
+            raise http_error(409, "wall.pair_code_used", "This code was already used")
+        org = query_one(
+            "SELECT id, screen_limit FROM organizations WHERE id = ? FOR UPDATE", (oid,)
+        )
+        cell = query_one(
+            "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ? "
+            "FOR UPDATE",
+            (row["wall_id"], row["row_index"], row["col_index"]),
+        )
+        if not cell:
+            raise http_error(404, "wall.cell_not_found", "Cell not found")
+        reuse = None
+        if cell["screen_id"]:
+            reuse = query_one(
+                "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+                (cell["screen_id"], oid),
+            )
+        # Screens an earlier re-pair left claiming this cell: their TVs lost
+        # the cell long ago, and they still count toward the limit.
+        execute(
+            "DELETE FROM screens WHERE wall_cell_id = ? AND id <> ?",
+            (cell["id"], reuse["id"] if reuse else 0),
+        )
+        pair_code = generate_unique_pair_code()
+        screen_token = generate_unique_token()
+        if reuse:
+            screen_id = reuse["id"]
+            execute(
+                "UPDATE screens SET token = ?, pair_code = ?, wall_cell_id = ? WHERE id = ?",
+                (screen_token, pair_code, cell["id"], screen_id),
+            )
+        else:
+            if org:
+                count_row = query_one(
+                    "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?", (oid,)
+                )
+                current = int(count_row["n"] if count_row else 0)
+                limit = int(org["screen_limit"])
+                if current >= limit:
+                    raise http_error(
+                        402,
+                        "plan_limit",
+                        f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+                    )
+            name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
+            screen_id = execute(
+                """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (oid, name, pair_code, screen_token, now.isoformat()),
+            )
+            execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
+        execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
     return {
         "status": "paired",
         "screen_token": screen_token,
@@ -3574,13 +3632,23 @@ def unpair_wall_cell(wall_id: int, row: int, col: int,
     if not cell:
         raise http_error(404, "wall.cell_not_found", "Cell not found")
     if cell["screen_id"]:
+        # The screen was created by redeem for this cell alone, and its TV is
+        # about to be told "bye" (it forgets the token and shows a pairing
+        # code). Kept, the row would have no device yet still count toward the
+        # plan's screen limit, so each unpair/re-pair leaked a screen.
+        execute(
+            "DELETE FROM screens WHERE id = ? AND organization_id = ? AND wall_cell_id = ?",
+            (cell["screen_id"], wall["organization_id"], cell["id"]),
+        )
         execute("UPDATE screens SET wall_cell_id = NULL WHERE id = ?", (cell["screen_id"],))
     execute("UPDATE wall_cells SET screen_id = NULL WHERE id = ?", (cell["id"],))
+    # Reaches the TV directly when its socket is on this worker; otherwise the
+    # wall's tick loop on the worker holding it notices within seconds.
     try:
         from walls import broadcast_bye  # type: ignore
         broadcast_bye(wall_id, row, col, "cell_unpaired")
     except Exception:
-        pass
+        logger.exception("wall_bye_failed wall_id=%s cell=%s,%s", wall_id, row, col)
     return None
 
 
