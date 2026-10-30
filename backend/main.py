@@ -27,7 +27,7 @@ from slowapi.errors import RateLimitExceeded
 
 from billing import create_knet_request
 import ratelimit
-from db import advisory_lock, init_db, execute, query_all, query_one, utc_now_iso
+from db import advisory_lock, init_db, execute, query_all, query_one, transaction, utc_now_iso
 import menu_render
 import menus as menus_domain
 from hibp import check_hibp_breach
@@ -794,6 +794,33 @@ def can_access_screen(user: dict, screen_id: int) -> bool:
 def require_screen_access(screen_id: int, user: dict) -> None:
     if not can_access_screen(user, screen_id):
         raise HTTPException(status_code=403, detail="Screen access denied")
+
+
+_ORG_SCOPED_KINDS = {
+    "playlists": "playlist", "sites": "site", "users": "user",
+    "media": "media", "schedules": "schedule",
+}
+
+
+def require_org_rows(table: str, ids, oid: int) -> None:
+    """404 unless every id names a row of `table` belonging to organization oid.
+
+    For ids a write is about to STORE as a reference -- a screen's playlist, a
+    zone item's media, a wall's playlist. Fetching by id is org-scoped
+    everywhere, but a stored reference is followed later without an org filter
+    (build_screen_payload, get_screen_zones), so an unchecked one hands one
+    organization's content to another. None entries mean "no reference".
+    """
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return
+    found = query_all(
+        f"SELECT id FROM {table} WHERE organization_id = ? AND id = ANY(?)",
+        (oid, list(wanted)),
+    )
+    if len(found) != len(wanted):
+        kind = _ORG_SCOPED_KINDS[table]
+        raise http_error(404, f"{kind}.not_found", f"{kind.capitalize()} not found")
 
 def sanitize_screen(screen: dict, include_token: bool = False) -> dict:
     sanitized = dict(screen)
@@ -2199,6 +2226,8 @@ def list_screens(
 def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("admin", "editor")),
                   _sub: dict = Depends(require_active_subscription)) -> dict:
     oid = org_id(user)
+    require_org_rows("sites", [payload.site_id], oid)
+    require_org_rows("users", [payload.owner_user_id], oid)
     org = query_one(
         "SELECT screen_limit FROM organizations WHERE id = ?", (oid,)
     )
@@ -2258,22 +2287,23 @@ def update_screen(
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
 
-    # Validate schedule ownership; use model_fields_set so explicit None
-    # (detach) is distinguished from "field not provided".
-    if "schedule_id" in payload.model_fields_set:
-        if payload.schedule_id is not None:
-            owned = query_one(
-                "SELECT id FROM schedules WHERE id = ? AND organization_id = ?",
-                (payload.schedule_id, oid),
-            )
-            if not owned:
-                raise http_error(404, "schedule.not_found", "Schedule not found")
+    # The references are nullable, so model_fields_set separates an explicit
+    # null ("No playlist", "Unassigned" -- clear it) from a field the caller
+    # left out (keep it). Each is checked against the caller's org first.
+    refs = {}
+    for column, table in (("site_id", "sites"), ("playlist_id", "playlists"),
+                          ("owner_user_id", "users"), ("schedule_id", "schedules")):
+        if column in payload.model_fields_set:
+            refs[column] = getattr(payload, column)
+            require_org_rows(table, [refs[column]], oid)
+        else:
+            refs[column] = screen[column]
 
     execute(
         """
         UPDATE screens
         SET name = ?, location = ?, resolution = ?, orientation = ?,
-            site_id = ?, playlist_id = ?, password_hash = ?, owner_user_id = ?
+            site_id = ?, playlist_id = ?, owner_user_id = ?, schedule_id = ?
         WHERE id = ?
         """,
         (
@@ -2281,20 +2311,13 @@ def update_screen(
             payload.location if payload.location is not None else screen["location"],
             payload.resolution if payload.resolution is not None else screen["resolution"],
             payload.orientation if payload.orientation is not None else screen["orientation"],
-            payload.site_id if payload.site_id is not None else screen["site_id"],
-            payload.playlist_id if payload.playlist_id is not None else screen["playlist_id"],
-            None,
-            payload.owner_user_id if payload.owner_user_id is not None else screen["owner_user_id"],
+            refs["site_id"],
+            refs["playlist_id"],
+            refs["owner_user_id"],
+            refs["schedule_id"],
             screen_id,
         ),
     )
-
-    # Handle schedule_id separately (nullable detach requires model_fields_set)
-    if "schedule_id" in payload.model_fields_set:
-        execute(
-            "UPDATE screens SET schedule_id = ? WHERE id = ?",
-            (payload.schedule_id, screen_id),
-        )
 
     return sanitize_screen(query_one("SELECT * FROM screens WHERE id = ?", (screen_id,)))
 
@@ -2348,39 +2371,43 @@ def update_screen_zones(
         raise HTTPException(status_code=404, detail="Screen not found")
     if not user.get("is_admin"):
         require_screen_access(screen_id, user)
-    execute(
-        "DELETE FROM screen_zone_items WHERE zone_id IN (SELECT id FROM screen_zones WHERE screen_id = ?)",
-        (screen_id,),
-    )
-    execute("DELETE FROM screen_zones WHERE screen_id = ?", (screen_id,))
+    require_org_rows("media", [i.media_id for z in payload.zones for i in z.items], org_id(user))
 
-    for index, zone in enumerate(payload.zones):
-        zone_id = execute(
-            """
-            INSERT INTO screen_zones (screen_id, name, x, y, width, height, sort_order, transition_ms, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                screen_id,
-                zone.name,
-                zone.x,
-                zone.y,
-                zone.width,
-                zone.height,
-                zone.sort_order if zone.sort_order is not None else index,
-                zone.transition_ms,
-                utc_now_iso(),
-            ),
+    # Replace-style write: the old layout must survive any failure below.
+    with transaction():
+        execute(
+            "DELETE FROM screen_zone_items WHERE zone_id IN (SELECT id FROM screen_zones WHERE screen_id = ?)",
+            (screen_id,),
         )
-        for item_index, item in enumerate(zone.items):
-            execute(
+        execute("DELETE FROM screen_zones WHERE screen_id = ?", (screen_id,))
+
+        for index, zone in enumerate(payload.zones):
+            zone_id = execute(
                 """
-                INSERT INTO screen_zone_items
-                (zone_id, media_id, duration_seconds, position, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO screen_zones (screen_id, name, x, y, width, height, sort_order, transition_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (zone_id, item.media_id, item.duration_seconds, item_index, utc_now_iso()),
+                (
+                    screen_id,
+                    zone.name,
+                    zone.x,
+                    zone.y,
+                    zone.width,
+                    zone.height,
+                    zone.sort_order if zone.sort_order is not None else index,
+                    zone.transition_ms,
+                    utc_now_iso(),
+                ),
             )
+            for item_index, item in enumerate(zone.items):
+                execute(
+                    """
+                    INSERT INTO screen_zone_items
+                    (zone_id, media_id, duration_seconds, position, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (zone_id, item.media_id, item.duration_seconds, item_index, utc_now_iso()),
+                )
     return {"zones": get_screen_zones(screen_id)}
 
 
@@ -2439,6 +2466,8 @@ def create_zone_template(
     payload: ZoneTemplateCreate, user: dict = Depends(require_roles("admin", "editor")),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
+    require_org_rows("sites", [payload.site_id], org_id(user))
+    require_org_rows("media", [i.media_id for z in payload.zones for i in z.items], org_id(user))
     layout_json = json.dumps([zone.dict() for zone in payload.zones])
     template_id = execute(
         """
@@ -3410,21 +3439,29 @@ def patch_wall(wall_id: int, payload: WallUpdate,
         raise http_error(404, "wall.not_found", "Wall not found")
 
     fields = payload.model_dump(exclude_unset=True)
+    require_org_rows("playlists", [fields.get("mirrored_playlist_id")], org_id(user))
 
-    # Mode change side effects: delete outgoing playlist, create incoming.
-    # Pairings (wall_cells.screen_id) are preserved.
-    if "mode" in fields and fields["mode"] != wall["mode"]:
-        new_mode = fields["mode"]
-        if wall["mode"] == "mirrored" and wall.get("mirrored_playlist_id"):
-            execute("DELETE FROM playlists WHERE id = ?",
-                    (wall["mirrored_playlist_id"],))
-            fields["mirrored_playlist_id"] = None
-            fields["mirrored_mode"] = None
-        elif wall["mode"] == "spanned" and wall.get("spanned_playlist_id"):
-            execute("DELETE FROM playlists WHERE id = ?",
-                    (wall["spanned_playlist_id"],))
+    # Mode change side effects: drop the outgoing mode's playlist reference,
+    # create the incoming one. Pairings (wall_cells.screen_id) are preserved.
+    # Only a spanned wall's canvas playlist belongs to the wall (create_wall
+    # made it); a mirrored wall plays a playlist the user picked, which other
+    # screens and schedules may also use, so it is detached, never deleted.
+    mode_change = "mode" in fields and fields["mode"] != wall["mode"]
+    if mode_change and wall["mode"] == "mirrored":
+        fields["mirrored_playlist_id"] = None
+        fields["mirrored_mode"] = None
+    after = {**wall, **fields}
+    if (after["mode"] == "mirrored" and after.get("mirrored_mode") == "same_playlist"
+            and not after.get("mirrored_playlist_id")):
+        raise http_error(422, "wall.mirrored_playlist_required",
+                         "Same-playlist mirrored walls need a playlist.")
+
+    if mode_change:
+        if wall["mode"] == "spanned" and wall.get("spanned_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ? AND organization_id = ? AND kind = 'wall_canvas'",
+                    (wall["spanned_playlist_id"], org_id(user)))
             fields["spanned_playlist_id"] = None
-        if new_mode == "spanned":
+        if fields["mode"] == "spanned":
             new_pl = execute(
                 "INSERT INTO playlists (organization_id, name, kind, created_at) "
                 "VALUES (?, ?, 'wall_canvas', ?)",

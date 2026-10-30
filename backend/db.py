@@ -127,6 +127,20 @@ def advisory_lock(lock_id: int = _INIT_DB_LOCK_ID):
             cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
 
 
+@contextmanager
+def transaction():
+    """Make the enclosed execute()/query_*() calls one atomic unit.
+
+    The thread's connection runs in autocommit mode, so every statement
+    normally commits on its own. Inside this block psycopg wraps them in
+    BEGIN/COMMIT and rolls all of them back if the block raises -- for
+    replace-style writes (delete the old rows, insert the new) that must not
+    be left half-done.
+    """
+    with connect().transaction():
+        yield
+
+
 def init_db() -> None:
     """Create/upgrade the schema.
 

@@ -280,8 +280,9 @@ def test_mode_change_mirrored_to_spanned_clears_mirrored_keeps_pairings(client, 
     assert updated["mirrored_playlist_id"] is None
     assert updated["mirrored_mode"] is None
     assert updated["spanned_playlist_id"] is not None
-    # Old playlist gone.
-    assert query_one("SELECT id FROM playlists WHERE id = ?", (pl_id,)) is None
+    # Detached, not deleted: it is the user's playlist, not the wall's, and
+    # other screens or schedules may still be playing it.
+    assert query_one("SELECT id FROM playlists WHERE id = ?", (pl_id,)) is not None
     # Cells preserved (count matches rows × cols).
     cells = query_all("SELECT * FROM wall_cells WHERE wall_id = ?", (wall["id"],))
     assert len(cells) == 2  # 1×2 wall
@@ -290,9 +291,22 @@ def test_mode_change_mirrored_to_spanned_clears_mirrored_keeps_pairings(client, 
 def test_mode_change_spanned_to_mirrored_clears_canvas_playlist(client, admin_token):
     wall = _create_spanned_wall(client, admin_token)
     canvas_pl = wall["spanned_playlist_id"]
+    # A same-playlist wall with no playlist plays nothing; refused, and the
+    # refusal must leave the canvas playlist alone.
     res = client.patch(f"/walls/{wall['id']}", headers=_auth(admin_token), json={
         "mode": "mirrored",
         "mirrored_mode": "same_playlist",
+    })
+    assert res.status_code == 422, res.text
+    assert query_one("SELECT id FROM playlists WHERE id = ?", (canvas_pl,)) is not None
+    pl_id = execute(
+        "INSERT INTO playlists (organization_id, name, created_at) VALUES (?, ?, ?)",
+        (admin_token["org_id"], "p_sp2mir", utc_now_iso()),
+    )
+    res = client.patch(f"/walls/{wall['id']}", headers=_auth(admin_token), json={
+        "mode": "mirrored",
+        "mirrored_mode": "same_playlist",
+        "mirrored_playlist_id": pl_id,
     })
     assert res.status_code == 200, res.text
     updated = res.json()
