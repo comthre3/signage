@@ -576,15 +576,22 @@ def is_online(last_seen: Optional[str]) -> bool:
     return (datetime.now(timezone.utc) - last_seen_dt).total_seconds() < 90
 
 
+# last_used is rewritten at most this often rather than on every request,
+# which would make each authenticated call a write. The idle clock can thus
+# run up to this far ahead of the true last use.
+_SESSION_TOUCH_SECONDS = 60
+
+
 def _session_lookup(token: str) -> Optional[dict]:
     """Look up an active session by bearer token. Returns user dict or None.
 
-    Idle TTL eviction + last_used update preserved from the original
-    get_current_user body.
+    A session idle longer than SESSION_TTL_SECONDS is deleted and refused
+    here, on the request; cleanup_sessions() only sweeps at startup and login.
     """
     session = query_one(
         """
-        SELECT sessions.token, sessions.user_id, users.username, users.is_admin,
+        SELECT sessions.token, sessions.user_id, sessions.created_at,
+               sessions.last_used, users.username, users.is_admin,
                users.role, users.organization_id
         FROM sessions
         JOIN users ON users.id = sessions.user_id
@@ -594,6 +601,7 @@ def _session_lookup(token: str) -> Optional[dict]:
     )
     if not session:
         return None
+    idle = None
     last_used = session.get("last_used") or session.get("created_at")
     if last_used:
         try:
@@ -601,13 +609,17 @@ def _session_lookup(token: str) -> Optional[dict]:
         except ValueError:
             last_used_dt = None
         if last_used_dt:
-            if (datetime.now(timezone.utc) - last_used_dt).total_seconds() > SESSION_TTL_SECONDS:
+            if last_used_dt.tzinfo is None:
+                last_used_dt = last_used_dt.replace(tzinfo=timezone.utc)
+            idle = (datetime.now(timezone.utc) - last_used_dt).total_seconds()
+            if idle > SESSION_TTL_SECONDS:
                 execute("DELETE FROM sessions WHERE token = ?", (token,))
                 return None
-    execute(
-        "UPDATE sessions SET last_used = ? WHERE token = ?",
-        (utc_now_iso(), token),
-    )
+    if idle is None or idle > min(_SESSION_TOUCH_SECONDS, SESSION_TTL_SECONDS / 2):
+        execute(
+            "UPDATE sessions SET last_used = ? WHERE token = ?",
+            (utc_now_iso(), token),
+        )
     return {
         "id": session["user_id"],
         "username": session["username"],
