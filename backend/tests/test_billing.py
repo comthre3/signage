@@ -434,3 +434,17 @@ def test_callback_body_that_is_not_an_object_is_rejected(
     r = client.post(f"/billing/callback/{trackid}?s={SECRET}", json=["CAPTURED", trackid])
     assert r.status_code == 400
     assert _payment(trackid)["status"] == "pending"
+
+
+# ── The billing view's "paid through" date ────────────────────────────
+
+def test_org_endpoints_report_paid_through_at(
+    client: TestClient, signed_up_org: dict, mock_niupay
+):
+    headers = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    assert client.get("/auth/me", headers=headers).json()["organization"]["paid_through_at"] is None
+
+    _capture(client, _pending_payment(client, signed_up_org, "starter", 1, mock_niupay))
+    paid_through = client.get("/organization", headers=headers).json()["paid_through_at"]
+    assert paid_through is not None
+    assert client.get("/auth/me", headers=headers).json()["organization"]["paid_through_at"] == paid_through

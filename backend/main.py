@@ -1648,6 +1648,7 @@ def me(user: dict = Depends(get_current_user)) -> dict:
             "screen_limit": org["screen_limit"],
             "subscription_status": org["subscription_status"],
             "trial_ends_at": org["trial_ends_at"],
+            "paid_through_at": org["paid_through_at"],
             "locale": org["locale"],
         },
     }
