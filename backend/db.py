@@ -767,3 +767,25 @@ def _init_db_locked(conn) -> None:
                 "ON CONFLICT (client_id) DO NOTHING",
                 (cid, name, uris_json),
             )
+
+        # OAuth authorization-flow state (/oauth/authorize -> /oauth/login ->
+        # /oauth/authorize/decision). Kept here rather than in process memory
+        # because the backend runs several uvicorn workers and the three
+        # requests of one flow usually land on different ones. Rows expire
+        # after oauth._PENDING_AUTH_TTL and are consumed by the decision.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_pending_auth (
+              request_id      TEXT PRIMARY KEY,
+              client_id       TEXT NOT NULL,
+              redirect_uri    TEXT NOT NULL,
+              scope           TEXT NOT NULL,
+              state           TEXT NOT NULL,
+              code_challenge  TEXT NOT NULL,
+              expires_at      TIMESTAMPTZ NOT NULL,
+              created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_pending_auth_expires "
+            "ON oauth_pending_auth (expires_at)"
+        )

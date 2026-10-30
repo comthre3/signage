@@ -1259,3 +1259,116 @@ def test_refresh_caps_scope_to_grantors_current_role(client):
     r = _refresh(client, tokens)
     assert r.status_code == 200, r.text
     assert r.json()["scope"] == "api:read"
+
+
+# ── Authorization-flow state is shared by every worker ──────────────
+
+
+def _insert_pending(client_id: str, challenge: str, *, expired: bool = False,
+                    scope: str = "api:rw", state: str = "w") -> str:
+    """Write a pending authorization the way another uvicorn worker would."""
+    request_id = secrets.token_urlsafe(24)
+    execute(
+        "INSERT INTO oauth_pending_auth "
+        "  (request_id, client_id, redirect_uri, scope, state, code_challenge, "
+        "   expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, now() + "
+        + ("interval '-1 minute'" if expired else "interval '10 minutes'")
+        + ") RETURNING request_id",
+        (request_id, client_id, "http://localhost:5173/oauth/callback",
+         scope, state, challenge),
+    )
+    return request_id
+
+
+def test_pending_authorization_is_stored_in_postgres(client):
+    cid = _register_client(client)
+    _v, challenge = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read", "state": "abc",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    assert r.status_code == 200, r.text
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    row = query_one(
+        "SELECT client_id, state, code_challenge, "
+        "       EXTRACT(EPOCH FROM expires_at - now()) AS ttl "
+        "FROM oauth_pending_auth WHERE request_id = ?",
+        (request_id,),
+    )
+    assert row is not None
+    assert (row["client_id"], row["state"], row["code_challenge"]) == \
+        (cid, "abc", challenge)
+    assert 590 < float(row["ttl"]) <= 600
+
+
+def test_flow_completes_on_state_another_worker_wrote(client):
+    """/oauth/authorize, /oauth/login and /oauth/authorize/decision land on
+    different workers in production; each must see the others' state."""
+    cid = _register_client(client)
+    _session, _o, _u, email = _signup_org(client)
+    verifier, challenge = _pkce_pair()
+    request_id = _insert_pending(cid, challenge)
+
+    r = client.post("/oauth/login", data={
+        "request_id": request_id, "username": email,
+        "password": "Khanshoof2026Test",
+    }, follow_redirects=False)
+    assert r.status_code == 302, r.text
+    assert f"resume={request_id}" in r.headers["location"]
+    oauth_session = r.cookies.get("oauth_session")
+    assert oauth_session
+
+    r = client.get(r.headers["location"],
+                   cookies={"oauth_session": oauth_session},
+                   follow_redirects=False)
+    assert r.status_code == 200, r.text
+    assert f'value="{request_id}"' in r.text
+
+    # A worker that never saw the authorize request finishes the flow.
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies={"oauth_session": oauth_session},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 200, r.text
+
+    # Single use: the pending authorization is gone once decided.
+    assert query_one("SELECT 1 AS x FROM oauth_pending_auth WHERE request_id = ?",
+                     (request_id,)) is None
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies={"oauth_session": oauth_session},
+                    follow_redirects=False)
+    assert r.status_code == 400
+    assert "Authorization expired" in r.text
+
+
+def test_expired_pending_authorization_is_refused(client):
+    cid = _register_client(client)
+    session_token, _o, _u, email = _signup_org(client)
+    _v, challenge = _pkce_pair()
+    request_id = _insert_pending(cid, challenge, expired=True)
+    r = client.post("/oauth/login", data={
+        "request_id": request_id, "username": email,
+        "password": "Khanshoof2026Test",
+    }, follow_redirects=False)
+    assert r.status_code == 400
+    assert "Login session expired" in r.text
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    assert r.status_code == 400
+    assert "Authorization expired" in r.text

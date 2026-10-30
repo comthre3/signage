@@ -137,18 +137,55 @@ _templates_dir = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=_templates_dir)
 
 
-# Short-lived OAuth authorization-flow state. In-memory only — does not survive
-# process restart. NOT safe for multi-worker uvicorn (state on worker A is
-# invisible on worker B). v1 limitation; spec documents the trade-off.
-_pending_auth: dict = {}
+# Short-lived OAuth authorization-flow state, keyed by request_id. Lives in
+# Postgres (oauth_pending_auth) because production runs several uvicorn
+# workers and the authorize -> login -> decision requests of one flow usually
+# land on different ones. Each /oauth/authorize hit (including the resume
+# after login) restarts the TTL; the decision consumes the row exactly once.
 _PENDING_AUTH_TTL = 600   # 10 minutes
 
+_PENDING_COLUMNS = "request_id, client_id, redirect_uri, scope, state, code_challenge"
 
-def _prune_pending_auth():
-    now = time.time()
-    expired = [k for k, v in _pending_auth.items() if v.get("expires_at", 0) < now]
-    for k in expired:
-        _pending_auth.pop(k, None)
+
+def _prune_pending_auth() -> None:
+    execute("DELETE FROM oauth_pending_auth WHERE expires_at <= now()")
+
+
+def _save_pending_auth(request_id: str, client_id: str, redirect_uri: str,
+                       scope: str, state: str, code_challenge: str) -> None:
+    # Explicit RETURNING: the table has no id column for execute() to add.
+    execute(
+        "INSERT INTO oauth_pending_auth "
+        "  (request_id, client_id, redirect_uri, scope, state, code_challenge, "
+        "   expires_at) "
+        f"VALUES (?, ?, ?, ?, ?, ?, now() + interval '{int(_PENDING_AUTH_TTL)} seconds') "
+        "ON CONFLICT (request_id) DO UPDATE SET "
+        "  redirect_uri = EXCLUDED.redirect_uri, scope = EXCLUDED.scope, "
+        "  state = EXCLUDED.state, code_challenge = EXCLUDED.code_challenge, "
+        "  expires_at = EXCLUDED.expires_at "
+        "WHERE oauth_pending_auth.client_id = EXCLUDED.client_id "
+        "RETURNING request_id",
+        (request_id, client_id, redirect_uri, scope, state, code_challenge),
+    )
+
+
+def _load_pending_auth(request_id: str) -> Optional[dict]:
+    return query_one(
+        f"SELECT {_PENDING_COLUMNS} FROM oauth_pending_auth "
+        "WHERE request_id = ? AND expires_at > now()",
+        (request_id,),
+    )
+
+
+def _take_pending_auth(request_id: str) -> Optional[dict]:
+    """Consume a pending authorization: one DELETE ... RETURNING, so of two
+    concurrent decisions on the same request_id exactly one gets the row."""
+    return query_one(
+        "DELETE FROM oauth_pending_auth "
+        "WHERE request_id = ? AND expires_at > now() "
+        f"RETURNING {_PENDING_COLUMNS}",
+        (request_id,),
+    )
 
 
 def _error_response(request: Request, message: str, detail: str = "") -> HTMLResponse:
@@ -239,24 +276,17 @@ def authorize(
         qs = urlencode({"error": "invalid_scope", "state": state})
         return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
+    request_id = None
     if resume:
-        pending = _pending_auth.get(resume)
+        pending = _load_pending_auth(resume)
         if pending and pending["client_id"] == client_id:
             request_id = resume
-        else:
-            request_id = secrets.token_urlsafe(24)
-    else:
+    if request_id is None:
         request_id = secrets.token_urlsafe(24)
 
     _prune_pending_auth()
-    _pending_auth[request_id] = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": scope,
-        "state": state,
-        "code_challenge": code_challenge,
-        "expires_at": time.time() + _PENDING_AUTH_TTL,
-    }
+    _save_pending_auth(request_id, client_id, redirect_uri, scope, state,
+                       code_challenge)
 
     user = _session_user_from_cookie(request)
     if not user:
@@ -289,7 +319,7 @@ def oauth_login(
     password: str = Form(...),
     request_id: str = Form(...),
 ):
-    pending = _pending_auth.get(request_id)
+    pending = _load_pending_auth(request_id)
     if not pending:
         return _error_response(request, "Login session expired",
                                "Please restart the authorization flow from your MCP client.")
@@ -415,7 +445,7 @@ def authorize_decision(
         return _error_response(request, "Not signed in",
                                "Sign in first to authorize this client.")
 
-    pending = _pending_auth.pop(request_id, None)
+    pending = _take_pending_auth(request_id)
     if not pending:
         return _error_response(request, "Authorization expired",
                                "Please restart from your MCP client.")
