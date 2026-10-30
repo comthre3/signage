@@ -5,6 +5,7 @@ limiter key cannot be forged by the caller, and losing Redis degrades to
 per-process counting rather than to an outage or to no limit at all.
 """
 import time
+import uuid
 import pytest
 
 import ratelimit
@@ -59,9 +60,12 @@ def test_falls_back_to_peer_then_unknown():
 # ── counters ──────────────────────────────────────────────────────────
 
 def test_incr_window_counts_up_and_is_per_key():
-    assert ratelimit.incr_window("k1", 60) == 1
-    assert ratelimit.incr_window("k1", 60) == 2
-    assert ratelimit.incr_window("k2", 60) == 1
+    # Unique per run: these reach the real test Redis, where a fixed name is
+    # still counting from a run started within the same minute.
+    k1, k2 = f"k1-{uuid.uuid4().hex}", f"k2-{uuid.uuid4().hex}"
+    assert ratelimit.incr_window(k1, 60) == 1
+    assert ratelimit.incr_window(k1, 60) == 2
+    assert ratelimit.incr_window(k2, 60) == 1
 
 
 def test_window_reset_in_is_within_the_window():
