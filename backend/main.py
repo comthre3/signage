@@ -1801,6 +1801,17 @@ def get_audit_log(
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
 
+    def _bound(name: str, value: str) -> datetime:
+        # Parsed here rather than passed to Postgres as text, where a value it
+        # cannot read as a timestamp failed the whole query with a 500. A bare
+        # date or a time without an offset is taken as UTC.
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            raise http_error(422, "audit_log.date_invalid",
+                             f"{name} is not an ISO 8601 date or time: {value}")
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
     where = ["organization_id = ?"]
     params: list = [org_id(user)]
     if action:
@@ -1811,10 +1822,10 @@ def get_audit_log(
         params.append(actor_id)
     if since:
         where.append("created_at >= ?")
-        params.append(since)
+        params.append(_bound("since", since))
     if until:
         where.append("created_at <= ?")
-        params.append(until)
+        params.append(_bound("until", until))
     where_sql = " AND ".join(where)
 
     total_row = query_one(
