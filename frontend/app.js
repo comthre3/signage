@@ -2499,10 +2499,12 @@ const MediaPicker = (() => {
     const badge = checked ? `${idx + 1}` : "";
     const pill = cls === "url" ? "URL" : cls.toUpperCase();
     let thumb = "";
+    // Uploads are served by the API, not the dashboard: a bare /uploads/ path
+    // resolves against this origin and gets index.html or a 404 back.
     if (cls === "image") {
-      thumb = `<img src="/uploads/${attrEscape(m.filename)}" loading="lazy" alt="" />`;
+      thumb = `<img src="${attrEscape(`${API_BASE}/uploads/${m.filename}`)}" loading="lazy" alt="" />`;
     } else if (cls === "video") {
-      thumb = `<video src="/uploads/${attrEscape(m.filename)}" preload="metadata" muted></video>`;
+      thumb = `<video src="${attrEscape(`${API_BASE}/uploads/${m.filename}`)}" preload="metadata" muted></video>`;
     } else if (cls === "pdf") {
       thumb = `<div class="picker-thumb-pdf">PDF</div>`;
     } else if (cls === "url") {
@@ -3046,13 +3048,14 @@ const Walls = (() => {
     detail.querySelector("#canvas-item-save").onclick = () => saveCanvasItem(wall, item);
     detail.querySelector("#canvas-item-delete").onclick = () => deleteCanvasItem(wall, item);
     const preview = document.getElementById("canvas-preview-media");
+    // Uploads live on the API origin; a bare /uploads/ path would hit the dashboard.
     if (item.mime_type.startsWith("video/")) {
-      preview.innerHTML = `<video src="${item.filename ? '/uploads/' + item.filename : ''}"
+      preview.innerHTML = `<video src="${item.filename ? escAttr(`${API_BASE}/uploads/${item.filename}`) : ''}"
         muted autoplay loop playsinline></video>`;
     } else if (item.mime_type === "application/pdf") {
       preview.innerHTML = `<div class="pdf-thumb">PDF — ${escHtml(item.media_name)}</div>`;
     } else {
-      preview.innerHTML = `<img src="/uploads/${item.filename || ''}" alt="" />`;
+      preview.innerHTML = `<img src="${escAttr(`${API_BASE}/uploads/${item.filename || ''}`)}" alt="" />`;
     }
   }
 
