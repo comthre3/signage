@@ -48,6 +48,12 @@ function populateTimezoneSelect(selectEl, currentValue) {
 function toast(message, type = "info", duration = 3500) {
   const container = document.getElementById("toast-container");
   if (!container) return;
+  // The same message already on screen (e.g. a call site and the global
+  // handler both reporting one failure) would only be noise.
+  for (const existing of container.children) {
+    if (existing.textContent === message && existing.classList.contains(`toast-${type}`)
+        && !existing.classList.contains("toast-exit")) return;
+  }
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = message;
@@ -221,42 +227,100 @@ function updateResolutionCustomVisibility() {
 }
 
 /* ── API ─────────────────────────────────────────────────────── */
-function localizeError(detail, fallback) {
-  if (typeof detail === "string") return detail;
-  if (detail && typeof detail === "object" && detail.code) {
-    return Khan.t(`error.${detail.code}`, detail.message);
-  }
-  return fallback || "Something went wrong";
+// Statuses whose generic meaning is clearer to a user than whatever English
+// text the server (or a proxy in front of it) attached.
+const STATUS_ERROR_TEXT = {
+  401: ["error.session_expired", "Your session has ended. Please sign in again."],
+  403: ["error.forbidden", "Your account doesn't have permission to do that."],
+  413: ["error.too_large", "That file is too large to upload."],
+  415: ["error.unsupported_type", "Only images, videos and PDF files can be uploaded."],
+  429: ["error.rate_limited", "Too many requests. Wait a moment and try again."],
+};
+
+function statusErrorText(status) {
+  if (STATUS_ERROR_TEXT[status]) return Khan.t(...STATUS_ERROR_TEXT[status]);
+  if (status >= 500) return Khan.t("error.server", "The server ran into a problem. Try again in a moment.");
+  return null;
 }
 
-async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await fetch(`${API_BASE}${path}`, { headers, ...options });
-  if (!res.ok) {
-    if (res.status === 401) handleAuthFailure();
-    const text = await res.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    const msg = data && data.detail
-      ? localizeError(data.detail, text)
-      : (text || "Request failed");
-    const err = new Error(msg);
-    err.status = res.status;
-    err.data   = data;
-    if (data?.detail?.code?.startsWith("subscription.")) {
-      // Refresh org state so banner re-renders correctly
-      try {
-        const fresh = await fetch(`${API_BASE}/organization`, { headers });
-        if (fresh.ok) {
-          state.org = await fresh.json();
-          SubscriptionBanner.update(state.org);
-        }
-      } catch (_) { /* swallow */ }
-    }
+// FastAPI/Pydantic 422: [{loc: ["body", "rules", 0, "days_of_week"], msg}, ...]
+function formatValidationErrors(list) {
+  const parts = list.map((e) => {
+    const loc = (Array.isArray(e && e.loc) ? e.loc : [])
+      .filter((p) => !["body", "query", "path"].includes(p));
+    const msg = (e && e.msg) || "";
+    return loc.length ? `${loc.join(" › ")}: ${msg}` : msg;
+  }).filter(Boolean);
+  return [Khan.t("error.validation", "Some values aren't valid."), ...parts.slice(0, 3)].join(" ");
+}
+
+/** Localized, human-readable text for a failed response. Backend errors are
+ *  {detail: {code, message}}, {detail: "string"} or a Pydantic 422 list;
+ *  none of them is ever shown to the user as raw JSON. */
+function describeApiError(status, data, text) {
+  const detail = data ? data.detail : undefined;
+  if (Array.isArray(detail)) return formatValidationErrors(detail);
+  if (detail && typeof detail === "object") {
+    if (detail.code && Khan.has(`error.${detail.code}`)) return Khan.t(`error.${detail.code}`);
+    return statusErrorText(status) || detail.message || Khan.t("error.generic", "Something went wrong. Please try again.");
+  }
+  if (typeof detail === "string" && detail) return statusErrorText(status) || detail;
+  const plain = typeof text === "string" && text.length < 200 && !/^\s*[<{[]/.test(text) ? text.trim() : "";
+  return statusErrorText(status) || plain || Khan.t("error.generic", "Something went wrong. Please try again.");
+}
+
+function apiError(status, data, text) {
+  const err = new Error(describeApiError(status, data, text));
+  err.status = status;
+  err.data = data;
+  err.isApiError = true;
+  return err;
+}
+
+// fetch() only rejects when the request never got an answer.
+async function apiFetch(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (cause) {
+    const err = new Error(Khan.t("error.network", "Can't reach the server. Check your connection and try again."));
+    err.status = 0;
+    err.network = true;
+    err.isApiError = true;
+    err.cause = cause;
     throw err;
   }
-  return res.json();
+}
+
+async function failedResponse(res, text, headers) {
+  if (res.status === 401) handleAuthFailure();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+  const err = apiError(res.status, data, text);
+  if (data?.detail?.code?.startsWith?.("subscription.")) {
+    // Refresh org state so banner re-renders correctly
+    try {
+      const fresh = await fetch(`${API_BASE}/organization`, { headers });
+      if (fresh.ok) {
+        state.org = await fresh.json();
+        SubscriptionBanner.update(state.org);
+      }
+    } catch (_) { /* swallow */ }
+  }
+  return err;
+}
+
+/** JSON API call. Resolves to the parsed body, or null for an empty one
+ *  (204 No Content: DELETE /schedules/{id}, /api-keys/{id}, /menus/{id}...).
+ *  Rejects with an Error whose message is ready to show to the user. */
+async function api(path, options = {}) {
+  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers = { ...(isForm ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const res = await apiFetch(`${API_BASE}${path}`, { ...options, headers });
+  const text = await res.text();
+  if (!res.ok) throw await failedResponse(res, text, headers);
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) { return text; }
 }
 
 /** Same auth, 401 handling and error shape as api(), but returns the raw body.
@@ -265,20 +329,32 @@ async function api(path, options = {}) {
 async function apiText(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await fetch(`${API_BASE}${path}`, { headers, ...options });
-  if (!res.ok) {
-    if (res.status === 401) handleAuthFailure();
-    const text = await res.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    const err = new Error(data && data.detail ? localizeError(data.detail, text)
-                                             : (text || "Request failed"));
-    err.status = res.status;
-    err.data   = data;
-    throw err;
-  }
-  return res.text();
+  const res = await apiFetch(`${API_BASE}${path}`, { ...options, headers });
+  const text = await res.text();
+  if (!res.ok) throw await failedResponse(res, text, headers);
+  return text;
 }
+
+/* ── Global error reporting ──────────────────────────────────── */
+// Most handlers are `async (e) => { await withLoading(btn, ...) }` with no
+// catch of their own. Their failures used to vanish into the console; now
+// anything nobody handled ends up here and is shown once. Call sites that
+// catch their own errors never reach this, so nothing is reported twice.
+function reportError(err) {
+  if (!err || err.cancelled) return;
+  const text = err.isApiError && err.message
+    ? err.message
+    : Khan.t("error.generic", "Something went wrong. Please try again.");
+  toast(text, "error", 6000);
+}
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  event.preventDefault();
+  if (reason && reason.cancelled) return;   // MediaPicker closed: not an error
+  console.error(reason);
+  reportError(reason);
+});
 
 /* ── Auth ────────────────────────────────────────────────────── */
 function setAuth(token, user) {
@@ -1185,19 +1261,28 @@ document.getElementById("media-form").addEventListener("submit", async (e) => {
   if (!file) return;
   const btn = e.target.querySelector("button[type=submit]");
   await withLoading(btn, async () => {
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch(`${API_BASE}/media/upload`, {
-      method:  "POST",
-      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-      body:    formData,
-    });
-    if (!res.ok) { const text = await res.text(); throw new Error(text || "Upload failed"); }
+    await uploadMediaFile(file);
     input.value = "";
     toast(Khan.t("toast.media_uploaded"), "success");
     await loadMedia();
   });
 });
+
+// The backend only accepts these (anything else is a 415); the file input's
+// accept= filters the picker, but drag-and-drop bypasses it.
+const UPLOADABLE_TYPE_RE = /^(image\/|video\/|application\/pdf$)/;
+
+async function uploadMediaFile(file) {
+  if (file.type && !UPLOADABLE_TYPE_RE.test(file.type)) {
+    const err = new Error(statusErrorText(415));
+    err.isApiError = true;
+    err.status = 415;
+    throw err;
+  }
+  const formData = new FormData();
+  formData.append("file", file);
+  return api("/media/upload", { method: "POST", body: formData });
+}
 
 document.getElementById("media-url-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1222,18 +1307,23 @@ mediaForm?.addEventListener("drop", async (e) => {
   const files = Array.from(e.dataTransfer?.files || []);
   if (files.length === 0) return;
   let uploaded = 0;
+  const failures = [];
   for (const file of files) {
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch(`${API_BASE}/media/upload`, {
-      method: "POST",
-      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-      body: formData,
-    });
-    if (res.ok) uploaded++;
+    try {
+      await uploadMediaFile(file);
+      uploaded++;
+    } catch (err) {
+      failures.push(`${file.name}: ${err.isApiError ? err.message : Khan.t("error.generic", "Something went wrong. Please try again.")}`);
+    }
   }
-  toast(Khan.t("toast.files_uploaded_n", "{n} file(s) uploaded.").replace("{n}", uploaded), "success");
-  await loadMedia();
+  if (uploaded) {
+    toast(Khan.t("toast.files_uploaded_n", "{n} file(s) uploaded.").replace("{n}", uploaded), "success");
+  }
+  if (failures.length) {
+    toast(Khan.t("toast.files_failed_n", "{n} file(s) couldn't be uploaded. {reason}")
+      .replace("{n}", failures.length).replace("{reason}", failures[0]), "error", 8000);
+  }
+  if (uploaded) await loadMedia();
 });
 
 document.getElementById("playlist-form").addEventListener("submit", async (e) => {
@@ -2591,22 +2681,8 @@ const MediaPicker = (() => {
 // ====== Walls ======
 const Walls = (() => {
   const state = { walls: [], editing: null, pairing: null };
-
-  async function api(path, opts = {}) {
-    const headers = { "Content-Type": "application/json" };
-    const token = localStorage.getItem(AUTH_STORAGE_KEY);
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(`${API_BASE}${path}`,
-      { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
-    if (!res.ok && res.status !== 204) {
-      if (res.status === 401) handleAuthFailure();
-      let body = {};
-      try { body = await res.json(); } catch (_) {}
-      const code = body?.detail?.code || `http_${res.status}`;
-      throw Object.assign(new Error(body?.detail?.message || res.statusText), { code });
-    }
-    return res.status === 204 ? null : res.json();
-  }
+  // Requests go through the shared api(): same auth, empty-body handling and
+  // localized error messages as the rest of the dashboard.
 
   async function loadList() {
     state.walls = await api("/walls");
@@ -3167,7 +3243,6 @@ const Walls = (() => {
   return {
     onShow: loadList,
     state,
-    api,
     loadList,
     openEditor,
     closeEditor,

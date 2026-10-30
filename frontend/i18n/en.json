@@ -106,7 +106,7 @@
   "media.url_name_placeholder": "Website name",
   "media.add_website": "Add Website",
   "media.dropzone_title": "Drag & drop files here",
-  "media.dropzone_subtitle": "or click to select — images & video",
+  "media.dropzone_subtitle": "or click to select — images, video & PDF",
   "media.upload_btn": "Upload",
   "playlists.heading": "Playlists",
   "playlists.name_placeholder": "Playlist name",
@@ -490,5 +490,16 @@
   "menus.editor.preview_lang": "Preview language",
   "menus.editor.preview_aspect": "Preview aspect",
   "menus.editor.preview_refresh": "Refresh",
-  "menus.editor.preview_hint": "Live preview — no rendering needed. Save to update it."
+  "menus.editor.preview_hint": "Live preview — no rendering needed. Save to update it.",
+  "error.session_expired": "Your session has ended. Please sign in again.",
+  "error.forbidden": "Your account doesn't have permission to do that.",
+  "error.too_large": "That file is too large to upload.",
+  "error.unsupported_type": "Only images, videos and PDF files can be uploaded.",
+  "error.rate_limited": "Too many requests. Wait a moment and try again.",
+  "error.server": "The server ran into a problem. Try again in a moment.",
+  "error.validation": "Some values aren't valid.",
+  "error.generic": "Something went wrong. Please try again.",
+  "error.network": "Can't reach the server. Check your connection and try again.",
+  "error.insufficient_role": "Your account doesn't have permission to do that.",
+  "toast.files_failed_n": "{n} file(s) couldn't be uploaded. {reason}"
 }

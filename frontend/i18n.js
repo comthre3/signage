@@ -25,6 +25,11 @@
     return v;
   }
 
+  // True when the loaded locale has a string for `key`. Lets callers prefer a
+  // translation when one exists and fall back to something better than the
+  // bare key (e.g. a backend message) when it does not.
+  function has(key) { return _strings[key] != null; }
+
   function applyTranslations(root) {
     const r = root || document;
     r.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
@@ -56,5 +61,5 @@
 
   function currentLocale() { return _locale; }
 
-  window.Khan = { loadLocale, t, applyTranslations, setLocale, detectInitialLocale, currentLocale };
+  window.Khan = { loadLocale, t, has, applyTranslations, setLocale, detectInitialLocale, currentLocale };
 })();

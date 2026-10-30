@@ -106,7 +106,7 @@
   "media.url_name_placeholder": "اسم الموقع الإلكتروني",
   "media.add_website": "إضافة موقع إلكتروني",
   "media.dropzone_title": "اسحب الملفات وأفلتها هنا",
-  "media.dropzone_subtitle": "أو انقر للاختيار — صور ومقاطع فيديو",
+  "media.dropzone_subtitle": "أو انقر للاختيار — صور ومقاطع فيديو وملفات PDF",
   "media.upload_btn": "رفع",
   "playlists.heading": "قوائم التشغيل",
   "playlists.name_placeholder": "اسم قائمة التشغيل",
@@ -490,5 +490,16 @@
   "menus.editor.preview_lang": "لغة المعاينة",
   "menus.editor.preview_aspect": "نسبة العرض",
   "menus.editor.preview_refresh": "تحديث",
-  "menus.editor.preview_hint": "معاينة مباشرة — بدون تصيير. احفظ لتحديثها."
+  "menus.editor.preview_hint": "معاينة مباشرة — بدون تصيير. احفظ لتحديثها.",
+  "error.session_expired": "انتهت جلستك. يُرجى تسجيل الدخول مجدداً.",
+  "error.forbidden": "ليست لدى حسابك صلاحية للقيام بذلك.",
+  "error.too_large": "هذا الملف أكبر من الحجم المسموح برفعه.",
+  "error.unsupported_type": "يمكن رفع الصور ومقاطع الفيديو وملفات PDF فقط.",
+  "error.rate_limited": "طلبات كثيرة جداً. انتظر قليلاً ثم حاول مجدداً.",
+  "error.server": "واجه الخادم مشكلة. حاول مجدداً بعد قليل.",
+  "error.validation": "بعض القيم غير صالحة.",
+  "error.generic": "حدث خطأ ما. يُرجى المحاولة مجدداً.",
+  "error.network": "تعذّر الوصول إلى الخادم. تحقق من اتصالك ثم حاول مجدداً.",
+  "error.insufficient_role": "ليست لدى حسابك صلاحية للقيام بذلك.",
+  "toast.files_failed_n": "تعذّر رفع {n} ملف. {reason}"
 }
