@@ -1688,7 +1688,7 @@ label {
   font-weight: 600;
   font-size: 14px;
   cursor: pointer;
-  min-height: 40px;
+  min-height: 44px;
 }
 .billing-term.active {
   background: var(--peach-deep);
@@ -2679,7 +2679,24 @@ code, kbd, samp, pre,
    rules above. Width queries handle layout; (pointer: coarse) handles
    finger-sized targets, so a narrow desktop window keeps its compact UI. */
 
+/* iOS Safari zooms the page when a focused field's text is under 16px and
+   does not zoom back out. Component rules set 11–15px all over the place,
+   hence one !important floor here; the large pairing-code field keeps its own. */
+@media (pointer: coarse), (max-width: 768px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]):not(.pair-code-input),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
 @media (max-width: 768px) {
+  /* Bigger nav buttons no longer fit the old 300px cap; scroll if needed. */
+  .header-row.nav-open {
+    max-height: calc(100vh - 72px);
+    max-height: calc(100dvh - 72px);
+    overflow-y: auto;
+  }
   .walls-editor-header,
   .panel-header,
   .row-between { flex-wrap: wrap; gap: 8px; }
@@ -2699,6 +2716,49 @@ code, kbd, samp, pre,
 
 /* Fingertip-sized targets: 44px, Apple's minimum and WCAG 2.5.5. */
 @media (pointer: coarse) {
+  button,
+  .btn,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]) {
+    min-height: 44px;
+  }
+  button,
+  .btn { min-width: 44px; }
+
+  nav { gap: 8px; }
+  nav button { padding-block: 0; padding-inline: 14px; }
+
+  /* Links that act as buttons rather than sitting inside running text. */
+  .sub-banner-cta,
+  .card > div > a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .sub-banner-cta { justify-content: center; min-width: 44px; padding-inline: 4px; }
+  .sub-banner { padding-block: 2px; padding-inline: 16px 4px; }
+
+  /* A checkbox or radio is tapped through its label, so size the label.
+     :where() keeps this at zero specificity so labels that already have a
+     display (e.g. stacked .radio-row) keep their layout. */
+  :where(label:has(> input[type="checkbox"]), label:has(> input[type="radio"])) {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] { width: 20px; height: 20px; }
+  .dow-checkbox { min-width: 44px; margin-inline-end: 12px; }
+
+  .card-actions { gap: 8px; }
+  .card-actions button { font-size: 13px; padding: 10px 14px; }
+  /* Destructive actions go to the far end of their row instead of sitting a
+     few pixels from Preview or Edit. */
+  :is(.card-actions, .walls-actions, .schedule-card-actions, .menu-card-actions) > :is(.delete-btn, .btn-danger) {
+    margin-inline-start: auto;
+  }
+
   /* Larger zone handles, with a 44px invisible hit ring (see .zone-handle::after). */
   .zone-handle { width: 16px; height: 16px; }
   .zone-handle-left   { left: -8px; }
