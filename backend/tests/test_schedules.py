@@ -1,4 +1,5 @@
 """Tests for the Schedule + ScheduleRule CRUD endpoints."""
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -181,6 +182,28 @@ def test_post_rule_requires_at_least_one_day(client, signed_up_org):
                         "position": 0},
                    ]})
     assert r.status_code in (400, 422)
+
+
+@pytest.mark.parametrize("start,end", [
+    ("25:99", "02:00"),       # hour and minute both out of range
+    ("24:00", "02:00"),       # there is no 24:00; the day ends at 23:59
+    ("11:00", "11:60"),
+    ("11:00", "12:00:60"),
+])
+def test_post_rule_rejects_out_of_range_time(client, signed_up_org, start, end):
+    """The pattern checks only the shape (two digits, colon, two digits), so
+    a well-shaped but impossible time must still be a 422, not a 500."""
+    bearer = _bearer(signed_up_org["token"])
+    pl = _create_playlist(client, signed_up_org)
+    r = client.post("/schedules", headers=bearer, json={"name": "BadTime"})
+    sid = r.json()["id"]
+    r = client.put(f"/schedules/{sid}/rules", headers=bearer,
+                   json={"rules": [
+                       {"playlist_id": pl, "start_time": start,
+                        "end_time": end, "days_of_week": 127, "position": 0},
+                   ]})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "schedule.time_invalid"
 
 
 def test_post_rule_rejects_playlist_from_other_org(client, signed_up_org):

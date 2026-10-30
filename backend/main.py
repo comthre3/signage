@@ -3008,11 +3008,18 @@ def _rules_overlap(a: dict, b: dict) -> bool:
 
 
 def _parse_time(s: str) -> _time_type:
-    """Parse HH:MM or HH:MM:SS into datetime.time."""
+    """Parse HH:MM or HH:MM:SS into datetime.time.
+
+    ScheduleRuleIn's pattern checks only the shape, so "25:99" gets here;
+    an out-of-range field is the caller's error (422), not ours (500).
+    """
     parts = s.split(":")
     h = int(parts[0]); m = int(parts[1])
     sec = int(parts[2]) if len(parts) > 2 else 0
-    return _time_type(h, m, sec)
+    try:
+        return _time_type(h, m, sec)
+    except ValueError:
+        raise http_error(422, "schedule.time_invalid", f"Invalid time: {s}")
 
 
 def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
