@@ -3190,6 +3190,15 @@ def poll_pair_code(request: Request, code: str) -> dict:
         return {"status": "pending"}
 
     if row["status"] == "paired":
+        # Anyone holding the code gets the screen's token, so hand it out only
+        # while the TV that showed the code can still be polling for it (every
+        # few seconds). Later, a code read off the screen unlocks nothing.
+        try:
+            claimed_dt = datetime.fromisoformat(row["claimed_at"])
+        except (TypeError, ValueError):
+            claimed_dt = None
+        if claimed_dt is None or now > claimed_dt + timedelta(seconds=PAIR_CODE_TTL_SECONDS):
+            return {"status": "expired"}
         screen = query_one("SELECT * FROM screens WHERE id = ?", (row["screen_id"],))
         if not screen:
             return {"status": "expired"}

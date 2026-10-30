@@ -270,3 +270,51 @@ def test_legacy_pair_still_returns_the_screen_token(client):
     assert r.status_code == 200, r.text
     assert r.json()["token"] == screen["token"]
     assert client.post("/screens/pair", json={"pair_code": "000000"}).status_code == 404
+
+
+# ── /screens/poll after a claim ────────────────────────────────────────
+# Polling is anonymous: whoever holds a claimed code gets the screen's token.
+# The TV polls every few seconds, so it only needs that answer briefly; a code
+# read off the screen or a photo later must not still unlock the screen.
+
+def _claimed_code(client) -> tuple[str, dict]:
+    ctx = _login_as_signed_up_org(client)
+    code = client.post("/screens/request_code", json={}).json()["code"]
+    r = client.post(
+        "/screens/claim",
+        json={"code": code, "screen_id": ctx["default_screen"]["id"]},
+        headers=ctx["auth"],
+    )
+    assert r.status_code == 200, r.text
+    return code, ctx
+
+
+def _set_claimed_at(code: str, value) -> None:
+    from db import execute
+    execute("UPDATE pairing_codes SET claimed_at = ? WHERE code = ?", (value, code))
+
+
+def test_poll_still_returns_token_just_inside_the_window(client):
+    from main import PAIR_CODE_TTL_SECONDS
+    code, ctx = _claimed_code(client)
+    recent = datetime.now(timezone.utc) - timedelta(seconds=PAIR_CODE_TTL_SECONDS - 30)
+    _set_claimed_at(code, recent.isoformat())
+    body = client.get(f"/screens/poll/{code}").json()
+    assert body["status"] == "paired"
+    assert body["screen_token"] == ctx["default_screen"]["token"]
+
+
+def test_poll_stops_returning_token_once_the_window_has_passed(client):
+    from main import PAIR_CODE_TTL_SECONDS
+    code, _ctx = _claimed_code(client)
+    old = datetime.now(timezone.utc) - timedelta(seconds=PAIR_CODE_TTL_SECONDS + 1)
+    _set_claimed_at(code, old.isoformat())
+    r = client.get(f"/screens/poll/{code}")
+    assert r.status_code == 200
+    assert r.json() == {"status": "expired"}
+
+
+def test_poll_of_a_paired_code_without_claimed_at_is_expired(client):
+    code, _ctx = _claimed_code(client)
+    _set_claimed_at(code, None)
+    assert client.get(f"/screens/poll/{code}").json() == {"status": "expired"}
