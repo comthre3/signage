@@ -35,6 +35,21 @@ def _app_url() -> str:
 # ── Signed state for CSRF ──────────────────────────────────────────────
 
 
+def _safe_return_to(return_to: Optional[str]) -> str:
+    """return_to as a same-origin path ("/billing?x=1"), else "/".
+
+    The dashboard navigates to it after sign-in, so anything that could
+    leave the app origin is refused: absolute URLs and other schemes (no
+    leading "/"), protocol-relative "//host", and backslashes, which
+    browsers read as "/" ("/\\host"). Control characters too: browsers drop
+    tabs and newlines inside a URL, so "/<TAB>/host" would become "//host"."""
+    if (not return_to or not return_to.startswith("/")
+            or return_to.startswith("//") or "\\" in return_to
+            or any(ord(c) < 0x20 or ord(c) == 0x7f for c in return_to)):
+        return "/"
+    return return_to
+
+
 def _sign_state(provider: str, intent: str, return_to: str,
                 ttl_seconds: int = 300) -> str:
     """Sign a state token for the OAuth CSRF cookie + URL parameter."""
@@ -43,7 +58,7 @@ def _sign_state(provider: str, intent: str, return_to: str,
         "kind": "social_state",
         "provider": provider,
         "intent": intent,
-        "return_to": return_to or "/",
+        "return_to": _safe_return_to(return_to),
         "nonce": secrets.token_urlsafe(16),
         "iat": now,
         "exp": now + ttl_seconds,
@@ -414,7 +429,8 @@ def _audit_or_noop():
 
 def _bounce_with_token(token: str, return_to: str) -> str:
     import urllib.parse
-    qs = urllib.parse.urlencode({"token": token, "return_to": return_to})
+    qs = urllib.parse.urlencode({"token": token,
+                                 "return_to": _safe_return_to(return_to)})
     return f"{_app_url()}/auth-bounce?{qs}"
 
 

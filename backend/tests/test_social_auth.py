@@ -567,6 +567,137 @@ def test_google_callback_user_cancels_redirects_gracefully(client, google_env):
     assert "error=access_denied" in loc
 
 
+# ── return_to: a same-origin path, never somewhere else ───────────────
+
+
+def _google_signin_bounce(client, google_env, respx_mock, return_to: str) -> dict:
+    """Run start -> callback for a user with a linked Google identity and
+    return the query of the /auth-bounce URL the callback redirects to."""
+    import respx, uuid, urllib.parse
+    sfx = uuid.uuid4().hex[:8]
+    email = f"bounce-{sfx}@example.com"
+    sub = f"g-bounce-{sfx}"
+    execute(
+        "INSERT INTO organizations (name, slug, plan, screen_limit, "
+        "subscription_status, locale, created_at) "
+        "VALUES (?, ?, 'starter', 3, 'trialing', 'en', now())",
+        (f"Bounce {sfx}", f"bounce-{sfx}"),
+    )
+    org = query_one("SELECT id FROM organizations WHERE slug = ?",
+                    (f"bounce-{sfx}",))
+    execute(
+        "INSERT INTO users (organization_id, username, password_hash, "
+        "is_admin, role, created_at) VALUES (?, ?, NULL, 1, 'admin', now())",
+        (org["id"], email),
+    )
+    user = query_one("SELECT id FROM users WHERE username = ?", (email,))
+    execute(
+        "INSERT INTO auth_identities (user_id, provider, subject_id, "
+        "email_at_link) VALUES (?, 'google', ?, ?)",
+        (user["id"], sub, email),
+    )
+    id_token = _sign_google_id_token(google_env, sub=sub, email=email)
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    r = client.get("/auth/google/start",
+                   params={"intent": "signin", "return_to": return_to},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    cookie = r.cookies["auth_csrf"]
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    r = client.get("/auth/google/callback",
+                   params={"code": "any", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = urllib.parse.urlparse(r.headers["location"])
+    assert loc.path == "/auth-bounce"
+    return dict(urllib.parse.parse_qsl(loc.query))
+
+
+_UNSAFE_RETURN_TO = [
+    "https://evil.example/",
+    "//evil.example/",
+    "/\\evil.example/",
+    "\\\\evil.example/",
+    "/\t/evil.example/",     # browsers drop the tab: "//evil.example/"
+    "/\n/evil.example/",
+    "javascript:alert(1)",
+    "evil.example",
+    "",
+]
+
+# The dashboard sends the page it was on plus a one-time nonce it checks
+# when the bounce comes back, so a query string must survive untouched.
+_SAFE_RETURN_TO = [
+    "/",
+    "/billing",
+    "/?sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "/billing?tab=plans&sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+]
+
+
+@pytest.mark.parametrize("raw", _UNSAFE_RETURN_TO)
+def test_unsafe_return_to_falls_back_to_root(raw):
+    from social_auth import _safe_return_to
+    assert _safe_return_to(raw) == "/"
+
+
+@pytest.mark.parametrize("raw", _SAFE_RETURN_TO)
+def test_same_origin_return_to_is_kept(raw):
+    from social_auth import _safe_return_to
+    assert _safe_return_to(raw) == raw
+
+
+def test_google_start_does_not_sign_offsite_return_to(client, google_env):
+    import urllib.parse
+    from social_auth import _verify_state
+    r = client.get("/auth/google/start",
+                   params={"intent": "signin",
+                           "return_to": "https://evil.example/phish"},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    assert _verify_state(state)["return_to"] == "/"
+
+
+def test_bounce_never_carries_offsite_return_to(google_env):
+    """Even a state signed before this check existed is not bounced
+    off-site: the redirect builder applies it as well."""
+    import urllib.parse
+    from social_auth import _bounce_with_token
+    url = _bounce_with_token("tok", "//evil.example/")
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    assert q["return_to"] == "/"
+
+
+def test_google_signin_offsite_return_to_bounces_to_root(client, google_env,
+                                                         respx_mock):
+    q = _google_signin_bounce(client, google_env, respx_mock,
+                              "https://evil.example/phish")
+    assert q["token"]
+    assert q["return_to"] == "/"
+
+
+def test_google_signin_keeps_dashboard_nonce_return_to(client, google_env,
+                                                       respx_mock):
+    rt = "/billing?tab=plans&sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    q = _google_signin_bounce(client, google_env, respx_mock, rt)
+    assert q["token"]
+    assert q["return_to"] == rt
+
+
 # ── Apple flow ────────────────────────────────────────────────────────
 
 
