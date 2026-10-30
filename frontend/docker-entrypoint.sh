@@ -12,6 +12,22 @@ EOF
 # deployment gets a valid restrictive policy rather than a malformed one.
 sed -i "s|__PLAYER_BASE_URL__|${PLAYER_BASE_URL:-\'none\'}|g" /etc/nginx/conf.d/default.conf
 
+# Point connect-src / img-src / media-src at the API origin the app calls. Only
+# scheme://host[:port] is taken — a CSP source with a path matches that path
+# alone — and only plain hostname characters, so a stray quote or ';' cannot
+# break the policy. Unset or unparseable falls back to the production API, and
+# the ws(s) origin is derived from it: http -> ws, https -> wss.
+API_ORIGIN=$(printf '%s\n' "${API_BASE_URL:-}" | sed -nE 's,^(https?://[A-Za-z0-9.-]+(:[0-9]+)?)([/?#].*)?$,\1,p')
+if [ -z "$API_ORIGIN" ]; then
+  [ -n "${API_BASE_URL:-}" ] && echo "frontend: API_BASE_URL '${API_BASE_URL}' is not an http(s) URL; CSP falls back to the production API"
+  API_ORIGIN=https://api.khanshoof.com
+fi
+sed -i \
+  -e "s|__API_ORIGIN__|${API_ORIGIN}|g" \
+  -e "s|__API_WS_ORIGIN__|ws${API_ORIGIN#http}|g" \
+  /etc/nginx/conf.d/default.conf
+echo "frontend: CSP API origin ${API_ORIGIN}"
+
 # ── Cache-busting ───────────────────────────────────────────────────────────
 # index.html and the JS are served no-store, but styles.css and the mascot PNGs
 # carry a 7-day max-age. So a deploy pairs brand-new scripts with a stale
