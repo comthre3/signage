@@ -230,3 +230,43 @@ def test_full_flow_request_claim_poll(client):
     r = client.get(f"/screens/{token}/content")
     assert r.status_code == 200
     assert "items" in r.json()
+
+
+# ── Legacy /screens/pair: the screen card's ?code= link ────────────────
+# A hit returns the screen's token (full content access) to an anonymous
+# caller, and the 6-digit code never expires, so guessing must be throttled
+# and the codes themselves unpredictable.
+
+def test_legacy_pair_endpoint_is_rate_limited():
+    # Tests run with RATE_LIMITS_ENABLED=0, so assert the registered limit.
+    import main
+    limits = main.limiter._route_limits.get("main.pair_screen", [])
+    assert [str(lim.limit) for lim in limits] == ["10 per 1 minute"]
+
+
+def test_legacy_pair_code_shape():
+    from main import generate_pair_code
+    for _ in range(50):
+        code = generate_pair_code()
+        assert re.fullmatch(r"[1-9]\d{5}", code), code
+
+
+def test_legacy_pair_code_does_not_come_from_the_seedable_prng():
+    """random is a Mersenne Twister: its output is recoverable from earlier
+    outputs and repeats under a fixed seed. Codes must not follow it."""
+    import random
+    from main import generate_pair_code
+    random.seed(1234)
+    first = [generate_pair_code() for _ in range(5)]
+    random.seed(1234)
+    second = [generate_pair_code() for _ in range(5)]
+    assert first != second
+
+
+def test_legacy_pair_still_returns_the_screen_token(client):
+    ctx = _login_as_signed_up_org(client)
+    screen = ctx["default_screen"]
+    r = client.post("/screens/pair", json={"pair_code": screen["pair_code"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["token"] == screen["token"]
+    assert client.post("/screens/pair", json={"pair_code": "000000"}).status_code == 404

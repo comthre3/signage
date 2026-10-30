@@ -191,7 +191,9 @@ def slugify(value: str) -> str:
 
 
 def generate_pair_code() -> str:
-    return f"{random.randint(100000, 999999)}"
+    # secrets, not random: a Mersenne Twister's next outputs can be recovered
+    # from earlier ones, and this code alone hands out the screen's token.
+    return f"{100000 + secrets.randbelow(900000)}"
 
 
 def generate_unique_pair_code() -> str:
@@ -3254,6 +3256,7 @@ def claim_pair_code(
 
 
 @app.post("/screens/pair")
+@limiter.limit("10/minute")
 def pair_screen(request: Request, payload: PairRequest) -> dict:
     screen = query_one("SELECT * FROM screens WHERE pair_code = ?", (payload.pair_code,))
     if not screen:
