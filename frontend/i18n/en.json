@@ -501,5 +501,8 @@
   "error.generic": "Something went wrong. Please try again.",
   "error.network": "Can't reach the server. Check your connection and try again.",
   "error.insufficient_role": "Your account doesn't have permission to do that.",
-  "toast.files_failed_n": "{n} file(s) couldn't be uploaded. {reason}"
+  "toast.files_failed_n": "{n} file(s) couldn't be uploaded. {reason}",
+  "auth.social.link_refused": "That sign-in link didn't start in this browser, so it was ignored. Please sign in again.",
+  "auth.social.failed": "Sign-in was cancelled or didn't complete. Please try again.",
+  "auth.social.complete_signup.failed": "Couldn't finish creating your account."
 }

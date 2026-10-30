@@ -1526,12 +1526,71 @@ document.getElementById("auth-tab-login") .addEventListener("click", () => showA
 document.getElementById("auth-tab-signup").addEventListener("click", () => showAuthTab("signup"));
 
 /* ── Phase 2.5j: Social auth (Google + Apple) ───────────────── */
+// The backend hands the new session token back in the /auth-bounce URL. Any
+// page can link to /auth-bounce?token=..., so a token there is only trusted
+// when THIS tab started the sign-in: startSocialAuth stores a random nonce in
+// sessionStorage and threads it through return_to (which the backend signs
+// into the OAuth state and echoes back). A link built by someone else cannot
+// carry it, so it can neither sign the visitor into the attacker's account
+// nor redirect them off-site.
+const SOCIAL_PENDING_KEY    = "khan_social_auth_pending";
+const SOCIAL_PENDING_TTL_MS = 15 * 60 * 1000;
+const SOCIAL_NONCE_PARAM    = "sa_nonce";
+const FLASH_KEY             = "khan_flash";
+
+function randomNonce() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function startSocialAuth(provider) {
   const intent = document.getElementById("auth-tab-signup")
                    .classList.contains("active") ? "signup" : "signin";
-  const returnTo = window.location.pathname + window.location.search;
-  const params = new URLSearchParams({ intent, return_to: returnTo });
+  const nonce = randomNonce();
+  try {
+    sessionStorage.setItem(SOCIAL_PENDING_KEY, JSON.stringify({ nonce, at: Date.now() }));
+  } catch (_) { /* storage unavailable: the bounce will refuse the token */ }
+  const here = new URL(window.location.href);
+  here.searchParams.set(SOCIAL_NONCE_PARAM, nonce);
+  const params = new URLSearchParams({ intent, return_to: here.pathname + here.search });
   window.location = `${API_BASE}/auth/${provider}/start?${params}`;
+}
+
+/** The sign-in this tab started, if any (consumed: one use only). */
+function takePendingSocialAuth() {
+  let pending = null;
+  try {
+    pending = JSON.parse(sessionStorage.getItem(SOCIAL_PENDING_KEY) || "null");
+    sessionStorage.removeItem(SOCIAL_PENDING_KEY);
+  } catch (_) { pending = null; }
+  if (!pending || typeof pending.nonce !== "string" || !pending.nonce) return null;
+  if (!(Date.now() - Number(pending.at) < SOCIAL_PENDING_TTL_MS)) return null;
+  return pending;
+}
+
+/** A same-origin URL for a relative path like "/billing?x=1", else null.
+ *  Rejects absolute and protocol-relative URLs ("https://…", "//…", "/\\…"). */
+function safeReturnUrl(raw) {
+  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return null;
+  let url;
+  try { url = new URL(raw, window.location.origin); } catch (_) { return null; }
+  if (url.origin !== window.location.origin || url.pathname === "/auth-bounce") return null;
+  return url;
+}
+
+/** A toast to show after the next page load (this one is about to navigate). */
+function setFlash(key, fallback, type = "error") {
+  try { sessionStorage.setItem(FLASH_KEY, JSON.stringify({ key, fallback, type })); } catch (_) {}
+}
+
+function showFlash() {
+  let flash = null;
+  try {
+    flash = JSON.parse(sessionStorage.getItem(FLASH_KEY) || "null");
+    sessionStorage.removeItem(FLASH_KEY);
+  } catch (_) { flash = null; }
+  if (flash && flash.key) toast(Khan.t(flash.key, flash.fallback), flash.type || "info", 7000);
 }
 const googleBtn = document.getElementById("btn-social-google");
 const appleBtn  = document.getElementById("btn-social-apple");
@@ -1609,25 +1668,41 @@ function handleAuthBounce() {
   const token   = params.get("token");
   const stash   = params.get("complete_signup");
   const error   = params.get("error");
-  const returnTo      = params.get("return_to") || "/";
   const suggestedName = params.get("suggested_name") || "";
+  const pending = takePendingSocialAuth();
+  const refuse = () => {
+    setFlash("auth.social.link_refused",
+             "That sign-in link didn't start in this browser, so it was ignored. Please sign in again.");
+    window.location.replace("/");
+  };
 
   if (error) {
-    alert("Sign-in cancelled or failed: " + error);
-    window.location = "/";
+    setFlash("auth.social.failed", "Sign-in was cancelled or didn't complete. Please try again.");
+    window.location.replace("/");
     return;
   }
   if (token) {
+    const target = safeReturnUrl(params.get("return_to") || "/");
+    const echoed = target ? target.searchParams.get(SOCIAL_NONCE_PARAM) : null;
+    if (!pending || !echoed || echoed !== pending.nonce) { refuse(); return; }
+    target.searchParams.delete(SOCIAL_NONCE_PARAM);
     localStorage.setItem(AUTH_STORAGE_KEY, token);
-    window.location = returnTo;
+    // replace(): the token-bearing URL must not stay in the history.
+    window.location.replace(target.pathname + target.search + target.hash);
     return;
   }
   if (stash) {
+    // No return_to on this leg to carry the nonce, but a stash nobody in this
+    // tab asked for is still refused: completing it would tie the new org to
+    // whoever's Google/Apple identity the stash holds.
+    if (!pending) { refuse(); return; }
     let provider = "google";
     try {
-      const payload = JSON.parse(atob(stash.split(".")[1]));
+      const b64 = stash.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
       provider = payload.provider || "google";
     } catch (e) { /* fall through with default */ }
+    history.replaceState({}, "", "/auth-bounce");   // keep the stash out of history
 
     const html = `
       <div class="modal-overlay" id="complete-signup-overlay">
@@ -1653,20 +1728,20 @@ function handleAuthBounce() {
       e.preventDefault();
       const businessName = e.target.business_name.value.trim();
       if (!businessName) return;
-      const r = await fetch(`${API_BASE}/auth/${provider}/complete-signup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stash_token: stash,
-                               business_name: businessName }),
-      });
-      const body = await r.json();
-      if (r.ok) {
-        localStorage.setItem(AUTH_STORAGE_KEY, body.token);
-        window.location = "/";
-      } else {
-        const msg = (body.detail && body.detail.message)
-                    || "Failed to complete signup";
-        alert(msg);
+      const submit = e.target.querySelector("button[type=submit]");
+      try {
+        await withLoading(submit, async () => {
+          const body = await api(`/auth/${provider}/complete-signup`, {
+            method: "POST",
+            body: JSON.stringify({ stash_token: stash, business_name: businessName }),
+          });
+          localStorage.setItem(AUTH_STORAGE_KEY, body.token);
+          window.location.replace("/");
+        });
+      } catch (err) {
+        toast(err.isApiError ? err.message
+                             : Khan.t("auth.social.complete_signup.failed", "Couldn't finish creating your account."),
+              "error", 6000);
       }
     });
   }
@@ -2098,6 +2173,7 @@ async function boot() {
   const locale = Khan.detectInitialLocale(orgLocale);
   await Khan.loadLocale(locale);
   Khan.applyTranslations(document);
+  showFlash();
 
   bindLangToggle();
 

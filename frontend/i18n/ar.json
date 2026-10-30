@@ -501,5 +501,8 @@
   "error.generic": "حدث خطأ ما. يُرجى المحاولة مجدداً.",
   "error.network": "تعذّر الوصول إلى الخادم. تحقق من اتصالك ثم حاول مجدداً.",
   "error.insufficient_role": "ليست لدى حسابك صلاحية للقيام بذلك.",
-  "toast.files_failed_n": "تعذّر رفع {n} ملف. {reason}"
+  "toast.files_failed_n": "تعذّر رفع {n} ملف. {reason}",
+  "auth.social.link_refused": "لم يبدأ رابط تسجيل الدخول هذا من هذا المتصفح، لذلك تم تجاهله. يُرجى تسجيل الدخول مجدداً.",
+  "auth.social.failed": "أُلغي تسجيل الدخول أو لم يكتمل. يُرجى المحاولة مجدداً.",
+  "auth.social.complete_signup.failed": "تعذّر إكمال إنشاء حسابك."
 }
