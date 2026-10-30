@@ -7,6 +7,9 @@ from httpx import ASGITransport
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
+from starlette.responses import JSONResponse
 
 logger = logging.getLogger("signage.mcp")
 
@@ -34,6 +37,71 @@ def _mcp_unauthorized() -> McpError:
         code=_INVALID_REQUEST,
         message="Authentication required — provide a Bearer OAuth token.",
     ))
+
+
+# ── HTTP-level authentication ─────────────────────────────────────────
+#
+# The MCP authorization spec has the server answer a request without a valid
+# token with HTTP 401 and a WWW-Authenticate header naming the protected-
+# resource metadata (RFC 9728); that 401 is what makes a client start OAuth.
+# FastMCP alone answers 200 to initialize/tools/list and returns an in-band
+# tool error on tools/call, so clients never learned they had to sign in.
+
+
+def _resource_metadata_url() -> str:
+    from oauth import _api_base_url
+    return f"{_api_base_url()}/.well-known/oauth-protected-resource"
+
+
+def _token_is_valid(token: str) -> bool:
+    """Same acceptance as every REST endpoint: API key, OAuth access token
+    (whose granting user still exists), or dashboard session."""
+    from fastapi import HTTPException
+    from main import get_api_authed
+    try:
+        get_api_authed(f"Bearer {token}")
+    except HTTPException:
+        return False
+    return True
+
+
+def _unauthorized(error: Optional[str]) -> JSONResponse:
+    challenge = f'Bearer resource_metadata="{_resource_metadata_url()}"'
+    if error:
+        challenge += f', error="{error}"'
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": error or "unauthorized",
+            "error_description": (
+                "The access token is invalid, expired or revoked."
+                if error else "Authentication required: sign in with OAuth."
+            ),
+        },
+        headers={"WWW-Authenticate": challenge},
+    )
+
+
+class _RequireBearer:
+    """ASGI wrapper around the MCP app: no valid Bearer token, no MCP."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+        scheme, _, token = Headers(scope=scope).get("authorization", "").partition(" ")
+        token = token.strip()
+        if scheme.lower() != "bearer" or not token:
+            response = _unauthorized(None)
+        elif not await run_in_threadpool(_token_is_valid, token):
+            response = _unauthorized("invalid_token")
+        else:
+            await self.app(scope, receive, send)
+            return
+        await response(scope, receive, send)
 
 
 def _map_response(r: httpx.Response, path: str) -> Any:
@@ -400,4 +468,4 @@ def attach_mcp(app) -> None:
         if _cm is not None:
             await _cm.__aexit__(None, None, None)
 
-    app.mount("/mcp", sub_app)
+    app.mount("/mcp", _RequireBearer(sub_app))
