@@ -908,3 +908,530 @@ def test_authorization_code_single_use(client):
         "client_id": flow["client_id"], "code_verifier": flow["verifier"],
     })
     assert r2.status_code == 400
+
+
+# ── Token storage: indexed SHA-256, never a PBKDF2 scan ─────────────
+
+
+def _sha(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _exchange(client, flow) -> dict:
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": flow["code"], "redirect_uri": flow["redirect_uri"],
+        "client_id": flow["client_id"], "code_verifier": flow["verifier"],
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_tokens_and_codes_are_stored_as_sha256(client):
+    flow = _full_authorize_flow(client)
+    code_row = query_one(
+        "SELECT id FROM oauth_authorization_codes WHERE code_hash = ?",
+        (_sha(flow["code"]),),
+    )
+    assert code_row is not None
+    tokens = _exchange(client, flow)
+    row = query_one(
+        "SELECT refresh_token_hash FROM oauth_tokens WHERE access_token_hash = ?",
+        (_sha(tokens["access_token"]),),
+    )
+    assert row is not None
+    assert row["refresh_token_hash"] == _sha(tokens["refresh_token"])
+
+
+def test_bearer_misses_run_no_key_derivation(client, signed_up_org, monkeypatch):
+    """Every dashboard request is a bearer that is not an API key, so it is
+    first tried as an OAuth access token. That miss -- and misses on
+    /oauth/token and /oauth/revoke, which anyone can call -- must not
+    PBKDF2-verify against every live token."""
+    import main
+    flow = _full_authorize_flow(client)
+    _exchange(client, flow)                 # at least one live token exists
+    calls = []
+    real = main.verify_password
+    monkeypatch.setattr(main, "verify_password",
+                        lambda *a: calls.append(a) or real(*a))
+
+    r = client.get("/organization",
+                   headers={"Authorization": f"Bearer {signed_up_org['token']}"})
+    assert r.status_code == 200, r.text
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token", "refresh_token": "not-a-token",
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 400
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": "not-a-code",
+        "redirect_uri": flow["redirect_uri"], "client_id": flow["client_id"],
+        "code_verifier": "v",
+    })
+    assert r.status_code == 400
+    r = client.post("/oauth/revoke", data={"token": "not-a-token"})
+    assert r.status_code == 200
+    assert calls == []
+
+
+def _make_legacy(tokens: dict) -> int:
+    """Rewrite a token row the way a pre-SHA-256 deployment stored it."""
+    from main import hash_password
+    row = query_one("SELECT id FROM oauth_tokens WHERE access_token_hash = ?",
+                    (_sha(tokens["access_token"]),))
+    execute(
+        "UPDATE oauth_tokens SET access_token_hash = ?, refresh_token_hash = ? "
+        "WHERE id = ?",
+        (hash_password(tokens["access_token"]),
+         hash_password(tokens["refresh_token"]), row["id"]),
+    )
+    return row["id"]
+
+
+def test_legacy_access_token_works_and_is_upgraded_in_place(client, monkeypatch):
+    import oauth
+    flow = _full_authorize_flow(client)
+    tokens = _exchange(client, flow)
+    row_id = _make_legacy(tokens)
+    monkeypatch.setitem(oauth._legacy_live, "access", True)
+    monkeypatch.setitem(oauth._legacy_live, "refresh", True)
+
+    r = client.get("/organization",
+                   headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    assert r.status_code == 200, r.text
+    row = query_one("SELECT access_token_hash FROM oauth_tokens WHERE id = ?",
+                    (row_id,))
+    assert row["access_token_hash"] == _sha(tokens["access_token"])
+
+    # The legacy refresh token still rotates (and the new pair is SHA-256).
+    r = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+        "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200, r.text
+    new = r.json()
+    assert query_one("SELECT id FROM oauth_tokens WHERE access_token_hash = ?",
+                     (_sha(new["access_token"]),)) is not None
+    assert query_one("SELECT revoked_at FROM oauth_tokens WHERE id = ?",
+                     (row_id,))["revoked_at"] is not None
+
+
+def test_legacy_token_can_be_revoked(client, monkeypatch):
+    import oauth
+    flow = _full_authorize_flow(client)
+    tokens = _exchange(client, flow)
+    row_id = _make_legacy(tokens)
+    monkeypatch.setitem(oauth._legacy_live, "access", True)
+    monkeypatch.setitem(oauth._legacy_live, "refresh", True)
+    r = client.post("/oauth/revoke", data={
+        "token": tokens["refresh_token"], "client_id": flow["client_id"],
+    })
+    assert r.status_code == 200
+    assert query_one("SELECT revoked_at FROM oauth_tokens WHERE id = ?",
+                     (row_id,))["revoked_at"] is not None
+
+
+# ── A token acts as the user who granted it, with that user's role ──
+import re
+
+
+def _bearer(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _add_member(client, admin_token: str, role: str) -> dict:
+    """Admin adds a user with `role`; returns {id, username, password, token}."""
+    username = f"{role}-{uuid.uuid4().hex[:8]}@example.com"
+    password = "Khanshoof2026Member"
+    r = client.post("/users", headers=_bearer(admin_token),
+                    json={"username": username, "password": password,
+                          "role": role})
+    assert r.status_code in (200, 201), r.text
+    user_id = r.json()["id"]
+    r = client.post("/auth/login",
+                    json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    return {"id": user_id, "username": username, "password": password,
+            "token": r.json()["token"]}
+
+
+def _consent_page(client, session_token: str, cid: str, challenge: str,
+                  scope: str):
+    return client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": scope, "state": "s",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, cookies={"oauth_session": session_token}, follow_redirects=False)
+
+
+def _grant(client, session_token: str, requested: str = "api:rw",
+           chosen: str | None = None) -> dict:
+    """Authorize as the session's user, allow, exchange. Returns the token
+    response plus client_id."""
+    cid = _register_client(client)
+    verifier, challenge = _pkce_pair()
+    r = _consent_page(client, session_token, cid, challenge, requested)
+    assert r.status_code == 200, r.text
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": chosen or requested},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 200, r.text
+    return {**r.json(), "client_id": cid}
+
+
+def test_viewer_consent_offers_read_only(client):
+    admin_token, *_ = _signup_org(client)
+    viewer = _add_member(client, admin_token, "viewer")
+    cid = _register_client(client)
+    _v, challenge = _pkce_pair()
+    r = _consent_page(client, viewer["token"], cid, challenge, "api:rw")
+    assert r.status_code == 200, r.text
+    rw_input = re.search(r'<input[^>]*value="api:rw"[^>]*>', r.text).group(0)
+    assert "disabled" in rw_input
+    read_input = re.search(r'<input[^>]*value="api:read"[^>]*>', r.text).group(0)
+    assert "checked" in read_input
+
+
+def test_viewer_cannot_grant_rw(client):
+    """Even posting scope=api:rw at consent, a viewer's grant is api:read."""
+    admin_token, *_ = _signup_org(client)
+    viewer = _add_member(client, admin_token, "viewer")
+    tokens = _grant(client, viewer["token"], requested="api:rw", chosen="api:rw")
+    assert tokens["scope"] == "api:read"
+    r = client.post("/playlists", headers=_bearer(tokens["access_token"]),
+                    json={"name": "viewer write"})
+    assert r.status_code == 403, r.text
+    r = client.get("/playlists", headers=_bearer(tokens["access_token"]))
+    assert r.status_code == 200, r.text
+
+
+def test_editor_token_cannot_do_admin_only_write(client):
+    """DELETE /schedules is admin-only for sessions; an editor's api:rw
+    token must not get around that."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    r = client.post("/schedules", headers=_bearer(admin_token),
+                    json={"name": "admin only delete"})
+    assert r.status_code in (200, 201), r.text
+    sid = r.json()["id"]
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    assert tokens["scope"] == "api:rw"
+    bearer = _bearer(tokens["access_token"])
+
+    r = client.post("/playlists", headers=bearer, json={"name": "editor ok"})
+    assert r.status_code in (200, 201), r.text    # editors may write content
+    r = client.delete(f"/schedules/{sid}", headers=bearer)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "insufficient_role"
+    r = client.delete(f"/schedules/{sid}", headers=_bearer(admin_token))
+    assert r.status_code == 204, r.text
+
+
+def test_token_follows_grantors_current_role(client):
+    """Demoting the user who granted a token takes effect on the token."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    bearer = _bearer(tokens["access_token"])
+    r = client.post("/playlists", headers=bearer, json={"name": "before"})
+    assert r.status_code in (200, 201), r.text
+
+    r = client.put(f"/users/{editor['id']}", headers=_bearer(admin_token),
+                   json={"role": "viewer"})
+    assert r.status_code == 200, r.text
+    r = client.post("/playlists", headers=bearer, json={"name": "after"})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "insufficient_role"
+
+
+def test_token_rejected_once_grantor_is_gone(client):
+    """oauth_tokens.user_id is ON DELETE SET NULL: a row orphaned that way
+    must stop authenticating, not carry on as an org-level credential."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    bearer = _bearer(tokens["access_token"])
+    assert client.get("/playlists", headers=bearer).status_code == 200
+    execute("DELETE FROM users WHERE id = ?", (editor["id"],))
+    r = client.get("/playlists", headers=bearer)
+    assert r.status_code == 401, r.text
+
+
+# ── Removing a user / changing a password ends their OAuth grants ───
+
+
+def _refresh(client, tokens: dict):
+    return client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": tokens["refresh_token"],
+        "client_id": tokens["client_id"],
+    })
+
+
+def _live_token_rows(client_id: str) -> list:
+    return query_all(
+        "SELECT id FROM oauth_tokens WHERE client_id = ? AND revoked_at IS NULL",
+        (client_id,),
+    )
+
+
+def test_deleting_user_revokes_their_oauth_tokens(client):
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    assert _live_token_rows(tokens["client_id"])
+
+    r = client.delete(f"/users/{editor['id']}", headers=_bearer(admin_token))
+    assert r.status_code == 200, r.text
+    assert _live_token_rows(tokens["client_id"]) == []
+    assert client.get("/playlists",
+                      headers=_bearer(tokens["access_token"])).status_code == 401
+    r = _refresh(client, tokens)
+    assert r.status_code == 400, r.text
+    assert r.json()["error"] == "invalid_grant"
+
+
+def test_password_change_revokes_oauth_tokens_and_codes(client):
+    session_token, _o, _u, _e = _signup_org(client)
+    tokens = _grant(client, session_token, requested="api:rw")
+    # A code issued but not yet redeemed must die too.
+    cid = _register_client(client)
+    verifier, challenge = _pkce_pair()
+    r = _consent_page(client, session_token, cid, challenge, "api:read")
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:read"},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+
+    r = client.post("/auth/change-password", headers=_bearer(session_token),
+                    json={"current_password": "Khanshoof2026Test",
+                          "new_password": "Khanshoof2026Rotated"})
+    assert r.status_code == 200, r.text
+
+    assert _live_token_rows(tokens["client_id"]) == []
+    assert client.get("/organization",
+                      headers=_bearer(tokens["access_token"])).status_code == 401
+    assert _refresh(client, tokens).status_code == 400
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 400, r.text
+
+
+def test_refresh_fails_once_grantor_is_gone(client):
+    """A row orphaned by ON DELETE SET NULL (a deletion before revocation
+    existed) must not be able to rotate itself forever."""
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    execute("DELETE FROM users WHERE id = ?", (editor["id"],))
+    r = _refresh(client, tokens)
+    assert r.status_code == 400, r.text
+    assert r.json()["error"] == "invalid_grant"
+    assert _live_token_rows(tokens["client_id"]) == []
+
+
+def test_refresh_caps_scope_to_grantors_current_role(client):
+    admin_token, *_ = _signup_org(client)
+    editor = _add_member(client, admin_token, "editor")
+    tokens = _grant(client, editor["token"], requested="api:rw")
+    r = client.put(f"/users/{editor['id']}", headers=_bearer(admin_token),
+                   json={"role": "viewer"})
+    assert r.status_code == 200, r.text
+    r = _refresh(client, tokens)
+    assert r.status_code == 200, r.text
+    assert r.json()["scope"] == "api:read"
+
+
+# ── Authorization-flow state is shared by every worker ──────────────
+
+
+def _insert_pending(client_id: str, challenge: str, *, expired: bool = False,
+                    scope: str = "api:rw", state: str = "w") -> str:
+    """Write a pending authorization the way another uvicorn worker would."""
+    request_id = secrets.token_urlsafe(24)
+    execute(
+        "INSERT INTO oauth_pending_auth "
+        "  (request_id, client_id, redirect_uri, scope, state, code_challenge, "
+        "   expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, now() + "
+        + ("interval '-1 minute'" if expired else "interval '10 minutes'")
+        + ") RETURNING request_id",
+        (request_id, client_id, "http://localhost:5173/oauth/callback",
+         scope, state, challenge),
+    )
+    return request_id
+
+
+def test_pending_authorization_is_stored_in_postgres(client):
+    cid = _register_client(client)
+    _v, challenge = _pkce_pair()
+    r = client.get("/oauth/authorize", params={
+        "response_type": "code", "client_id": cid,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "scope": "api:read", "state": "abc",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    }, follow_redirects=False)
+    assert r.status_code == 200, r.text
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    row = query_one(
+        "SELECT client_id, state, code_challenge, "
+        "       EXTRACT(EPOCH FROM expires_at - now()) AS ttl "
+        "FROM oauth_pending_auth WHERE request_id = ?",
+        (request_id,),
+    )
+    assert row is not None
+    assert (row["client_id"], row["state"], row["code_challenge"]) == \
+        (cid, "abc", challenge)
+    assert 590 < float(row["ttl"]) <= 600
+
+
+def test_flow_completes_on_state_another_worker_wrote(client):
+    """/oauth/authorize, /oauth/login and /oauth/authorize/decision land on
+    different workers in production; each must see the others' state."""
+    cid = _register_client(client)
+    _session, _o, _u, email = _signup_org(client)
+    verifier, challenge = _pkce_pair()
+    request_id = _insert_pending(cid, challenge)
+
+    r = client.post("/oauth/login", data={
+        "request_id": request_id, "username": email,
+        "password": "Khanshoof2026Test",
+    }, follow_redirects=False)
+    assert r.status_code == 302, r.text
+    assert f"resume={request_id}" in r.headers["location"]
+    oauth_session = r.cookies.get("oauth_session")
+    assert oauth_session
+
+    r = client.get(r.headers["location"],
+                   cookies={"oauth_session": oauth_session},
+                   follow_redirects=False)
+    assert r.status_code == 200, r.text
+    assert f'value="{request_id}"' in r.text
+
+    # A worker that never saw the authorize request finishes the flow.
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies={"oauth_session": oauth_session},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 200, r.text
+
+    # Single use: the pending authorization is gone once decided.
+    assert query_one("SELECT 1 AS x FROM oauth_pending_auth WHERE request_id = ?",
+                     (request_id,)) is None
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies={"oauth_session": oauth_session},
+                    follow_redirects=False)
+    assert r.status_code == 400
+    assert "Authorization expired" in r.text
+
+
+def test_expired_pending_authorization_is_refused(client):
+    cid = _register_client(client)
+    session_token, _o, _u, email = _signup_org(client)
+    _v, challenge = _pkce_pair()
+    request_id = _insert_pending(cid, challenge, expired=True)
+    r = client.post("/oauth/login", data={
+        "request_id": request_id, "username": email,
+        "password": "Khanshoof2026Test",
+    }, follow_redirects=False)
+    assert r.status_code == 400
+    assert "Login session expired" in r.text
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": "api:rw"},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    assert r.status_code == 400
+    assert "Authorization expired" in r.text
+
+
+# ── Scope lists ─────────────────────────────────────────────────────
+
+
+def _checked_scope(html: str) -> str:
+    return re.search(r'<input[^>]*value="(api:[a-z]+)"[^>]*\bchecked\b', html).group(1)
+
+
+def _flow_with_scope(client, session_token: str, scope: str) -> dict:
+    """Request `scope`, submit whatever the consent page pre-selects (as a
+    user clicking Allow would), and exchange the code."""
+    cid = _register_client(client)
+    verifier, challenge = _pkce_pair()
+    r = _consent_page(client, session_token, cid, challenge, scope)
+    assert r.status_code == 200, r.text
+    request_id = re.search(r'name="request_id" value="([^"]+)"', r.text).group(1)
+    r = client.post("/oauth/authorize/decision",
+                    data={"request_id": request_id, "decision": "allow",
+                          "scope": _checked_scope(r.text)},
+                    cookies={"oauth_session": session_token},
+                    follow_redirects=False)
+    assert r.status_code == 302, r.text
+    code = re.search(r"code=([^&]+)", r.headers["location"]).group(1)
+    r = client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": "http://localhost:5173/oauth/callback",
+        "client_id": cid, "code_verifier": verifier,
+    })
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_space_separated_scopes_grant_the_highest(client):
+    """MCP SDKs request every entry of scopes_supported, space-separated."""
+    session_token, *_ = _signup_org(client)
+    assert _flow_with_scope(client, session_token, "api:read api:rw")["scope"] == "api:rw"
+    assert _flow_with_scope(client, session_token, "api:rw api:read")["scope"] == "api:rw"
+
+
+def test_space_separated_scopes_capped_for_viewer(client):
+    admin_token, *_ = _signup_org(client)
+    viewer = _add_member(client, admin_token, "viewer")
+    assert _flow_with_scope(client, viewer["token"], "api:read api:rw")["scope"] == "api:read"
+
+
+def test_unrecognised_scopes_are_ignored_alongside_known_ones(client):
+    session_token, *_ = _signup_org(client)
+    assert _flow_with_scope(client, session_token, "api:read offline_access")["scope"] == "api:read"
+
+
+def test_scope_with_nothing_recognised_is_invalid(client):
+    cid = _register_client(client)
+    _v, challenge = _pkce_pair()
+    for scope in ("admin", "", "   "):
+        r = client.get("/oauth/authorize", params={
+            "response_type": "code", "client_id": cid,
+            "redirect_uri": "http://localhost:5173/oauth/callback",
+            "scope": scope, "state": "s",
+            "code_challenge": challenge, "code_challenge_method": "S256",
+        }, follow_redirects=False)
+        assert r.status_code == 302, (scope, r.text)
+        assert "error=invalid_scope" in r.headers["location"]

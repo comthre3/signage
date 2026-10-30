@@ -631,7 +631,11 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
 
 
 class AuthedPrincipal:
-    """Carries whichever identity authenticated the request."""
+    """Carries whichever identity authenticated the request.
+
+    user is set for a session and for an OAuth access token (the user who
+    granted it); it is None only for an API key, which acts for the org.
+    """
 
     def __init__(
         self,
@@ -667,7 +671,10 @@ def get_api_authed(authorization: Optional[str] = Header(None)) -> AuthedPrincip
     from oauth import lookup_oauth_access_token
     oauth_row = lookup_oauth_access_token(token)
     if oauth_row:
+        # Acts as the user who granted it, so require_api_scope applies that
+        # user's current role exactly as it would to their own session.
         return AuthedPrincipal(
+            user=oauth_row["user"],
             organization_id=oauth_row["organization_id"],
             scope=oauth_row["scope"],
         )
@@ -690,8 +697,11 @@ def require_api_scope(
     session_roles: tuple = _ALL_SESSION_ROLES,
 ):
     """Gate an endpoint:
-      - API-keyed: scope must be in allowed_api_scopes, then tier rate limit applied
-      - Session-authed: user's role must be in session_roles (not rate-limited here)
+      - API key / OAuth token: scope must be in allowed_api_scopes
+      - Session / OAuth token: the user's current role must be in session_roles
+        (an OAuth token is checked against the user who granted it, so it can
+        never do more than that user's own session could)
+      - API key: tier rate limit applied (sessions/OAuth not rate-limited here)
     """
     def dep(principal: AuthedPrincipal = Depends(get_api_authed)) -> AuthedPrincipal:
         if principal.scope != "session":
@@ -705,8 +715,8 @@ def require_api_scope(
                         "scope":   principal.scope,
                     },
                 )
-        else:
-            role = (principal.user or {}).get("role", "viewer")
+        if principal.user is not None:
+            role = principal.user.get("role", "viewer")
             if role not in session_roles:
                 raise HTTPException(
                     status_code=403,
@@ -1630,6 +1640,8 @@ def change_password(
         (hash_password(payload.new_password), user["id"]),
     )
     execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+    from oauth import revoke_user_grants
+    revoke_user_grants(user["id"])
     audit(request, action="auth.password_change", actor=user)
     return {"status": "password_changed"}
 
@@ -2098,6 +2110,8 @@ def delete_user(request: Request, user_id: int, user: dict = Depends(require_rol
     )
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    from oauth import revoke_user_grants
+    revoke_user_grants(user_id)    # first: oauth_tokens.user_id is ON DELETE SET NULL
     execute("DELETE FROM users WHERE id = ?", (user_id,))
     execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     audit(request, action="user.delete", actor=user,

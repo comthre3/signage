@@ -137,18 +137,55 @@ _templates_dir = os.path.join(os.path.dirname(__file__), "templates")
 templates = Jinja2Templates(directory=_templates_dir)
 
 
-# Short-lived OAuth authorization-flow state. In-memory only — does not survive
-# process restart. NOT safe for multi-worker uvicorn (state on worker A is
-# invisible on worker B). v1 limitation; spec documents the trade-off.
-_pending_auth: dict = {}
+# Short-lived OAuth authorization-flow state, keyed by request_id. Lives in
+# Postgres (oauth_pending_auth) because production runs several uvicorn
+# workers and the authorize -> login -> decision requests of one flow usually
+# land on different ones. Each /oauth/authorize hit (including the resume
+# after login) restarts the TTL; the decision consumes the row exactly once.
 _PENDING_AUTH_TTL = 600   # 10 minutes
 
+_PENDING_COLUMNS = "request_id, client_id, redirect_uri, scope, state, code_challenge"
 
-def _prune_pending_auth():
-    now = time.time()
-    expired = [k for k, v in _pending_auth.items() if v.get("expires_at", 0) < now]
-    for k in expired:
-        _pending_auth.pop(k, None)
+
+def _prune_pending_auth() -> None:
+    execute("DELETE FROM oauth_pending_auth WHERE expires_at <= now()")
+
+
+def _save_pending_auth(request_id: str, client_id: str, redirect_uri: str,
+                       scope: str, state: str, code_challenge: str) -> None:
+    # Explicit RETURNING: the table has no id column for execute() to add.
+    execute(
+        "INSERT INTO oauth_pending_auth "
+        "  (request_id, client_id, redirect_uri, scope, state, code_challenge, "
+        "   expires_at) "
+        f"VALUES (?, ?, ?, ?, ?, ?, now() + interval '{int(_PENDING_AUTH_TTL)} seconds') "
+        "ON CONFLICT (request_id) DO UPDATE SET "
+        "  redirect_uri = EXCLUDED.redirect_uri, scope = EXCLUDED.scope, "
+        "  state = EXCLUDED.state, code_challenge = EXCLUDED.code_challenge, "
+        "  expires_at = EXCLUDED.expires_at "
+        "WHERE oauth_pending_auth.client_id = EXCLUDED.client_id "
+        "RETURNING request_id",
+        (request_id, client_id, redirect_uri, scope, state, code_challenge),
+    )
+
+
+def _load_pending_auth(request_id: str) -> Optional[dict]:
+    return query_one(
+        f"SELECT {_PENDING_COLUMNS} FROM oauth_pending_auth "
+        "WHERE request_id = ? AND expires_at > now()",
+        (request_id,),
+    )
+
+
+def _take_pending_auth(request_id: str) -> Optional[dict]:
+    """Consume a pending authorization: one DELETE ... RETURNING, so of two
+    concurrent decisions on the same request_id exactly one gets the row."""
+    return query_one(
+        "DELETE FROM oauth_pending_auth "
+        "WHERE request_id = ? AND expires_at > now() "
+        f"RETURNING {_PENDING_COLUMNS}",
+        (request_id,),
+    )
 
 
 def _error_response(request: Request, message: str, detail: str = "") -> HTMLResponse:
@@ -184,6 +221,28 @@ def _session_user_from_cookie(request: Request) -> Optional[dict]:
         return None
     from main import _session_lookup
     return _session_lookup(token)
+
+
+# A grant can never exceed what the granting user could do in a session.
+# Viewers are read-only everywhere, so read-only is all they can delegate;
+# editors and admins may grant api:rw (and every endpoint still applies its
+# own role gate to the token -- see require_api_scope in main.py).
+_SCOPE_RANK = {"api:read": 1, "api:rw": 2}
+_ROLE_MAX_SCOPE = {"admin": "api:rw", "editor": "api:rw", "viewer": "api:read"}
+
+
+def _parse_scope(raw: Optional[str]) -> Optional[str]:
+    """The highest scope named in a space-separated scope list (RFC 6749
+    §3.3), or None if it names none we know. MCP SDKs request every entry of
+    scopes_supported, i.e. "api:read api:rw". Unknown entries are ignored,
+    which §3.3 allows; the response's scope field says what was granted."""
+    known = [s for s in (raw or "").split() if s in _SCOPE_RANK]
+    return max(known, key=_SCOPE_RANK.__getitem__) if known else None
+
+
+def _cap_scope(scope: str, role: Optional[str]) -> str:
+    ceiling = _ROLE_MAX_SCOPE.get(role or "", "api:read")
+    return scope if _SCOPE_RANK[scope] <= _SCOPE_RANK[ceiling] else ceiling
 
 
 @router.get("/oauth/authorize")
@@ -222,28 +281,22 @@ def authorize(
         })
         return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
-    if scope not in ("api:read", "api:rw"):
+    scope = _parse_scope(scope)
+    if scope is None:
         qs = urlencode({"error": "invalid_scope", "state": state})
         return RedirectResponse(f"{redirect_uri}?{qs}", status_code=302)
 
+    request_id = None
     if resume:
-        pending = _pending_auth.get(resume)
+        pending = _load_pending_auth(resume)
         if pending and pending["client_id"] == client_id:
             request_id = resume
-        else:
-            request_id = secrets.token_urlsafe(24)
-    else:
+    if request_id is None:
         request_id = secrets.token_urlsafe(24)
 
     _prune_pending_auth()
-    _pending_auth[request_id] = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "scope": scope,
-        "state": state,
-        "code_challenge": code_challenge,
-        "expires_at": time.time() + _PENDING_AUTH_TTL,
-    }
+    _save_pending_auth(request_id, client_id, redirect_uri, scope, state,
+                       code_challenge)
 
     user = _session_user_from_cookie(request)
     if not user:
@@ -262,7 +315,8 @@ def authorize(
         client_name=client_row["client_name"],
         organization_name=(org_row or {}).get("name", "your organization"),
         user_email=user["username"],
-        requested_scope=scope,
+        requested_scope=_cap_scope(scope, user.get("role")),
+        allow_rw=_cap_scope("api:rw", user.get("role")) == "api:rw",
         request_id=request_id,
     )
     return HTMLResponse(html)
@@ -275,7 +329,7 @@ def oauth_login(
     password: str = Form(...),
     request_id: str = Form(...),
 ):
-    pending = _pending_auth.get(request_id)
+    pending = _load_pending_auth(request_id)
     if not pending:
         return _error_response(request, "Login session expired",
                                "Please restart the authorization flow from your MCP client.")
@@ -401,7 +455,7 @@ def authorize_decision(
         return _error_response(request, "Not signed in",
                                "Sign in first to authorize this client.")
 
-    pending = _pending_auth.pop(request_id, None)
+    pending = _take_pending_auth(request_id)
     if not pending:
         return _error_response(request, "Authorization expired",
                                "Please restart from your MCP client.")
@@ -410,12 +464,10 @@ def authorize_decision(
         qs = urlencode({"error": "access_denied", "state": pending["state"]})
         return RedirectResponse(f"{pending['redirect_uri']}?{qs}", status_code=302)
 
-    if scope not in ("api:read", "api:rw"):
-        scope = pending["scope"]
+    scope = _cap_scope(_parse_scope(scope) or pending["scope"], user.get("role"))
 
     code = secrets.token_urlsafe(32)
-    from main import hash_password
-    code_hash = hash_password(code)
+    code_hash = _hash_token(code)
     expires = datetime.now(timezone.utc) + timedelta(minutes=10)
     execute(
         """
@@ -453,13 +505,60 @@ def _pkce_matches(verifier: str, challenge: str) -> bool:
 
 
 def _hash_token(token: str) -> str:
-    from main import hash_password
-    return hash_password(token)
+    """SHA-256 of an authorization code / access token / refresh token.
+
+    These are secrets.token_urlsafe(32) -- 256 bits from the CSPRNG -- not
+    user-chosen passwords, so a slow KDF buys nothing against guessing. What
+    it did cost: a random salt makes the stored value unsearchable, so every
+    lookup PBKDF2-verified against every live row (~82ms each), and every
+    dashboard request is tried as an OAuth token before it is tried as a
+    session. A fixed hash is looked up with one indexed equality instead.
+    Same reasoning as hash_api_key() in main.py.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _verify_token_hash(token: str, hashed: str) -> bool:
+    """PBKDF2 check, for rows written before tokens were SHA-256 indexed."""
     from main import verify_password
     return verify_password(token, hashed)
+
+
+# Rows minted before _hash_token became SHA-256 hold a PBKDF2 "salt$digest"
+# (SHA-256 hex never contains "$"). They are still honoured until they
+# expire: an access token is upgraded in place on its next use, a refresh
+# token is rotated into a SHA-256 pair. Nothing writes PBKDF2 any more, so
+# once a scan finds no live legacy row there can never be one again, and the
+# flag turns the fallback off for the life of the process -- after at most
+# an hour (access) / 90 days (refresh) a miss costs no key derivation at all.
+_legacy_live = {"access": True, "refresh": True}
+
+_TOKEN_COLUMNS = (
+    "id, client_id, organization_id, user_id, scope, "
+    "access_expires_at, refresh_expires_at, revoked_at"
+)
+
+
+def _legacy_match(kind: str, token: str,
+                  client_id: Optional[str] = None) -> Optional[dict]:
+    if not _legacy_live[kind]:
+        return None
+    hash_col = "access_token_hash" if kind == "access" else "refresh_token_hash"
+    exp_col = "access_expires_at" if kind == "access" else "refresh_expires_at"
+    rows = query_all(
+        f"SELECT {_TOKEN_COLUMNS}, {hash_col} AS stored_hash FROM oauth_tokens "
+        f"WHERE revoked_at IS NULL AND {exp_col} > now() "
+        f"AND strpos({hash_col}, '$') > 0"
+    )
+    if not rows:
+        _legacy_live[kind] = False
+        return None
+    for row in rows:
+        if client_id is not None and row["client_id"] != client_id:
+            continue
+        if _verify_token_hash(token, row["stored_hash"]):
+            return row
+    return None
 
 
 _TOKEN_NO_CACHE_HEADERS = {
@@ -513,42 +612,20 @@ def _issue_tokens(client_id: str, org_id: int, user_id: Optional[int],
 def _exchange_authorization_code(
     code: str, client_id: str, redirect_uri: str, code_verifier: str,
 ) -> JSONResponse:
-    # PBKDF2 with random salt → lookup-key is not stable. Fetch by client_id
-    # and iterate verify. Filter to live codes only so the iteration set stays
-    # tightly bounded; post-iteration checks below defend against TOCTOU.
-    candidates = query_all(
-        "SELECT id, code_hash, client_id, organization_id, user_id, scope, "
-        "       redirect_uri, code_challenge, expires_at, consumed_at "
+    # Codes live ten minutes, so there is no PBKDF2 fallback for them: a code
+    # minted before the deploy that switched to SHA-256 just fails and the
+    # client restarts the flow.
+    matching = query_one(
+        "SELECT id, client_id, organization_id, user_id, scope, "
+        "       redirect_uri, code_challenge "
         "FROM oauth_authorization_codes "
-        "WHERE client_id = ? "
-        "  AND consumed_at IS NULL "
-        "  AND expires_at > now()",
-        (client_id,),
+        "WHERE code_hash = ? AND client_id = ? "
+        "  AND consumed_at IS NULL AND expires_at > now()",
+        (_hash_token(code), client_id),
     )
-    matching = None
-    for row in candidates:
-        if _verify_token_hash(code, row["code_hash"]):
-            matching = row
-            break
     if not matching:
         return _oauth_error(400, "invalid_grant",
                             "Unknown, expired, or already-used authorization code")
-
-    if matching["consumed_at"] is not None:
-        return _oauth_error(400, "invalid_grant",
-                            "Authorization code already used")
-
-    # Expiry check
-    expires = matching["expires_at"]
-    if hasattr(expires, "isoformat"):
-        expires_dt = expires
-    else:
-        expires_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
-    if expires_dt.tzinfo is None:
-        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-    if expires_dt < datetime.now(timezone.utc):
-        return _oauth_error(400, "invalid_grant",
-                            "Authorization code expired")
 
     if matching["redirect_uri"] != redirect_uri:
         return _oauth_error(400, "invalid_grant",
@@ -558,10 +635,15 @@ def _exchange_authorization_code(
         return _oauth_error(400, "invalid_grant",
                             "PKCE verifier did not match")
 
-    execute(
-        "UPDATE oauth_authorization_codes SET consumed_at = now() WHERE id = ?",
+    # Consume atomically: of two concurrent exchanges only one updates a row.
+    consumed = execute(
+        "UPDATE oauth_authorization_codes SET consumed_at = now() "
+        "WHERE id = ? AND consumed_at IS NULL AND expires_at > now()",
         (matching["id"],),
     )
+    if consumed != 1:
+        return _oauth_error(400, "invalid_grant",
+                            "Authorization code already used")
 
     return _issue_tokens(
         client_id=matching["client_id"],
@@ -572,17 +654,13 @@ def _exchange_authorization_code(
 
 
 def _refresh_tokens(refresh_token: str, client_id: str) -> JSONResponse:
-    candidates = query_all(
-        "SELECT id, refresh_token_hash, client_id, organization_id, user_id, "
-        "       scope, refresh_expires_at, revoked_at "
-        "FROM oauth_tokens WHERE client_id = ? AND revoked_at IS NULL",
-        (client_id,),
+    matching = query_one(
+        f"SELECT {_TOKEN_COLUMNS} FROM oauth_tokens "
+        "WHERE refresh_token_hash = ? AND client_id = ? AND revoked_at IS NULL",
+        (_hash_token(refresh_token), client_id),
     )
-    matching = None
-    for row in candidates:
-        if _verify_token_hash(refresh_token, row["refresh_token_hash"]):
-            matching = row
-            break
+    if not matching:
+        matching = _legacy_match("refresh", refresh_token, client_id)
     if not matching:
         return _oauth_error(400, "invalid_grant",
                             "Unknown or revoked refresh token")
@@ -598,15 +676,28 @@ def _refresh_tokens(refresh_token: str, client_id: str) -> JSONResponse:
         return _oauth_error(400, "invalid_grant",
                             "Refresh token expired")
 
-    execute(
-        "UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
+    # Rotate atomically: a refresh token replayed concurrently yields one new
+    # pair, not two.
+    rotated = execute(
+        "UPDATE oauth_tokens SET revoked_at = now() "
+        "WHERE id = ? AND revoked_at IS NULL",
         (matching["id"],),
     )
+    if rotated != 1:
+        return _oauth_error(400, "invalid_grant",
+                            "Unknown or revoked refresh token")
+
+    # A grant lives only as long as the user who made it. The row is revoked
+    # above either way, so an orphan cannot be retried.
+    grantor = _grantor(matching)
+    if grantor is None:
+        return _oauth_error(400, "invalid_grant",
+                            "The user who authorized this client no longer exists")
     return _issue_tokens(
         client_id=matching["client_id"],
         org_id=matching["organization_id"],
         user_id=matching["user_id"],
-        scope=matching["scope"],
+        scope=_cap_scope(matching["scope"], grantor["role"]),
     )
 
 
@@ -638,6 +729,23 @@ def token(
 # ── Revocation ───────────────────────────────────────────────────────
 
 
+def revoke_user_grants(user_id: int) -> None:
+    """End every OAuth grant a user holds: live token pairs, and codes not
+    yet redeemed. Called on password change and on user deletion -- before
+    the DELETE, because oauth_tokens.user_id is ON DELETE SET NULL and the
+    rows can no longer be found by user afterwards."""
+    execute(
+        "UPDATE oauth_tokens SET revoked_at = now() "
+        "WHERE user_id = ? AND revoked_at IS NULL",
+        (user_id,),
+    )
+    execute(
+        "UPDATE oauth_authorization_codes SET consumed_at = now() "
+        "WHERE user_id = ? AND consumed_at IS NULL",
+        (user_id,),
+    )
+
+
 @router.post("/oauth/revoke")
 def revoke(
     token: str = Form(...),
@@ -645,50 +753,89 @@ def revoke(
     token_type_hint: Optional[str] = Form(None),
 ):
     """RFC 7009: revoke an access or refresh token. Always returns 200."""
-    candidates = query_all(
-        "SELECT id, access_token_hash, refresh_token_hash, revoked_at "
-        "FROM oauth_tokens WHERE revoked_at IS NULL "
-        "AND (client_id = ? OR ?::text IS NULL)",
-        (client_id, client_id),
+    hashed = _hash_token(token)
+    revoked = execute(
+        "UPDATE oauth_tokens SET revoked_at = now() "
+        "WHERE (access_token_hash = ? OR refresh_token_hash = ?) "
+        "AND revoked_at IS NULL AND (client_id = ? OR ?::text IS NULL)",
+        (hashed, hashed, client_id, client_id),
     )
-    for row in candidates:
-        if _verify_token_hash(token, row["access_token_hash"]) or \
-           _verify_token_hash(token, row["refresh_token_hash"]):
-            execute(
-                "UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
-                (row["id"],),
-            )
-            break
+    if not revoked:
+        row = (_legacy_match("access", token, client_id)
+               or _legacy_match("refresh", token, client_id))
+        if row:
+            execute("UPDATE oauth_tokens SET revoked_at = now() WHERE id = ?",
+                    (row["id"],))
     return Response(status_code=200)
 
 
 # ── Access-token lookup (used by get_api_authed in main.py) ──────────
 
 
+def _grantor(row: dict) -> Optional[dict]:
+    """The user a token was granted by, shaped like main._session_lookup's
+    user dict, or None if they no longer exist in the token's org."""
+    if row.get("user_id") is None:
+        return None
+    user = query_one(
+        "SELECT id, username, is_admin, role, organization_id FROM users "
+        "WHERE id = ? AND organization_id = ?",
+        (row["user_id"], row["organization_id"]),
+    )
+    if not user:
+        return None
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "is_admin": bool(user["is_admin"]),
+        "role": user.get("role") or ("admin" if user["is_admin"] else "viewer"),
+        "organization_id": user["organization_id"],
+    }
+
+
 def lookup_oauth_access_token(token: str) -> Optional[dict]:
-    """Return active oauth_tokens row if token matches; else None.
-    Fire-and-forget last_used_at update."""
+    """Return the active oauth_tokens row the token matches, with the
+    granting user under "user"; None if no live token matches or its user
+    is gone. Fire-and-forget last_used_at update."""
     if not token:
         return None
     # Quickly reject API keys (handled separately in get_api_authed).
     if token.startswith("khan_live_"):
         return None
-    candidates = query_all(
-        "SELECT id, access_token_hash, organization_id, user_id, scope, "
-        "       access_expires_at, revoked_at "
-        "FROM oauth_tokens "
-        "WHERE revoked_at IS NULL AND access_expires_at > now()"
+    hashed = _hash_token(token)
+    row = query_one(
+        f"SELECT {_TOKEN_COLUMNS} FROM oauth_tokens "
+        "WHERE access_token_hash = ? "
+        "  AND revoked_at IS NULL AND access_expires_at > now()",
+        (hashed,),
     )
-    for row in candidates:
-        if _verify_token_hash(token, row["access_token_hash"]):
-            try:
-                execute(
-                    "UPDATE oauth_tokens SET last_used_at = now() WHERE id = ?",
-                    (row["id"],),
-                )
-            except Exception as exc:
-                from main import logger
-                logger.warning("oauth_token_last_used_update_failed id=%s err=%s",
-                               row["id"], exc)
-            return row
-    return None
+    upgrade = False
+    if not row:
+        row = _legacy_match("access", token)
+        upgrade = row is not None
+    if not row:
+        return None
+    # The token acts for the user who granted it. If that user is gone
+    # (user_id is ON DELETE SET NULL) or has left the org, it is dead.
+    grantor = _grantor(row)
+    if grantor is None:
+        return None
+    row["user"] = grantor
+    try:
+        if upgrade:
+            execute(
+                "UPDATE oauth_tokens SET access_token_hash = ?, "
+                "last_used_at = now() WHERE id = ?",
+                (hashed, row["id"]),
+            )
+        else:
+            execute(
+                "UPDATE oauth_tokens SET last_used_at = now() WHERE id = ?",
+                (row["id"],),
+            )
+    except Exception as exc:
+        from main import logger
+        logger.warning("oauth_token_last_used_update_failed id=%s err=%s",
+                       row["id"], exc)
+    row.pop("stored_hash", None)
+    return row
