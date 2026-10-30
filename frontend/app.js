@@ -2843,9 +2843,11 @@ const Walls = (() => {
           · ${wall.rows}×${wall.cols}
         </span>
       </div>
-      <div class="walls-editor-grid"
-           style="grid-template-columns: repeat(${wall.cols}, 1fr);">
-        ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+      <div class="scroll-x">
+        <div class="walls-editor-grid"
+             style="grid-template-columns: repeat(${wall.cols}, 1fr);">
+          ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+        </div>
       </div>
     `;
     body.querySelectorAll(".walls-editor-cell").forEach(el => {
