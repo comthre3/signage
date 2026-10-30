@@ -2690,6 +2690,18 @@ code, kbd, samp, pre,
   }
 }
 
+/* Toasts span the screen less a gutter. At a fixed 360px max-width plus a 24px
+   inset, a long message on a 360px phone started 24px off-screen. */
+.toast { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  #toast-container {
+    inset-inline: 12px;
+    bottom: 12px;
+    max-width: none;
+  }
+  .toast { max-width: none; }
+}
+
 @media (max-width: 768px) {
   /* Bigger nav buttons no longer fit the old 300px cap; scroll if needed. */
   .header-row.nav-open {
