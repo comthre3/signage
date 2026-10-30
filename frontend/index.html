@@ -51,6 +51,23 @@
     </header>
 
     <main>
+      <!-- Outside #dashboard on purpose: the "⚙ Connection" button is in the
+           header on the sign-in screen too, where #dashboard is hidden. -->
+      <section id="connection-panel" class="panel hidden">
+        <h2 data-i18n="auth.connection_settings">Connection Settings</h2>
+        <form id="connection-form">
+          <select id="connection-mode">
+            <option value="local" data-i18n="auth.connection_local">Local / Tailscale</option>
+            <option value="external" data-i18n="auth.connection_external">Cloudflare</option>
+          </select>
+          <input type="text" id="connection-api"    placeholder="API Base URL" data-i18n-placeholder="auth.connection_api" dir="auto" />
+          <input type="text" id="connection-player" placeholder="Player Base URL" data-i18n-placeholder="auth.connection_player" dir="auto" />
+          <button type="submit" data-i18n="auth.connection_save">Save</button>
+          <button type="button" id="connection-reset" class="secondary-btn" data-i18n="auth.connection_reset">Reset</button>
+        </form>
+        <div class="helper-text" data-i18n="auth.connection_reload_note">Changes take effect after page reload.</div>
+      </section>
+
       <!-- Shown only on a deployment that has no users yet. Replaces the whole
            sign-in panel, because there is nothing to sign in to. -->
       <section id="setup-panel" class="panel hidden">
@@ -264,20 +281,6 @@
             <span id="plan-card-status" class="plan-status">—</span>
           </div>
           <div id="plan-card-trial" class="helper-text hidden"></div>
-        </section>
-        <section id="connection-panel" class="panel hidden">
-          <h2 data-i18n="auth.connection_settings">Connection Settings</h2>
-          <form id="connection-form">
-            <select id="connection-mode">
-              <option value="local" data-i18n="auth.connection_local">Local / Tailscale</option>
-              <option value="external" data-i18n="auth.connection_external">Cloudflare</option>
-            </select>
-            <input type="text" id="connection-api"    placeholder="API Base URL" data-i18n-placeholder="auth.connection_api" dir="auto" />
-            <input type="text" id="connection-player" placeholder="Player Base URL" data-i18n-placeholder="auth.connection_player" dir="auto" />
-            <button type="submit" data-i18n="auth.connection_save">Save</button>
-            <button type="button" id="connection-reset" class="secondary-btn" data-i18n="auth.connection_reset">Reset</button>
-          </form>
-          <div class="helper-text" data-i18n="auth.connection_reload_note">Changes take effect after page reload.</div>
         </section>
 
         <section id="sites" class="panel">

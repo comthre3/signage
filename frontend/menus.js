@@ -432,5 +432,18 @@ const Menus = (() => {
 
   document.getElementById("menu-new-btn")?.addEventListener("click", createMenu);
 
-  return { show, refreshList, openEditor, save, renderBoards, showRenders, _st: st };
+  // Sign-out: drop the open menu and every rendered list, so the next account
+  // in this tab never sees (or saves over) the previous org's menu.
+  function reset() {
+    st.menus = []; st.current = null; st.templates = [];
+    playlistCreated = false;
+    ["menu-editor", "menu-renders"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) { el.innerHTML = ""; el.classList.add("hidden"); }
+    });
+    const list = document.getElementById("menus-list");
+    if (list) { list.innerHTML = ""; list.classList.remove("hidden"); }
+  }
+
+  return { show, refreshList, openEditor, save, renderBoards, showRenders, reset, _st: st };
 })();

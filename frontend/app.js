@@ -182,7 +182,9 @@ function showSection(id) {
   document.getElementById("pair-view")?.classList.add("hidden");
   document.getElementById("dashboard")?.classList.remove("hidden");
   if (location.pathname === "/billing") history.replaceState({}, "", "/");
-  document.querySelectorAll("#dashboard > section.panel, #dashboard > div").forEach((el) => {
+  // The plan card sits above whichever section is showing; it is not a
+  // section itself (hiding it here is why it never appeared).
+  document.querySelectorAll("#dashboard > section.panel:not(#plan-card), #dashboard > div").forEach((el) => {
     el.classList.toggle("hidden", el.id !== id);
   });
   navButtons.forEach((btn) => {
@@ -358,16 +360,48 @@ window.addEventListener("unhandledrejection", (event) => {
 
 /* ── Auth ────────────────────────────────────────────────────── */
 function setAuth(token, user) {
+  const hadSession = Boolean(authToken || currentUser);
   authToken   = token;
   currentUser = user;
   token ? localStorage.setItem(AUTH_STORAGE_KEY, token)
         : localStorage.removeItem(AUTH_STORAGE_KEY);
+  if (!token && hadSession) resetOrgState();
   updateAuthUI();
 }
 
 function handleAuthFailure() {
   setAuth(null, null);
   showAuthPanel();
+}
+
+/* Everything below belongs to one organization. Signing out (or a dead
+   session) must drop all of it, or the next account to sign in in this tab
+   briefly works against the previous org's playlists, users and schedules. */
+function resetOrgState() {
+  Object.assign(state, {
+    sites: [], screens: [], playlists: [], schedules: [], media: [], users: [], groups: [],
+    org: null, capabilities: { menus: false, menu_import: false },
+  });
+  const safely = (fn) => { try { fn(); } catch (err) { console.warn("resetOrgState", err); } };
+  safely(() => { renderSites(); renderSiteOptions(); });
+  safely(() => { renderPlaylists(); renderPlaylistSelect(); });
+  safely(() => { renderMedia(); renderScreens(); renderUsers(); renderGroups(); });
+  safely(() => {
+    ["zones-editor", "screen-access-panel", "preview-panel", "plan-card", "nav-menus-btn"]
+      .forEach((id) => document.getElementById(id)?.classList.add("hidden"));
+    const frame = document.getElementById("preview-frame");
+    if (frame) frame.removeAttribute("src");
+  });
+  safely(() => Walls.reset());
+  safely(() => Schedules.reset());
+  safely(() => AuditLog.reset());
+  safely(() => Menus.reset());
+  safely(() => SubscriptionBanner.update(null));
+  safely(() => {
+    document.getElementById("billing-current-body").textContent = "—";
+    document.getElementById("billing-history-body").innerHTML = "";
+    clearBillingBanner();
+  });
 }
 
 function updateAuthUI() {
@@ -397,6 +431,11 @@ function updateAuthUI() {
 function showAuthPanel() {
   document.getElementById("auth-panel").classList.remove("hidden");
   document.getElementById("dashboard").classList.add("hidden");
+  // Billing and pairing are full-page views outside #dashboard; left visible
+  // they sit underneath the sign-in form after a logout.
+  document.getElementById("billing-view")?.classList.add("hidden");
+  document.getElementById("pair-view")?.classList.add("hidden");
+  document.getElementById("subscription-banner")?.classList.add("hidden");
 }
 
 function showDashboard() {
@@ -421,6 +460,7 @@ async function loadPlaylists() {
   renderPlaylists();
   renderPlaylistOptions();
   renderPlaylistSelect();
+  renderScreens();   // each screen card has a playlist picker built from state.playlists
 }
 
 async function loadSchedules() {
@@ -432,9 +472,18 @@ async function loadSchedules() {
   }
 }
 
+/** After a schedule is created, renamed or deleted: the screen cards'
+ *  schedule pickers are built from state.schedules. */
+async function refreshScheduleOptions() {
+  await loadSchedules();
+  renderScreens();
+}
+
 async function loadMedia() {
   state.media = await api("/media");
   renderMedia();
+  // An open zones editor lists the library in its "Add media…" pickers.
+  if (!document.getElementById("zones-editor")?.classList.contains("hidden")) renderZonesList();
 }
 
 async function loadUsers() {
@@ -786,6 +835,7 @@ function renderScreens() {
         await api(`/screens/${screen.id}`, { method: "DELETE" });
         toast(Khan.t("toast.screen_deleted"), "success");
         await loadScreens();
+        loadOrganization();   // plan card: "n / limit screens"
       });
     });
 
@@ -1248,6 +1298,7 @@ document.getElementById("screen-form").addEventListener("submit", async (e) => {
       updateResolutionCustomVisibility();
       toast(Khan.t("toast.screen_created"), "success");
       await loadScreens();
+      loadOrganization();   // plan card: "n / limit screens"
     } catch (err) {
       toast(err.message || "Failed to add screen.", "error");
     }
@@ -1408,6 +1459,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
           if (resume && resume.path === "/pair") {
             history.replaceState({}, "", `/pair${resume.code ? `?code=${encodeURIComponent(resume.code)}` : ""}`);
             await showPairView(resume.code || "");
+            bootDataInBackground();
             return;
           }
         } catch (_) { /* fall through */ }
@@ -1744,6 +1796,8 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   if (authToken) await api("/auth/logout", { method: "POST" }).catch(() => {});
   setAuth(null, null);
   showAuthPanel();
+  // Don't leave /billing or /pair in the address bar under the sign-in form.
+  if (location.pathname !== "/") history.replaceState({}, "", "/");
 });
 
 document.getElementById("user-form").addEventListener("submit", async (e) => {
@@ -1811,7 +1865,11 @@ connectionReset?.addEventListener("click", () => {
 });
 
 /* ── Boot ────────────────────────────────────────────────────── */
-async function bootData() {
+/** Load everything the dashboard sections need. `section` is the section to
+ *  open afterwards, or null to load without navigating -- used when the page
+ *  opens on a full-page view (/billing after KNET, /pair from a TV's QR code)
+ *  so that leaving it lands on a populated dashboard, not empty lists. */
+async function bootData({ section = "sites" } = {}) {
   populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
   await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadSchedules(), loadMedia(), loadUsers()]);
   await loadScreens();
@@ -1821,7 +1879,14 @@ async function bootData() {
     document.getElementById("nav-menus-btn")?.classList.toggle("hidden", !caps.menus);
     document.getElementById("menu-import-btn")?.classList.toggle("hidden", !caps.menu_import);
   } catch (_) { state.capabilities = { menus: false, menu_import: false }; }
-  showSection("sites");
+  if (section) showSection(section);
+}
+
+function bootDataInBackground() {
+  bootData({ section: null }).catch((err) => {
+    console.error(err);
+    toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
+  });
 }
 
 async function loadOrganization() {
@@ -1954,16 +2019,20 @@ async function showPairView(initialCode) {
     existingSel.appendChild(opt);
   }
 
+  // Both branches set BOTH inputs' visibility: "Pair another display" comes
+  // back here after the radio handler may have hidden the screen picker.
   if (screens.length === 0) {
     radioExist.disabled = true;
     existingSel.disabled = true;
     radioNew.checked = true;
     newNameInput.classList.remove("hidden");
+    existingSel.classList.add("hidden");
   } else {
     radioExist.disabled = false;
     existingSel.disabled = false;
     radioExist.checked = true;
     newNameInput.classList.add("hidden");
+    existingSel.classList.remove("hidden");
   }
 
   setPairState("form");
@@ -2023,8 +2092,10 @@ async function boot() {
 
   if (isPairPath) {
     await showPairView(pairCodeParam);
+    bootDataInBackground();
   } else if (isBillingPath) {
     await showBilling();
+    bootDataInBackground();
   } else {
     showDashboard();
     await bootData();
@@ -2167,7 +2238,8 @@ function onPairViewDashboard() {
   history.pushState({}, "", "/");
   document.getElementById("pair-view").classList.add("hidden");
   showDashboard();
-  bootData().catch((err) => {
+  // Reload rather than reuse: the pairing just changed the screens list.
+  bootData({ section: "screens" }).catch((err) => {
     console.error(err);
     toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
   });
@@ -2725,6 +2797,10 @@ const Walls = (() => {
 
   async function createWizard() {
     const playlists = await api("/playlists");
+    // Leaving an open editor for the wizard: stop its timers, drop its button.
+    if (mosaicTimer) { clearInterval(mosaicTimer); mosaicTimer = null; }
+    removeModeSwitchButton();
+    state.editing = null;
     const editor = document.getElementById("walls-editor");
     const body = document.getElementById("walls-editor-body");
     document.getElementById("walls-editor-title").textContent =
@@ -2844,18 +2920,34 @@ const Walls = (() => {
     }
   }
 
+  // The "Switch to …" button lives in the shared editor header and is bound to
+  // one wall. Left behind, it shows up in the next editor or the new-wall
+  // wizard -- and clicking it there changes the previous wall.
+  function removeModeSwitchButton() {
+    document.querySelectorAll(".walls-editor-header .walls-mode-switch-btn").forEach((b) => b.remove());
+  }
+
   function closeEditor() {
     if (mosaicTimer) { clearInterval(mosaicTimer); mosaicTimer = null; }
     if (pairTimer)   { clearInterval(pairTimer);   pairTimer   = null; }
     document.getElementById("walls-pair-modal")?.classList.add("hidden");
     state.pairing = null;
     document.getElementById("walls-editor").classList.add("hidden");
+    removeModeSwitchButton();
     state.editing = null;
+  }
+
+  function reset() {
+    closeEditor();
+    state.walls = [];
+    const root = document.getElementById("walls-list");
+    if (root) root.innerHTML = "";
   }
 
   // openEditor and pair-flow are filled in by Task 9.
   async function openEditor(id) {
     state.editing = id;
+    removeModeSwitchButton();
     document.getElementById("walls-editor").classList.remove("hidden");
     document.getElementById("walls-editor-body").innerHTML =
       `<p>${Khan.t("walls.editor_loading", "Loading…")}</p>`;
@@ -3246,6 +3338,7 @@ const Walls = (() => {
     loadList,
     openEditor,
     closeEditor,
+    reset,
     renderList,
     renderEditor,
   };
@@ -3307,12 +3400,13 @@ const Schedules = (() => {
   }
 
   async function openEditor(id) {
-    if (!cachedPlaylists.length) {
-      try {
-        const pls = await api("/playlists");
-        cachedPlaylists = Array.isArray(pls) ? pls : (pls.items || []);
-      } catch (_) { cachedPlaylists = []; }
-    }
+    // Fetched on every open, never cached across opens: a cached list goes
+    // stale as soon as a playlist is created, and survives into the next
+    // org's session after a logout.
+    try {
+      const pls = await api("/playlists");
+      cachedPlaylists = Array.isArray(pls) ? pls : (pls.items || []);
+    } catch (_) { cachedPlaylists = []; }
     if (id) {
       try {
         currentSchedule = await api(`/schedules/${id}`);
@@ -3457,6 +3551,7 @@ const Schedules = (() => {
         }),
       });
       toast(Khan.t("toast.schedule_saved", "Schedule saved."), "success");
+      refreshScheduleOptions();
       await show();
     } catch (err) {
       const code = err.data?.detail?.code;
@@ -3480,6 +3575,7 @@ const Schedules = (() => {
     try {
       await api(`/schedules/${id}`, { method: "DELETE" });
       toast(Khan.t("toast.schedule_deleted", "Schedule deleted."), "success");
+      refreshScheduleOptions();
       await refreshList();
     } catch (err) {
       toast(err.message || Khan.t("schedules.error.delete", "Failed to delete."), "error");
@@ -3493,7 +3589,16 @@ const Schedules = (() => {
     document.getElementById("schedule-cancel-btn")?.addEventListener("click", () => show());
   }
 
-  return { show, init };
+  function reset() {
+    cachedPlaylists = [];
+    currentSchedule = null;
+    document.getElementById("schedule-editor")?.classList.add("hidden");
+    document.getElementById("schedules-list")?.classList.remove("hidden");
+    const list = document.getElementById("schedules-list");
+    if (list) list.innerHTML = "";
+  }
+
+  return { show, init, reset };
 })();
 
 Schedules.init();
@@ -3503,27 +3608,44 @@ const AuditLog = (() => {
   const PAGE_SIZE = 50;
   let offset = 0;
   let total = 0;
-  let actorFilterPopulated = false;
 
   async function show() {
-    if (!actorFilterPopulated) await populateActorFilter();
+    // Rebuilt on every visit: users come and go, and a list filled once
+    // would still show the previous org's usernames after a logout.
+    await populateActorFilter();
     offset = 0;
     await fetchPage();
+  }
+
+  function clearActorOptions(sel) {
+    // Keep the leading "All" option, drop every username.
+    while (sel.options.length > 1) sel.remove(1);
   }
 
   async function populateActorFilter() {
     const sel = document.getElementById("audit-filter-actor");
     if (!sel) return;
+    const previous = sel.value;
     try {
       const users = await api("/users");
+      clearActorOptions(sel);
       users.forEach(u => {
         const opt = document.createElement("option");
         opt.value = u.id;
         opt.textContent = u.username;
         sel.appendChild(opt);
       });
-      actorFilterPopulated = true;
-    } catch (_) { /* swallow — leave dropdown with just "All" */ }
+      sel.value = users.some((u) => String(u.id) === previous) ? previous : "";
+    } catch (_) { clearActorOptions(sel); /* leave dropdown with just "All" */ }
+  }
+
+  function reset() {
+    offset = 0;
+    total = 0;
+    const sel = document.getElementById("audit-filter-actor");
+    if (sel) { clearActorOptions(sel); sel.value = ""; }
+    const tbody = document.getElementById("audit-log-tbody");
+    if (tbody) tbody.innerHTML = "";
   }
 
   async function fetchPage() {
@@ -3615,7 +3737,7 @@ const AuditLog = (() => {
     });
   }
 
-  return { show, init };
+  return { show, init, reset };
 })();
 
 AuditLog.init();
