@@ -104,9 +104,16 @@ window.confirmDialog = function ({ title, message, confirmLabel, danger = false 
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       resolve(value);
     }
+    // Escape cancels. Enter is deliberately NOT mapped to "confirm": it
+    // activates whichever button has focus (native <button> behaviour), and
+    // Cancel is focused on open -- so Enter on a delete prompt cancels
+    // instead of deleting.
     function onKeyDown(e) {
-      if (e.key === "Escape") settle(false);
-      else if (e.key === "Enter") settle(true);
+      if (e.key === "Escape") { e.preventDefault(); settle(false); return; }
+      if (e.key === "Enter") {
+        const focused = document.activeElement;
+        if (!(focused && overlay.contains(focused) && focused.tagName === "BUTTON")) e.preventDefault();
+      }
     }
 
     overlay.addEventListener("click", (e) => { if (e.target === overlay) settle(false); });
@@ -514,13 +521,14 @@ function renderSites() {
       </div>
     `;
     card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_site_title", "Delete site"),
         message: Khan.t("confirm.delete_site_body", "Delete site \"{name}\"? Screens in this site become unassigned.").replace("{name}", site.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/sites/${site.id}`, { method: "DELETE" });
         toast(Khan.t("toast.site_deleted"), "success");
         await loadSites();
@@ -559,13 +567,14 @@ function renderPlaylists() {
       </div>
     `;
     card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_playlist_title", "Delete playlist"),
         message: Khan.t("confirm.delete_playlist_body", "Delete playlist \"{name}\"?").replace("{name}", playlist.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/playlists/${playlist.id}`, { method: "DELETE" });
         toast(Khan.t("toast.playlist_deleted"), "success");
         await loadPlaylists();
@@ -609,13 +618,14 @@ function renderMedia() {
       </div>
     `;
     card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_media_title", "Delete media"),
         message: Khan.t("confirm.delete_media_body", "Delete \"{name}\"?").replace("{name}", item.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/media/${item.id}`, { method: "DELETE" });
         toast(Khan.t("toast.media_deleted"), "success");
         await loadMedia();
@@ -652,23 +662,25 @@ function renderUsers() {
       <div class="card-actions" data-user-groups="${user.id}"></div>
     `;
     card.querySelector(`[data-user-reset="${user.id}"]`).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       const input    = card.querySelector(`[data-user-pass="${user.id}"]`);
       const password = input.value.trim();
       if (!password) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ password }) });
         input.value = "";
         toast(Khan.t("toast.password_updated"), "success");
       });
     });
     card.querySelector(`[data-user-delete="${user.id}"]`).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_user_title", "Delete user"),
         message: Khan.t("confirm.delete_user_body", "Delete user \"{name}\"?").replace("{name}", user.username),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/users/${user.id}`, { method: "DELETE" });
         toast(Khan.t("toast.user_deleted"), "success");
         await loadUsers();
@@ -677,7 +689,8 @@ function renderUsers() {
     const roleSelect = card.querySelector(`[data-user-role="${user.id}"]`);
     roleSelect.value = user.role;
     card.querySelector(`[data-user-role-save="${user.id}"]`).addEventListener("click", async (e) => {
-      await withLoading(e.currentTarget, async () => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
+      await withLoading(btn, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ role: roleSelect.value }) });
         toast(Khan.t("toast.role_updated"), "success");
         await loadUsers();
@@ -729,13 +742,14 @@ function renderGroups() {
       </div>
     `;
     card.querySelector(`[data-group-delete="${group.id}"]`).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_group_title", "Delete group"),
         message: Khan.t("confirm.delete_group_body", "Delete group \"{name}\"?").replace("{name}", group.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/groups/${group.id}`, { method: "DELETE" });
         toast(Khan.t("toast.group_deleted"), "success");
         await loadUsers();
@@ -795,7 +809,8 @@ function renderScreens() {
     if (scheduleSel) scheduleSel.value = screen.schedule_id || "";
 
     card.querySelector(`[data-save-screen="${screen.id}"]`).addEventListener("click", async (e) => {
-      await withLoading(e.currentTarget, async () => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
+      await withLoading(btn, async () => {
         const playlistId = select.value ? Number(select.value) : null;
         const scheduleId = scheduleSel?.value ? Number(scheduleSel.value) : null;
         await api(`/screens/${screen.id}`, {
@@ -816,7 +831,8 @@ function renderScreens() {
     });
 
     card.querySelector(`[data-preview-screen="${screen.id}"]`).addEventListener("click", async (e) => {
-      await withLoading(e.currentTarget, async () => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
+      await withLoading(btn, async () => {
         const preview = await api(`/screens/${screen.id}/preview-token`, { method: "POST" });
         const base    = getPlayerBaseWithOverrides();
         const url     = base.includes("?") ? `${base}&preview_token=${preview.token}` : `${base}/?preview_token=${preview.token}`;
@@ -825,13 +841,14 @@ function renderScreens() {
     });
 
     card.querySelector(`[data-delete-screen="${screen.id}"]`).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_screen_title", "Delete screen"),
         message: Khan.t("confirm.delete_screen_body", "Delete screen \"{name}\"?").replace("{name}", screen.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/screens/${screen.id}`, { method: "DELETE" });
         toast(Khan.t("toast.screen_deleted"), "success");
         await loadScreens();
@@ -1053,7 +1070,8 @@ async function openScreenAccessEditor(screenId) {
   });
 
   document.getElementById("screen-access-save").onclick = async (e) => {
-    await withLoading(e.currentTarget, async () => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
+    await withLoading(btn, async () => {
       const ownerId = ownerSelect.value ? Number(ownerSelect.value) : null;
       await api(`/screens/${screenId}`, { method: "PUT", body: JSON.stringify({ owner_user_id: ownerId }) });
       const selected = Array.from(groupsList.querySelectorAll("[data-screen-group]:checked"))
@@ -1097,9 +1115,10 @@ function bindZoneEditorEvents() {
     renderZonesCanvas();
   });
   document.getElementById("zone-template-save")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
     const name = document.getElementById("zone-template-name").value.trim();
     if (!name) return;
-    await withLoading(e.currentTarget, async () => {
+    await withLoading(btn, async () => {
       await api("/zone-templates", {
         method: "POST",
         body: JSON.stringify({
@@ -1118,9 +1137,10 @@ function bindZoneEditorEvents() {
     });
   });
   document.getElementById("zone-template-apply")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
     const templateId = Number(document.getElementById("zone-template-select").value || 0);
     if (!templateId || !zonesState.screenId) return;
-    await withLoading(e.currentTarget, async () => {
+    await withLoading(btn, async () => {
       await api(`/screens/${zonesState.screenId}/zone-templates/apply`, { method: "POST", body: JSON.stringify({ template_id: templateId }) });
       const data = await api(`/screens/${zonesState.screenId}/zones`);
       setZones(data.zones || []);
@@ -1131,8 +1151,9 @@ function bindZoneEditorEvents() {
     btn.addEventListener("click", () => presetZones(btn.dataset.zonePreset));
   });
   document.getElementById("zones-save")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
     if (!zonesState.screenId) return;
-    await withLoading(e.currentTarget, async () => {
+    await withLoading(btn, async () => {
       await api(`/screens/${zonesState.screenId}/zones`, {
         method: "PUT",
         body: JSON.stringify({
@@ -1245,14 +1266,14 @@ async function loadPlaylistItems(playlistId) {
   card.innerHTML = `<h3>${escHtml(data.playlist.name)} Items</h3>${itemsHtml || "<div class='helper-text'>No items yet.</div>"}`;
   container.appendChild(card);
   card.querySelectorAll("[data-item-id]").forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
+    btn.addEventListener("click", async () => {
       if (!(await confirmDialog({
         title:   Khan.t("confirm.remove_item_title", "Remove item"),
         message: Khan.t("confirm.remove_item_body", "Remove this item from the playlist?"),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/playlists/${playlistId}/items/${btn.dataset.itemId}`, { method: "DELETE" });
         await loadPlaylistItems(playlistId);
       });
@@ -1394,6 +1415,7 @@ document.getElementById("playlist-select").addEventListener("change", async (e) 
 });
 
 document.getElementById("playlist-add-item").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;   // null once the event finishes dispatching
   const playlistId = document.getElementById("playlist-select").value;
   if (!playlistId) return;
   let picks;
@@ -1404,7 +1426,7 @@ document.getElementById("playlist-add-item").addEventListener("click", async (e)
     throw err;
   }
   if (!picks.length) return;
-  await withLoading(e.currentTarget, async () => {
+  await withLoading(btn, async () => {
     for (const p of picks) {
       const body = { media_id: p.media_id };
       if (p.duration_seconds != null) body.duration_seconds = p.duration_seconds;
