@@ -23,7 +23,9 @@ def test_templates_load_from_manifests():
     from menu_render import list_templates, get_template
     ids = {t["id"] for t in list_templates()}
     assert ids == {"dark-classic", "cream-cafe", "luxe"}
-    assert get_template("luxe")["version"] == "1"
+    # The version is part of every render hash, so bumping it is what makes
+    # boards rendered by older output re-render. "2": bilingual Arabic-once.
+    assert {t["version"] for t in list_templates()} == {"2"}
     with pytest.raises(KeyError):
         get_template("nope")
 
