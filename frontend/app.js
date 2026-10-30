@@ -424,7 +424,10 @@ function isAdmin() { return currentRole() === "admin"; }
 function canEditContent() { return currentRole() === "admin" || currentRole() === "editor"; }
 
 function roleLabel(role) {
-  return Khan.t(`users.role_${role}`, role || "");
+  // Also called (from setAuth) before the locale has loaded; fall back
+  // quietly then -- boot() renders the header again once strings arrive.
+  const key = `users.role_${role}`;
+  return Khan.has(key) ? Khan.t(key) : (role || "");
 }
 
 // Static controls that only make sense for someone who can write. Gated with
