@@ -878,6 +878,9 @@ label {
   margin-bottom: 16px;
   overflow: hidden;
   cursor: crosshair;
+  /* Drawing, moving and resizing zones are pointer drags; without this a
+     finger on the canvas scrolls the page and the browser cancels the drag. */
+  touch-action: none;
 }
 
 .zones-canvas-grid {
@@ -918,7 +921,15 @@ label {
   border-radius: 50%;
   box-shadow: 0 0 0 2px var(--cream);
 }
-.zone-handle-left   { left: -5px;   top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+/* The dot is the visual; the hit area is this larger invisible ring. Zone
+   coordinates are physical screen positions, so handles stay left/right in RTL. */
+.zone-handle::after {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+}
+.zone-handle-left  { left: -5px;   top: 50%; transform: translateY(-50%); cursor: ew-resize; }
 .zone-handle-right  { right: -5px;  top: 50%; transform: translateY(-50%); cursor: ew-resize; }
 .zone-handle-top    { top: -5px;    left: 50%; transform: translateX(-50%); cursor: ns-resize; }
 .zone-handle-bottom { bottom: -5px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
@@ -2625,3 +2636,19 @@ code, kbd, samp, pre,
 .render-card.status-failed .render-ph { background: #5A1F1F; }
 .render-meta { display: flex; gap: 6px; align-items: center; padding: 8px; background: var(--bg-card, #fff); flex-wrap: wrap; }
 .stale-note { grid-column: 1 / -1; }
+
+/* ── Phones and touch screens ─────────────────────────────────
+   Kept together at the end so they override the desktop-sized component
+   rules above. Width queries handle layout; (pointer: coarse) handles
+   finger-sized targets, so a narrow desktop window keeps its compact UI. */
+
+/* Fingertip-sized targets: 44px, Apple's minimum and WCAG 2.5.5. */
+@media (pointer: coarse) {
+  /* Larger zone handles, with a 44px invisible hit ring (see .zone-handle::after). */
+  .zone-handle { width: 16px; height: 16px; }
+  .zone-handle-left   { left: -8px; }
+  .zone-handle-right  { right: -8px; }
+  .zone-handle-top    { top: -8px; }
+  .zone-handle-bottom { bottom: -8px; }
+  .zone-handle::after { inset: -14px; }
+}
