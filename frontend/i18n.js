@@ -51,10 +51,16 @@
     return locale;
   }
 
+  // Precedence: the person's own explicit choice, then the organization's
+  // default, then the browser. The cookie is only ever written by a language
+  // toggle (here, on the landing page or the player), so it IS that explicit
+  // choice. It used to lose to the org locale, which made the toggle a no-op
+  // for everyone whose org was set to the other language -- every non-admin,
+  // and admins whose org PATCH failed (402 on an expired subscription).
   function detectInitialLocale(orgLocale) {
-    if (ALLOWED.includes(orgLocale)) return orgLocale;
     const m = document.cookie.match(/(?:^|; )khanshoof_lang=(en|ar)\b/);
     if (m) return m[1];
+    if (ALLOWED.includes(orgLocale)) return orgLocale;
     const browser = (navigator.language || "en").slice(0, 2).toLowerCase();
     return browser === "ar" ? "ar" : "en";
   }

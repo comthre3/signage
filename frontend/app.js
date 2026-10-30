@@ -2067,11 +2067,16 @@ function bindLangToggle() {
   btn.dataset.bound = "1";
   btn.addEventListener("click", async () => {
     const next = Khan.currentLocale() === "en" ? "ar" : "en";
-    if (authToken && currentUser?.is_admin) {
+    // The choice is this person's (stored in the language cookie, which wins
+    // over the org default on the next load). An admin's choice also becomes
+    // the org default -- used for reminder emails and for users who never
+    // picked one -- but that is best effort: a 402 on an expired subscription
+    // or a 403 must not stop the switch itself.
+    if (authToken && currentUser?.role === "admin") {
       try {
         await api("/organizations/me", { method: "PATCH", body: JSON.stringify({ locale: next }) });
       } catch (err) {
-        console.error("PATCH /organizations/me failed", err);
+        console.warn("PATCH /organizations/me failed; switching language for this user only", err);
       }
     }
     Khan.setLocale(next);
