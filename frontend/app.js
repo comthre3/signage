@@ -3629,6 +3629,12 @@ const Schedules = (() => {
       toast(Khan.t("schedules.name_required", "Schedule name is required."), "error");
       return;
     }
+    // The backend needs at least one day per rule (1..127); without this
+    // check an all-unchecked row came back as a raw Pydantic error.
+    if (currentSchedule.rules.some((r) => !r.days_of_week)) {
+      toast(Khan.t("schedules.days_required", "Pick at least one day for every rule."), "error");
+      return;
+    }
     try {
       let sid = currentSchedule.id;
       if (sid == null) {
@@ -3636,6 +3642,10 @@ const Schedules = (() => {
           method: "POST", body: JSON.stringify({ name }),
         });
         sid = created.id;
+        // Remember it now: if saving the rules below fails, the next Save
+        // must update this schedule rather than create a duplicate.
+        currentSchedule.id = sid;
+        refreshScheduleOptions();
       } else {
         await api(`/schedules/${sid}`, {
           method: "PUT", body: JSON.stringify({ name }),
@@ -3660,7 +3670,7 @@ const Schedules = (() => {
       const code = err.data?.detail?.code;
       const msg = code === "schedule.rule_overlap"
         ? Khan.t("schedules.overlap_error", "Two rules overlap on the same day.")
-        : (err.message || Khan.t("schedules.error.save", "Failed to save schedule."));
+        : ((err.isApiError && err.message) || Khan.t("schedules.error.save", "Failed to save schedule."));
       toast(msg, "error");
     }
   }
