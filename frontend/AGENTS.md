@@ -35,7 +35,7 @@ Add this to your MCP client config (Claude Desktop's `~/Library/Application Supp
 }
 ```
 
-Restart the client. It'll prompt "Sign in with Khanshoof" on first tool call — that's OAuth doing the work. After that, ~23 tools named `khanshoof_*` appear in the tool list.
+Restart the client. The server answers `401` until you are signed in, so the client prompts "Sign in with Khanshoof" when it first connects — that's OAuth doing the work. After that, ~23 tools named `khanshoof_*` appear in the tool list.
 
 **API key (recommended for scripts):**
 
@@ -47,7 +47,7 @@ curl https://api.khanshoof.com/playlists \
 
 **OAuth 2.1 (for SaaS integrations):**
 
-Discovery: `GET https://api.khanshoof.com/.well-known/oauth-authorization-server` → returns full metadata. Standard `authorization_code` flow with PKCE-S256. Refresh tokens rotate per OAuth 2.1.
+Discovery: `GET https://api.khanshoof.com/.well-known/oauth-authorization-server` → returns full metadata. Standard `authorization_code` flow with PKCE-S256. Refresh tokens rotate per OAuth 2.1. `scope` may be a space-separated list (`api:read api:rw`); the token response's `scope` says what was granted.
 
 ---
 
@@ -74,6 +74,15 @@ OAuth and API keys both use two scopes:
 - `api:rw` — full content management (create/update/delete playlists, schedules, media, screen assignments).
 
 Write tools fail with `403 api.insufficient_scope` if the token only has `api:read`.
+
+An OAuth token (MCP included) acts as the person who clicked Allow, and can never do more than they could in the dashboard:
+
+- A **viewer** can only grant `api:read`. Editors and admins can grant `api:rw`.
+- Endpoints limited to certain roles stay limited: an editor's `api:rw` token still gets `403 insufficient_role` on admin-only actions such as deleting a schedule.
+- The person's *current* role applies — demote them and their token loses write access on the next request.
+- Removing the person from the organization, or them changing their password, revokes the token; the client has to sign in again.
+
+API keys are different: they belong to the organization, are created by an admin, and are limited by scope only.
 
 ---
 
@@ -288,8 +297,9 @@ Every tool can fail with structured JSON. Map the responses to user-facing messa
 
 | HTTP / MCP code | Meaning | What to tell the human |
 |---|---|---|
-| `401` / MCP `-32600` | Token expired / revoked | "Your session expired — try the action again, I'll re-authenticate." |
+| `401` (MCP: HTTP `401` with `WWW-Authenticate: Bearer resource_metadata=…`) | Token missing, expired or revoked | "Your session expired — try the action again, I'll re-authenticate." |
 | `403` with `code: api.insufficient_scope` | Read-only scope tried to write | "I have read-only access. Grant write access at app.khanshoof.com/api-keys." |
+| `403` with `code: insufficient_role` | The person who authorized me lacks the role for this action | "Your Khanshoof role doesn't allow that — an admin has to do it." |
 | `404` | Resource doesn't exist | "Couldn't find that — was it deleted, or do I have the wrong ID?" |
 | `429` | Rate limited | "Too many requests — try again in {Retry-After} seconds." |
 | `422` / MCP `-32602` | Validation error | Inspect `detail.errors` for specifics |
