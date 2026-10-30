@@ -332,10 +332,14 @@ def apple_start(intent: str = Query("signup"),
                         return_to=return_to, ttl_seconds=_STATE_TTL)
     resp = RedirectResponse(_build_apple_authorize_url(state),
                             status_code=302)
+    # Apple comes back with a cross-site POST (response_mode=form_post), and
+    # browsers withhold SameSite=Lax cookies from that, so this cookie is
+    # SameSite=None. Browsers accept that only with Secure, which always
+    # holds here: Apple allows https redirect URIs only. _validate_csrf is
+    # unchanged -- the cookie must still equal the signed state.
     resp.set_cookie(
         _STATE_COOKIE, state,
-        httponly=True, samesite="lax", max_age=_STATE_TTL,
-        secure=_api_base_url().startswith("https://"),
+        httponly=True, samesite="none", secure=True, max_age=_STATE_TTL,
     )
     return resp
 

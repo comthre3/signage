@@ -338,6 +338,8 @@ def test_google_start_redirects_with_state_cookie(client, google_env):
                    follow_redirects=False)
     assert r.status_code == 302, r.text
     assert "auth_csrf" in r.headers.get("set-cookie", "")
+    # Google returns with a top-level GET, which Lax cookies ride along on.
+    assert "samesite=lax" in r.headers["set-cookie"].lower()
     loc = r.headers["location"]
     assert loc.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
     assert "client_id=test-google-client-id" in loc
@@ -741,6 +743,48 @@ def test_apple_start_redirects_with_state_cookie(client, apple_env):
     assert loc.startswith("https://appleid.apple.com/auth/authorize?")
     assert "client_id=com.test.khanshoof" in loc
     assert "response_mode=form_post" in loc
+
+
+def test_apple_state_cookie_is_sent_on_apples_cross_site_post(client, apple_env,
+                                                              monkeypatch):
+    """Apple returns with a cross-site POST from appleid.apple.com
+    (response_mode=form_post). Browsers withhold SameSite=Lax cookies from
+    that, so every callback would fail its CSRF check: the Apple state
+    cookie is SameSite=None, which browsers only accept with Secure. Apple
+    redirect URIs are always https, so Secure holds even when API_BASE_URL
+    is a plain-http dev URL."""
+    monkeypatch.setenv("API_BASE_URL", "http://localhost:8000")
+    r = client.get("/auth/apple/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    set_cookie = r.headers["set-cookie"].lower()
+    assert set_cookie.startswith("auth_csrf=")
+    assert "samesite=none" in set_cookie
+    assert "secure" in set_cookie
+    assert "httponly" in set_cookie
+
+
+def test_apple_callback_still_requires_matching_state_cookie(client, apple_env):
+    """SameSite=None lets the cookie travel; the check itself is unchanged:
+    a callback whose cookie is missing or differs from state is refused."""
+    import urllib.parse
+    r = client.get("/auth/apple/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    client.cookies.clear()
+    form = {"code": "any", "state": state, "id_token": "unused"}
+    r = client.post("/auth/apple/callback", data=form, follow_redirects=False)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "invalid_state"
+    r = client.post("/auth/apple/callback", data=form,
+                    cookies={"auth_csrf": "someone-elses-state"},
+                    follow_redirects=False)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "invalid_state"
 
 
 def test_verify_apple_id_token_accepts_rs256(apple_env, respx_mock):
