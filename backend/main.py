@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import math
+import mimetypes
 import os
 import random
 import re
@@ -103,6 +104,17 @@ SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "86400"))
 PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "300"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 
+def _origin_of(url: str) -> str:
+    match = re.match(r"^(https?://[^/?#\s]+)", (url or "").strip())
+    return match.group(1) if match else ""
+
+
+# Who may frame a file from /uploads: this origin, the dashboard and the
+# player (it shows PDF playlist items in an iframe). See add_security_headers.
+_UPLOAD_FRAME_ANCESTORS = " ".join(["'self'"] + [
+    origin for origin in (_origin_of(os.getenv("APP_URL", "")),
+                          _origin_of(os.getenv("PLAYER_BASE_URL", ""))) if origin])
+
 RENDERER_URL   = os.getenv("RENDERER_URL", "").rstrip("/")
 RENDERER_TOKEN = os.getenv("RENDERER_TOKEN", "")
 
@@ -148,11 +160,23 @@ async def add_security_headers(request: Request, call_next):
     # directly could run script, so it gets a sandbox with no script at all.
     # Raster images, videos and PDFs keep the normal policy: the dashboard
     # opens them directly and the player frames PDFs, which a sandbox breaks.
-    content_type = response.headers.get("content-type", "")
-    if request.url.path.startswith("/uploads/") and (
-            content_type.startswith("image/svg+xml")
-            or not content_type.startswith(("image/", "video/", "application/pdf"))):
-        response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    # Decided from the file's extension, not the response: a 304 carries no
+    # Content-Type, and the browser stores the 304's headers.
+    if request.url.path.startswith("/uploads/"):
+        guessed = mimetypes.guess_type(request.url.path)[0] or ""
+        if guessed == "image/svg+xml" or not guessed.startswith(("image/", "video/", "application/pdf")):
+            csp = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        else:
+            csp = response.headers["Content-Security-Policy"]
+        # Framed by our own dashboard and player only (the player shows PDFs
+        # in an iframe), which X-Frame-Options cannot express: its DENY
+        # blocked every PDF playlist item outright.
+        del response.headers["X-Frame-Options"]
+        response.headers["Content-Security-Policy"] = f"{csp}; frame-ancestors {_UPLOAD_FRAME_ANCESTORS}"
+        # Public files: the player's service worker fetches them with CORS to
+        # cache them, from whatever origin a deployment serves the player on.
+        if "access-control-allow-origin" not in response.headers:
+            response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     return response
 
@@ -4530,6 +4554,11 @@ UPLOAD_TYPES = {
     ".bmp": "image/bmp", ".svg": "image/svg+xml",
     ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
     ".webm": "video/webm", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
+    # Containers browsers cannot play but ffmpeg reads: transcode_video turns
+    # every video upload into an H.264 .opt.mp4, which is what the player gets.
+    ".3gp": "video/3gpp", ".wmv": "video/x-ms-wmv", ".flv": "video/x-flv",
+    ".mpg": "video/mpeg", ".mpeg": "video/mpeg", ".ts": "video/mp2t",
+    ".mts": "video/mp2t", ".m2ts": "video/mp2t", ".ogv": "video/ogg",
     ".pdf": "application/pdf",
 }
 # The image's mimetypes table lacks some of these (.webp, .m4v, .mkv); without

@@ -128,3 +128,49 @@ def test_served_webp_has_an_image_content_type(client: TestClient, signed_up_org
     assert r.status_code == 200, r.text
     served = client.get(r.json()["url"])
     assert served.headers["content-type"].startswith("image/webp")
+
+
+def test_served_pdf_can_be_framed_by_our_own_apps_only(client: TestClient, signed_up_org: dict,
+                                                       monkeypatch) -> None:
+    """X-Frame-Options: DENY on every response blocked the player's PDF iframe
+    outright. Framing is limited to the dashboard and the player instead."""
+    monkeypatch.setattr(main, "_UPLOAD_FRAME_ANCESTORS",
+                        "'self' https://app.example https://play.example")
+    r = _upload(client, signed_up_org, "menu.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf")
+    served = client.get(r.json()["url"])
+    assert "x-frame-options" not in served.headers
+    assert ("frame-ancestors 'self' https://app.example https://play.example"
+            in served.headers["content-security-policy"])
+    assert client.get("/health").headers["x-frame-options"] == "DENY"
+
+
+def test_uploads_are_readable_cross_origin(client: TestClient, signed_up_org: dict) -> None:
+    """The player's service worker fetches uploads with CORS to cache them;
+    they are public files, so any origin may read them (without credentials)."""
+    r = _upload(client, signed_up_org, "a.png", PNG, "image/png")
+    served = client.get(r.json()["url"], headers={"Origin": "https://tv.example"})
+    assert served.headers["access-control-allow-origin"] in ("*", "https://tv.example")
+
+
+@pytest.mark.parametrize("name,body,ctype,sandboxed", [
+    ("logo.svg", SVG, "image/svg+xml", True),
+    ("menu.pdf", b"%PDF-1.4\n%%EOF\n", "application/pdf", False),
+])
+def test_a_304_keeps_the_same_policy(client: TestClient, signed_up_org: dict,
+                                     name, body, ctype, sandboxed) -> None:
+    """A 304 carries no Content-Type; deciding the policy from it sandboxed
+    every revalidated PDF (and the browser stores the 304's headers)."""
+    r = _upload(client, signed_up_org, name, body, ctype)
+    first = client.get(r.json()["url"])
+    again = client.get(r.json()["url"], headers={"If-None-Match": first.headers["etag"]})
+    assert again.status_code == 304
+    assert ("sandbox" in again.headers.get("content-security-policy", "")) is sandboxed
+
+
+@pytest.mark.parametrize("name,ctype", [("clip.3gp", "video/3gpp"), ("clip.wmv", "video/x-ms-wmv"),
+                                        ("clip.mpg", "video/mpeg"), ("clip.ts", "video/mp2t")])
+def test_videos_ffmpeg_can_transcode_are_accepted(client: TestClient, signed_up_org: dict, name, ctype) -> None:
+    """Phones and older cameras produce these; the transcode makes them playable."""
+    r = _upload(client, signed_up_org, name, b"\x00\x00\x00\x18ftyp", ctype)
+    assert r.status_code == 200, r.text
+    assert r.json()["mime_type"] == ctype
