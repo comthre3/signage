@@ -2559,9 +2559,17 @@ async function onPairSubmit(e) {
     } catch (err) {
       console.error(err);
       let message = mapPairErrorMessage(err);
-      if (createdScreen) {
-        // The claim failed after we created a screen for it. Left in place it
-        // is an unpaired screen counting against the plan's limit.
+      // Only a 4xx is the server saying no. With no answer at all (status 0)
+      // or a 5xx, the claim may well have bound the TV to the new screen, and
+      // deleting it would unpair a display that just paired.
+      const rejected = err?.status >= 400 && err.status < 500;
+      if (createdScreen && !rejected) {
+        message += " " + Khan.t("pair.error.unconfirmed_kept",
+          "The screen \"{name}\" was kept in case pairing went through. Check Screens: if it isn't paired, an admin can delete it there.")
+          .replace("{name}", createdScreen.name || "");
+      } else if (createdScreen) {
+        // The claim was refused after we created a screen for it. Left in
+        // place it is an unpaired screen counting against the plan's limit.
         try {
           await api(`/screens/${createdScreen.id}`, { method: "DELETE" });
         } catch (cleanupErr) {

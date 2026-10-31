@@ -629,5 +629,6 @@
   "error.menu.bad_kind": "نوع اللوحة غير معروف.",
   "error.menu.bad_aspect": "نسبة العرض إلى الارتفاع غير معروفة.",
   "toast.connection_locked": "هذا التطبيق مُهيّأ للاتصال بـ {origin} فقط، ولا يمكن استخدام عنوان آخر هنا.",
-  "toast.connection_bad_url": "أدخل عنوانًا كاملًا يبدأ بـ http:// أو https://."
+  "toast.connection_bad_url": "أدخل عنوانًا كاملًا يبدأ بـ http:// أو https://.",
+  "pair.error.unconfirmed_kept": "أبقينا الشاشة \"{name}\" تحسّبًا لاكتمال الإقران. تحقّق من قسم الشاشات: إن لم تكن مقترنة، فيمكن للمدير حذفها من هناك."
 }

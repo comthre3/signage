@@ -629,5 +629,6 @@
   "error.menu.bad_kind": "Unknown board type.",
   "error.menu.bad_aspect": "Unknown aspect ratio.",
   "toast.connection_locked": "This deployment only connects to {origin}; another address can't be used here.",
-  "toast.connection_bad_url": "Enter a full address that starts with http:// or https://."
+  "toast.connection_bad_url": "Enter a full address that starts with http:// or https://.",
+  "pair.error.unconfirmed_kept": "The screen \"{name}\" was kept in case pairing went through. Check Screens: if it isn't paired, an admin can delete it there."
 }
