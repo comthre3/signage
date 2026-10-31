@@ -1804,6 +1804,10 @@ function _escapeHtml(s) {
   ));
 }
 
+/** Runs on /auth-bounce. Returns true when it is navigating away (signed in,
+ *  refused or failed): boot() must then stop, or it carries on in the
+ *  outgoing page -- showing, and so consuming, the flash meant for the next
+ *  one, and calling /auth/me with whatever token was there before. */
 function handleAuthBounce() {
   const params = new URLSearchParams(window.location.search);
   const token   = params.get("token");
@@ -1815,12 +1819,13 @@ function handleAuthBounce() {
     setFlash("auth.social.link_refused",
              "That sign-in link didn't start in this browser, so it was ignored. Please sign in again.");
     window.location.replace("/");
+    return true;
   };
 
   if (error) {
     setFlash("auth.social.failed", "Sign-in was cancelled or didn't complete. Please try again.");
     window.location.replace("/");
-    return;
+    return true;
   }
   // Both legs -- the session token and the "finish creating your account"
   // stash -- must echo the nonce this tab put in return_to. A stash from
@@ -1829,17 +1834,17 @@ function handleAuthBounce() {
   const echoed = target ? target.searchParams.get(SOCIAL_NONCE_PARAM) : null;
   const startedHere = Boolean(pending && echoed && echoed === pending.nonce);
   if (token) {
-    if (!startedHere) { refuse(); return; }
+    if (!startedHere) return refuse();
     target.searchParams.delete(SOCIAL_NONCE_PARAM);
     localStorage.setItem(AUTH_STORAGE_KEY, token);
     // replace(): the token-bearing URL must not stay in the history. The
     // absolute href, never a path rebuilt from its parts: a pathname such as
     // "//host/x" would be read as protocol-relative, i.e. off-site.
     window.location.replace(target.href);
-    return;
+    return true;
   }
   if (stash) {
-    if (!startedHere) { refuse(); return; }
+    if (!startedHere) return refuse();
     // The payload is read unverified (only the backend can check the
     // signature), so it may only pick between the two known providers --
     // never put arbitrary text into the request path.
@@ -1895,11 +1900,10 @@ function handleAuthBounce() {
       }
     });
   }
+  return false;   // staying: the finish-signup form is on this page
 }
 
-if (window.location.pathname === "/auth-bounce") {
-  handleAuthBounce();
-}
+const leavingAuthBounce = window.location.pathname === "/auth-bounce" && handleAuthBounce();
 
 /* ── Signup (3-step OTP wizard) ──────────────────────────────── */
 const signupState = { email: "", business_name: "", verification_token: "" };
@@ -2340,6 +2344,7 @@ function bindLangToggle() {
 }
 
 async function boot() {
+  if (leavingAuthBounce) return;   // the page is already on its way elsewhere
   let orgLocale;
   if (authToken) {
     try {
