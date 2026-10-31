@@ -1,8 +1,19 @@
 # Play Store submission checklist — Khanshoof for Android TV and tablets
 
-The app runs on Android TV / Google TV and on Android tablets and large
-displays, so Play offers it to TVs, tablets and phones. The Android TV part
-needs its own opt-in (step 6).
+**One app for every screen** (decided 2026-10-31): a single app, package
+`com.khanshoof.tv`, one upload per release, one listing.
+
+| Device | Where it appears | How |
+|---|---|---|
+| Tablets (small table tablets to large wall displays) and phones | the regular Play Store | live once the release is approved |
+| Android TV / Google TV | the TV's Play Store, same listing | after the Android TV opt-in (step 6) passes its own TV review |
+
+If the TV review is slow or asks for changes, the tablet version stays live
+meanwhile. The app adapts to the device: remote-control navigation and
+one-press BACK on TVs; touch, either orientation, and accidental-exit
+protection on tablets. Play shows each device type its own screenshots. A
+TV-only build, should one ever be needed, goes on Play Console's dedicated
+Android TV release track inside the same app, not a second app.
 
 Two lists: **what's ready** (made in this repo) and **what only you can do**
 (accounts, money, legal, keys). Work through "You" top to bottom; most steps
@@ -38,19 +49,16 @@ screenshots come from the end-to-end pairing test (demo cafe "Karak & Co.").
 
 ## What only you can do
 
-### 1. Google Play developer account
-- [ ] Sign up at https://play.google.com/console with the Google account the
-      business will own (not a personal Gmail you might lose). One-time fee
-      **US$25**.
-- [ ] Choose **Organization** (recommended) rather than Personal:
-  - Organization needs a free **D-U-N-S number** for the business
-    (https://www.dnb.com/duns.html). Getting one can take a few days to a
-    couple of weeks, so start it first.
-  - A *Personal* account created today must run a **closed test with at least
-    12 testers opted in for 14 days in a row** before it may publish to
-    production. Organization accounts skip that.
-- [ ] Complete identity verification and add a public developer email
-      (hello@khanshoof.com) and, for organizations, a phone number and address.
+### 1. Google Play developer account (you already have one)
+- [ ] Check its type in Play Console → Settings → Developer account:
+  - **Organization**, or a **Personal** account created before
+    13 November 2023: you can publish to production directly.
+  - **Personal, created after 13 November 2023**: Google first requires a
+    **closed test with at least 12 testers opted in for 14 days in a row**
+    before you can apply for production. Start that test as soon as the first
+    bundle is uploaded (step 9); it's the longest wait in this list.
+- [ ] Identity verification is complete, and the public developer email
+      (e.g. hello@khanshoof.com) and contact details are current.
 
 ### 2. Upload key and the first release bundle
 - [ ] Run once on this machine:
