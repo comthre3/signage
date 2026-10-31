@@ -3508,7 +3508,7 @@ const Walls = (() => {
     return `
       <div class="walls-editor-cell ${paired ? "paired" : "empty"}"
            data-row="${c.row_index}" data-col="${c.col_index}">
-        <strong>(${c.row_index},${c.col_index})</strong>
+        <strong dir="ltr">(${c.row_index},${c.col_index})</strong>
         ${paired
           ? `<span>${Khan.t("walls.cell_paired", "Paired")}</span>
              <button class="btn btn-ghost" data-action="unpair">${Khan.t("walls.cell_unpair", "Unpair")}</button>`
