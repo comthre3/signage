@@ -3448,20 +3448,31 @@ const Walls = (() => {
         () => openPairModal(wall.id, r, c));
       el.querySelector('[data-action="unpair"]')?.addEventListener("click",
         () => unpairCell(wall.id, r, c));
-      el.querySelector('select[data-action="cell-playlist"]')?.addEventListener("change", (ev) =>
-        patchCell(wall.id, r, c, {
-          playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
-        }));
+      const cellSelect = el.querySelector('select[data-action="cell-playlist"]');
+      const cell = wall.cells.find((x) => x.row_index === r && x.col_index === c);
+      cellSelect?.addEventListener("change", async () => {
+        const playlistId = cellSelect.value === "" ? null : parseInt(cellSelect.value, 10);
+        // Same as the wall's own picker: a refused change is undone on screen.
+        if (await patchCell(wall.id, r, c, { playlist_id: playlistId })) {
+          if (cell) cell.playlist_id = playlistId;
+        } else {
+          cellSelect.value = cell && cell.playlist_id ? String(cell.playlist_id) : "";
+        }
+      });
     });
     body.querySelector('select[data-action="wall-playlist"]')?.addEventListener("change", async (ev) => {
-      if (!ev.target.value) return;
-      const fields = { mirrored_playlist_id: parseInt(ev.target.value, 10) };
+      const select = ev.target;
+      if (!select.value) return;
+      const fields = { mirrored_playlist_id: parseInt(select.value, 10) };
       if (!wall.mirrored_mode) fields.mirrored_mode = "same_playlist";
       try {
         await api(`/walls/${wall.id}`, { method: "PATCH", body: JSON.stringify(fields) });
         toast(Khan.t("walls.playlist_updated", "Wall playlist updated"), "success");
         await renderEditor(wall.id);
       } catch (err) {
+        // Put back what the wall is really playing: left on the new choice,
+        // the picker claims a change the server refused.
+        select.value = wall.mirrored_playlist_id ? String(wall.mirrored_playlist_id) : "";
         toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
       }
     });
@@ -3569,8 +3580,10 @@ const Walls = (() => {
         body: JSON.stringify({ row_index: row, col_index: col, ...fields }),
       });
       toast(Khan.t("walls.cell_updated", "Cell updated"));
+      return true;
     } catch (err) {
       toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update cell"), "error");
+      return false;
     }
   }
 
