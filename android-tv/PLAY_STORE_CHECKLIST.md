@@ -27,6 +27,7 @@ take minutes, but steps 1 and 9 involve waiting on Google.
 | Phone screenshots 1080×1920 | `store/screenshots/phone-portrait-*` | the same, sized for the phone slot |
 | Store listing text, EN + AR | below | |
 | Data safety, content rating, target audience answers | below | drafted with the reasoning; you confirm |
+| Review kit | `REVIEW_KIT.md` | official TV checklist mapped item by item, demo-account recipe, paste-ready reviewer instructions, answers if rejected |
 | Privacy policy draft | `store/privacy-policy-draft.html` | **needs your legal review and your company details** |
 | Graphics regenerator | `store/render_assets.py` | re-renders icons and banners from the mascot art |
 
@@ -160,14 +161,13 @@ screenshots come from the end-to-end pairing test (demo cafe "Karak & Co.").
 - [ ] **Privacy policy**: the URL from step 3.
 - [ ] **Ads**: No, the app contains no ads.
 - [ ] **App access**: *All or some functionality is restricted*. Reviewers
-      only see the pairing screen without an account, so give them:
-  - a demo account on production (create it in the dashboard; make sure its
-    trial doesn't expire mid-review, e.g. an admin-extended subscription)
-  - instructions: "Open the app on a TV or tablet. On a phone, scan the QR code (or
-    open app.khanshoof.com/pair and type the code), sign in with the account
-    below and tap Pair display. The TV shows the demo playlist within
-    15 seconds."
-  - put a playlist on that account so the paired screen shows something.
+      only see the pairing screen without an account. Set up the demo account
+      and paste the instructions exactly as in
+      [REVIEW_KIT.md, section 2](REVIEW_KIT.md#2-the-demo-account-reviewers-sign-in-with).
+      Its subscription must not lapse mid-review, and its playlist uses images
+      only.
+- [ ] **Advertising ID**: *No*. The app doesn't use it (no Play services, no
+      `AD_ID` permission).
 - [ ] **Content rating** (IARC questionnaire): category *Utility,
       Productivity, Communication or Other*. Answer no to violence, sexuality,
       language, controlled substances, gambling. Users interacting or sharing
@@ -212,6 +212,12 @@ screenshots come from the end-to-end pairing test (demo cafe "Karak & Co.").
   - on the tablet: rotating keeps playing without reloading, and a long press selects nothing
 - [ ] **Internal testing** track first: upload the `.aab`, add your own Google
       account as tester, install from Play on your TV.
+- [ ] Read the **pre-launch report** Google produces from that upload (real
+      devices, free): no crashes.
+- [ ] Replace the TV screenshots with real captures from your TV
+      (`adb exec-out screencap -p > tv-1.png`); Android TV review asks for
+      unaltered screenshots of the TV app.
+- [ ] Go through [REVIEW_KIT.md](REVIEW_KIT.md), section 1, then send for review.
 - [ ] Personal account only: closed test with 12+ testers for 14 days (step 1).
 - [ ] **Production** → send for review. TV reviews often take longer than
       phone reviews (days, sometimes a couple of weeks).
@@ -220,19 +226,9 @@ screenshots come from the end-to-end pairing test (demo cafe "Karak & Co.").
 
 ## Android TV quality guidelines: self-check
 
-| Guideline | Status | How |
-|---|---|---|
-| Leanback launcher entry | ✅ | `LEANBACK_LAUNCHER` intent filter on the main activity |
-| Home-screen banner, 320×180, with the app name, localized | ✅ | `drawable-xhdpi/banner.png`, Latin + Arabic name |
-| Works without a touchscreen | ✅ | `touchscreen` and `faketouch` declared not required; no touch-only UI |
-| D-pad navigation | ⚠️ check on a TV | the pairing page has one control (the admin-code link); WebView moves focus with the D-pad on TVs |
-| Back returns to the home screen | ✅ (double press) | BACK twice within 2 s; a reviewer may expect one press, so mention it in the review notes |
-| Landscape, full screen, nothing cut off | ✅ | immersive mode; the pairing screen was checked at 1920×1080 and 1280×720 |
-| Text readable from across the room | ✅ | pairing code ~13 vh, steps ~2.3 vh (screenshots) |
-| No ads, no unrelated system UI | ✅ | |
-| Doesn't require hardware TVs lack (camera, GPS, phone) | ✅ | only internet |
-| Targets a current API level | ✅ | API 36 (TV requires ≥34) |
-| Sound | ✅ | video plays muted; signage needs no audio |
+Checked criterion by criterion against Google's official TV checklist in
+[REVIEW_KIT.md](REVIEW_KIT.md#4-how-the-app-meets-android-tvs-checklist).
+Two items are yours: real TV screenshots (TV-G4) and the demo login (TV-G5).
 
 Tablets and large screens:
 
@@ -253,12 +249,10 @@ Tablets and large screens:
   sites you don't own. You own khanshoof.com; be ready to show it (an email
   at the domain, or Search Console). The app also adds kiosk mode, start on
   boot, offline playback and self-recovery.
-- **Back button**: the double press is deliberate (a bumped remote mustn't
-  blank a menu board). If a reviewer objects, switching to a single press is a
-  one-line change in `MainActivity.onBack()`.
 - **"Display over other apps"**: declared only so Android 10+ lets the app
   start after boot (Google's documented exception). The app never draws over
-  other apps. Say so in the review notes if asked.
+  other apps, and only asks on devices that have that settings screen.
+  A ready answer is in REVIEW_KIT.md, section 5.
 
 ## Every release after the first
 

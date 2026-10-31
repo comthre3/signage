@@ -111,7 +111,9 @@ def main():
 
         # App resources
         render(browser, banner(1), RES / "drawable-xhdpi/banner.png", 320, 180)
-        for folder, size in {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}.items():
+        # 80dp rather than the usual 48dp: Android TV wants an app icon of at
+        # least 160x160 px at xhdpi (TV-LB); launchers scale it down anyway.
+        for folder, size in {"mdpi": 80, "hdpi": 120, "xhdpi": 160, "xxhdpi": 240, "xxxhdpi": 320}.items():
             render(browser, icon(tile=True), RES / f"mipmap-{folder}/ic_launcher.png", size, size,
                    omit_background=True)
         for folder, size in {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}.items():

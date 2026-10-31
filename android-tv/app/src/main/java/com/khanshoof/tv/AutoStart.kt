@@ -29,6 +29,9 @@ object AutoStart {
 
     fun maybeAsk(activity: Activity) {
         if (shownThisLaunch || activity.isFinishing || canStartFromBoot(activity)) return
+        // Many TVs have no "Display over other apps" screen at all; there,
+        // asking would only end in "not available", so don't ask.
+        val settings = overlaySettingsIntent(activity) ?: return
         val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (prefs.getBoolean(KEY_ANSWERED, false)) return
         shownThisLaunch = true
@@ -39,7 +42,7 @@ object AutoStart {
             .setMessage(R.string.autostart_message)
             .setPositiveButton(R.string.autostart_allow) { _, _ ->
                 markAnswered()
-                openOverlaySettings(activity)
+                openOverlaySettings(activity, settings)
             }
             .setNegativeButton(R.string.autostart_later) { _, _ -> markAnswered() }
             .create()
@@ -53,20 +56,20 @@ object AutoStart {
         }, PROMPT_TIMEOUT_MS)
     }
 
-    private fun openOverlaySettings(activity: Activity) {
-        val candidates = listOf(
+    /** The settings screen for this app's overlay permission, if this device has one. */
+    private fun overlaySettingsIntent(activity: Activity): Intent? =
+        listOf(
             Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:${activity.packageName}".toUri()),
             Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION),
-        )
-        for (intent in candidates) {
-            try {
-                activity.startActivity(intent)
-                return
-            } catch (_: ActivityNotFoundException) {
-                // Many TV settings apps have no such screen; try the next one.
-            } catch (_: SecurityException) {
-            }
+        ).firstOrNull { it.resolveActivity(activity.packageManager) != null }
+
+    private fun openOverlaySettings(activity: Activity, intent: Intent) {
+        try {
+            activity.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(activity, R.string.autostart_unavailable, Toast.LENGTH_LONG).show()
+        } catch (_: SecurityException) {
+            Toast.makeText(activity, R.string.autostart_unavailable, Toast.LENGTH_LONG).show()
         }
-        Toast.makeText(activity, R.string.autostart_unavailable, Toast.LENGTH_LONG).show()
     }
 }

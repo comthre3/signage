@@ -15,7 +15,7 @@ What the app adds on top of opening the player in a browser:
 | Starts by itself | after the TV boots (Android 10+: once "Display over other apps" is allowed, see below) |
 | Recovers | retries with backoff when the player can't load, retries at once when the network returns, replaces the WebView if its renderer crashes or hangs |
 | Offline | service workers on, so the player's media cache keeps playing without internet |
-| Safe exit | BACK twice to leave, so a bumped remote doesn't take the menu off the wall |
+| BACK | on a TV, straight to the home screen (Android TV requires it); on a touch screen, twice, so an accidental edge swipe doesn't take the menu off the wall |
 | Old TVs | asks for an Android System WebView update if it is older than Chrome 80 |
 
 Package: `com.khanshoof.tv` (debug builds: `com.khanshoof.tv.debug`, installs alongside).
@@ -135,10 +135,10 @@ Many large-format Android displays ship without Google Play. For those:
 
 Android 9 and older start the app after boot with no setup. Android 10+ only
 allow it for apps the user has let "Display over other apps" (the app never
-draws over other apps). After the TV is paired the app asks once, with a
-dialog that disappears by itself after a minute if nobody answers (it asks
-again next launch). Some TVs have no settings screen for this; use the
-`appops` command above.
+draws over other apps). After pairing, the app asks once, with a dialog that
+disappears by itself after a minute if nobody answers (it asks again next
+launch), but only if the device has that settings screen. Many TVs don't: use
+the `appops` command above on those.
 
 Many TVs don't reboot but sleep; when they wake they may show the home screen
 instead of the last app. That's the TV's choice, not something an app can
@@ -158,4 +158,9 @@ The watchdog's probe reads `localStorage.screen_token` (the key
 `player/player.js` uses) to know when the TV has paired. Rename that key in
 the player and the auto-start question simply never appears.
 
-Publishing: see [PLAY_STORE_CHECKLIST.md](PLAY_STORE_CHECKLIST.md).
+Publishing: see [PLAY_STORE_CHECKLIST.md](PLAY_STORE_CHECKLIST.md), then
+[REVIEW_KIT.md](REVIEW_KIT.md) before sending it for review.
+
+Tests: `Policy` unit tests, plus Robolectric launch tests that start the app as
+a TV and as a portrait tablet (player opens, BACK behaves per device). They
+run in `build.sh` before anything is built.

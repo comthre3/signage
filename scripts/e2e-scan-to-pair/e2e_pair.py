@@ -16,6 +16,8 @@ Checks, in order:
   7. the pairing screen and its QR work at 1280x720
   8. an upright 9:16 touch display (tablets, portrait panels): pairing, QR, welcome
   9. a 16:10 landscape tablet: pairing and QR
+ 10. a phone: pairing and QR
+ 11. D-pad focus (the TV remote moves focus like Tab) is clearly visible
 """
 import json
 import os
@@ -237,6 +239,33 @@ def main():
             "https://app.khanshoof.com/pair?code=")
         print("9. 16:10 landscape tablet: pairing and QR")
         land_ctx.close()
+
+        # 10. Phone (Play offers the app to phones too)
+        phone_ctx = tv_context(browser, size=(412, 915), scale=2.625, touch=True)
+        pp = phone_ctx.new_page()
+        pp.goto("https://play.khanshoof.com/")
+        wait_for_code(pp)
+        pp.screenshot(path=f"{OUT}/13-phone-pairing.png")
+        assert decode_qr(pp.locator("#pairing-qr"), "13b-phone-qr.png").startswith(
+            "https://app.khanshoof.com/pair?code=")
+        overflow = pp.evaluate("document.documentElement.scrollWidth > innerWidth || "
+                               "document.getElementById('pairing').scrollHeight > innerHeight")
+        assert not overflow, "pairing screen doesn't fit a phone"
+        print("10. phone: pairing and QR fit")
+        phone_ctx.close()
+
+        # 11. D-pad focus: a TV remote moves focus the way Tab does
+        tvf = tv_context(browser)
+        pf = tvf.new_page()
+        pf.goto("https://play.khanshoof.com/")
+        wait_for_code(pf)
+        pf.keyboard.press("Tab")
+        focus = pf.evaluate("(() => { const e = document.activeElement, s = getComputedStyle(e);"
+                            " return [e.id, s.outlineStyle, parseFloat(s.outlineWidth)]; })()")
+        assert focus[0] == "admin-code-toggle" and focus[1] == "solid" and focus[2] >= 3, focus
+        pf.screenshot(path=f"{OUT}/14-tv-dpad-focus.png")
+        print("11. D-pad focus ring visible on", focus[0])
+        tvf.close()
 
         browser.close()
     print("timings:", json.dumps(timings))

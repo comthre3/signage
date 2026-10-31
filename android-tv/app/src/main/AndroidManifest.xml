@@ -10,6 +10,14 @@
          never draws over other apps. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- AutoStart checks whether this device has the overlay settings screen
+         before asking; Android 11+ only answers that for declared intents. -->
+    <queries>
+        <intent>
+            <action android:name="android.settings.action.MANAGE_OVERLAY_PERMISSION" />
+        </intent>
+    </queries>
+
     <!-- TVs and touch screens alike: Android TV / Google TV, and the large
          Android tablets and displays people mount as signage. leanback is
          therefore not required; the TV launcher entry and banner below still

@@ -21,6 +21,7 @@
         android:visibility="gone">
 
         <ImageView
+            android:id="@+id/overlay_face"
             android:layout_width="160dp"
             android:layout_height="141dp"
             android:importantForAccessibility="no"

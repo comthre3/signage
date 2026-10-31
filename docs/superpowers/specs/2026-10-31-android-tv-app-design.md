@@ -105,6 +105,17 @@ draft for the user's legal review.
   selection, zoom or overscroll); copy says "screen", not "TV"; the player's
   welcome sizes for portrait; the harness checks 9:16 and 16:10 touch screens.
   Displays without Play get the Play-signed universal APK from Play Console.
+- Play review pass (user, 2026-10-31: "make sure it gets approved"), against
+  the official TV checklist (2026-06-29):
+  - BACK exits at once on TVs (TV-DB); the double press stays for touch screens.
+  - The welcome screen and native error screen animate their mascot (TV-BY),
+    and the unsupported-WebView screen lets the TV sleep.
+  - Videos and timers pause when leaving the app (TV-NP).
+  - Launcher icons are 160 px at xhdpi (TV-LB).
+  - The D-pad focus ring is a 4 px coral outline (TV-DP).
+  - Auto-start is asked only where the overlay settings screen exists.
+  - Robolectric launch tests run on TV and tablet configurations.
+  - REVIEW_KIT.md maps every TV criterion and holds paste-ready review text.
 - App data is excluded from device-to-device transfer too
   (`dataExtractionRules`): Android 12+ ignores `allowBackup` there, and a
   copied screen token would make two TVs the same screen.

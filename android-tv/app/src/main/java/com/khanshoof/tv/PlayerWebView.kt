@@ -93,9 +93,21 @@ fun createPlayerWebView(context: Context, playerOrigin: String, events: PlayerEv
 
 private fun configureServiceWorkers() {
     // Service workers run in WebView by default; these settings only make
-    // their requests follow the same rules as the page's.
+    // their requests follow the same rules as the page's. Optional, so a
+    // WebView that refuses them must not stop the player from starting.
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE)) return
-    val settings = ServiceWorkerControllerCompat.getInstance().serviceWorkerWebSettings
+    val settings = try {
+        ServiceWorkerControllerCompat.getInstance().serviceWorkerWebSettings
+    } catch (e: RuntimeException) {
+        Log.w(TAG, "Service worker settings unavailable", e)
+        return
+    } catch (e: LinkageError) {
+        // The controller is made in a static initializer: a broken WebView
+        // fails it with ExceptionInInitializerError, and every later call
+        // (a rebuilt WebView) with NoClassDefFoundError.
+        Log.w(TAG, "Service worker settings unavailable", e)
+        return
+    }
     if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_CACHE_MODE)) {
         settings.cacheMode = WebSettings.LOAD_DEFAULT
     }

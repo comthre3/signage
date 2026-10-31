@@ -56,12 +56,14 @@ echo "Building the build image (cached after the first time)…"
 docker build -q -t "$image" "$here" > /dev/null
 
 # The repository is mounted read-only (the build reads git for the version
-# info Play shows); only android-tv/ is writable. Caches stay in .cache/.
+# info Play shows); only android-tv/ is writable. Caches stay in .cache/, which
+# is also the home directory of every JVM (Gradle, its workers, the Robolectric
+# tests): this user has none inside the container.
 mkdir -p "$here/.cache/gradle" "$here/.cache/android" "$here/dist"
 in_docker=(docker run --rm --user "$(id -u):$(id -g)"
   -e GRADLE_USER_HOME=/work/android-tv/.cache/gradle
   -e ANDROID_USER_HOME=/work/android-tv/.cache/android
-  -e GRADLE_OPTS=-Duser.home=/work/android-tv/.cache
+  -e JAVA_TOOL_OPTIONS=-Duser.home=/work/android-tv/.cache
   ${env_args[@]+"${env_args[@]}"}
   -v "$repo:/work:ro" -v "$here:/work/android-tv" -w /work/android-tv
   "$image")

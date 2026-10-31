@@ -1,6 +1,10 @@
 package com.khanshoof.tv
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -16,6 +20,7 @@ import android.view.WindowManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.webkit.WebView
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -38,6 +43,15 @@ private const val WATCHDOG_TIMEOUT_MS = 30_000L
 private const val RENDERER_RESTART_DELAY_MS = 3_000L
 private const val BACK_EXIT_WINDOW_MS = 2_000L
 
+// Leaving the app (HOME, another app, the TV going to standby) pauses the
+// player's videos; coming back plays the ones this paused.
+private const val PAUSE_VIDEOS_JS =
+    "document.querySelectorAll('video').forEach(function(v){" +
+        "if(!v.paused){v.dataset.khanPaused='1';v.pause();}})"
+private const val RESUME_VIDEOS_JS =
+    "document.querySelectorAll('video[data-khan-paused]').forEach(function(v){" +
+        "delete v.dataset.khanPaused;var p=v.play();if(p&&p.catch)p.catch(function(){});})"
+
 // The watchdog's probe. Any answer proves the page's JavaScript is alive; the
 // value says whether the player has paired (it keeps its token under this key
 // in player/player.js), which is when the auto-start question is worth asking.
@@ -53,8 +67,17 @@ class MainActivity : ComponentActivity(), PlayerEvents {
 
     private lateinit var webContainer: FrameLayout
     private lateinit var overlay: View
+    private lateinit var overlayFace: ImageView
     private lateinit var overlayTitle: TextView
     private lateinit var overlayMessage: TextView
+    private var faceBob: ObjectAnimator? = null
+
+    // TVs and touch screens differ in one place: BACK. Some TV boxes report a
+    // normal UI mode, so the leanback feature counts too.
+    private val isTv by lazy {
+        (resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private var webView: WebView? = null
@@ -65,7 +88,7 @@ class MainActivity : ComponentActivity(), PlayerEvents {
     private var loadFailed = false    // the current load failed and a retry is scheduled
     private var pageReady = false     // the player page is up
     private var pageGeneration = 0    // bumped by every page load, so a stale probe is ignored
-    private var lastBackPress = 0L
+    private var lastBackPress: Long? = null   // null: BACK not pressed yet
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val retry = Runnable { load() }
@@ -83,6 +106,7 @@ class MainActivity : ComponentActivity(), PlayerEvents {
         setContentView(R.layout.activity_main)
         webContainer = findViewById(R.id.web_container)
         overlay = findViewById(R.id.overlay)
+        overlayFace = findViewById(R.id.overlay_face)
         overlayTitle = findViewById(R.id.overlay_title)
         overlayMessage = findViewById(R.id.overlay_message)
 
@@ -94,7 +118,7 @@ class MainActivity : ComponentActivity(), PlayerEvents {
         playerOrigin = checkNotNull(Policy.originOf(playerUrl)) { "Bad player URL: $playerUrl" }
 
         if (Policy.isWebViewTooOld(WebViewCompat.getCurrentWebViewPackage(this)?.versionName)) {
-            showOverlay(R.string.webview_title, R.string.webview_message)
+            showUnsupported()
             return
         }
         if (buildWebView()) load()
@@ -115,6 +139,10 @@ class MainActivity : ComponentActivity(), PlayerEvents {
         super.onStart()
         watchNetwork()
         handler.postDelayed(watchdog, WATCHDOG_INTERVAL_MS)
+        webView?.let {
+            it.resumeTimers()
+            it.evaluateJavascript(RESUME_VIDEOS_JS, null)
+        }
     }
 
     override fun onResume() {
@@ -131,11 +159,16 @@ class MainActivity : ComponentActivity(), PlayerEvents {
     override fun onStop() {
         handler.removeCallbacks(watchdog)
         unwatchNetwork()
+        webView?.let {
+            it.evaluateJavascript(PAUSE_VIDEOS_JS, null)
+            it.pauseTimers()   // the player's carousels and polling rest too
+        }
         super.onStop()
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        faceBob?.cancel()
         webView?.let {
             webContainer.removeView(it)
             it.destroy()
@@ -157,7 +190,7 @@ class MainActivity : ComponentActivity(), PlayerEvents {
             createPlayerWebView(this, playerOrigin, this)
         } catch (e: RuntimeException) {
             Log.e(TAG, "No usable WebView", e)
-            showOverlay(R.string.webview_title, R.string.webview_message)
+            showUnsupported()
             return false
         }
         webContainer.addView(view, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -291,16 +324,48 @@ class MainActivity : ComponentActivity(), PlayerEvents {
         overlayTitle.setText(title)
         overlayMessage.setText(message)
         overlay.visibility = View.VISIBLE
+        // A gently moving mascot: a screen kept awake should never sit on a
+        // still image (TV guideline TV-BY), and a moving face says "working on it".
+        if (faceBob == null) {
+            faceBob = ObjectAnimator.ofFloat(overlayFace, View.TRANSLATION_Y, 0f, -12f * resources.displayMetrics.density).apply {
+                duration = 1_400L
+                repeatMode = ValueAnimator.REVERSE
+                repeatCount = ValueAnimator.INFINITE
+                start()
+            }
+        }
     }
 
     private fun hideOverlay() {
         overlay.visibility = View.GONE
+        hideOverlayAnimation()
     }
 
-    /** BACK twice to leave: a remote bumped once must not take the menu off the wall. */
+    /** This TV can't run the player at all: say so, and let the screen sleep. */
+    private fun showUnsupported() {
+        showOverlay(R.string.webview_title, R.string.webview_message)
+        hideOverlayAnimation()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun hideOverlayAnimation() {
+        faceBob?.cancel()
+        faceBob = null
+        overlayFace.translationY = 0f
+    }
+
+    /**
+     * On a TV, BACK goes straight home, as Android TV requires (TV-DB). On a
+     * touch screen an edge swipe is easily made by accident, so leaving takes
+     * two: a passer-by brushing the tablet must not take the menu off the wall.
+     */
     private fun onBack() {
+        if (isTv) {
+            finish()
+            return
+        }
         val now = SystemClock.elapsedRealtime()
-        if (now - lastBackPress <= BACK_EXIT_WINDOW_MS) {
+        if (lastBackPress?.let { now - it <= BACK_EXIT_WINDOW_MS } == true) {
             finish()
             return
         }
