@@ -663,6 +663,13 @@ _UNSAFE_RETURN_TO = [
     "\\\\evil.example/",
     "/\t/evil.example/",     # browsers drop the tab: "//evil.example/"
     "/\n/evil.example/",
+    # Dot-segments: a URL parser resolves each of these to the path
+    # "//evil.example/", which is protocol-relative wherever it is reused.
+    "/..//evil.example/",
+    "/%2e%2e//evil.example/",
+    "/%2E%2E//evil.example/",
+    "/a/../..//evil.example/",
+    "/.//evil.example/",
     "javascript:alert(1)",
     "evil.example",
     "",

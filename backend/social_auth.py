@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.parse
 import json
 import secrets
 import logging
@@ -42,10 +43,16 @@ def _safe_return_to(return_to: Optional[str]) -> str:
     leave the app origin is refused: absolute URLs and other schemes (no
     leading "/"), protocol-relative "//host", and backslashes, which
     browsers read as "/" ("/\\host"). Control characters too: browsers drop
-    tabs and newlines inside a URL, so "/<TAB>/host" would become "//host"."""
+    tabs and newlines inside a URL, so "/<TAB>/host" would become "//host".
+    And dot-segments, raw or percent-encoded: a URL parser resolves
+    "/..//host" (or "/%2e%2e//host") to the path "//host", which is
+    protocol-relative wherever that path is reused as a URL."""
     if (not return_to or not return_to.startswith("/")
             or return_to.startswith("//") or "\\" in return_to
             or any(ord(c) < 0x20 or ord(c) == 0x7f for c in return_to)):
+        return "/"
+    path = return_to.split("?", 1)[0].split("#", 1)[0]
+    if any(segment in (".", "..") for segment in urllib.parse.unquote(path).split("/")):
         return "/"
     return return_to
 
