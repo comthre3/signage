@@ -3846,6 +3846,7 @@ const Walls = (() => {
 const Schedules = (() => {
   let cachedPlaylists = [];
   let currentSchedule = null;     // {id, name, rules} or null when creating new
+  let saving = false;             // a second Save before POST /schedules answers made a duplicate
 
   const DOW_LABELS = ["dow.mon", "dow.tue", "dow.wed", "dow.thu", "dow.fri", "dow.sat", "dow.sun"];
 
@@ -4022,6 +4023,19 @@ const Schedules = (() => {
   }
 
   async function save() {
+    if (saving) return;
+    const btn = document.getElementById("schedule-save-btn");
+    saving = true;
+    try {
+      // withLoading disables the button before the first await, so the
+      // second click of a double-click never reaches this handler at all.
+      await (btn ? withLoading(btn, saveNow) : saveNow());
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function saveNow() {
     const nameEl = document.getElementById("schedule-editor-name");
     const name = nameEl.value.trim();
     if (!name) {
