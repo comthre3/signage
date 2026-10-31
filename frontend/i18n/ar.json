@@ -322,7 +322,7 @@
   "schedules.dow.sat": "السبت",
   "schedules.dow.sun": "الأحد",
   "schedules.name_required": "اسم الجدول مطلوب.",
-  "schedules.overlap_error": "تتداخل قاعدتان في نفس اليوم.",
+  "schedules.overlap_error": "تتداخل قاعدتان في الوقت (بما في ذلك القواعد التي تمتد بعد منتصف الليل).",
   "schedules.no_playlists": "أنشئ قائمة تشغيل أولًا.",
   "schedules.delete_confirm_title": "حذف الجدول؟",
   "schedules.delete_confirm_message": "حذف الجدول \"{name}\"؟ ستعود الشاشات التي تستخدمه إلى قائمة التشغيل الافتراضية.",

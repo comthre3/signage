@@ -322,7 +322,7 @@
   "schedules.dow.sat": "Sat",
   "schedules.dow.sun": "Sun",
   "schedules.name_required": "Schedule name is required.",
-  "schedules.overlap_error": "Two rules overlap on the same day.",
+  "schedules.overlap_error": "Two rules overlap in time (including rules that run past midnight).",
   "schedules.no_playlists": "Create a playlist first.",
   "schedules.delete_confirm_title": "Delete schedule?",
   "schedules.delete_confirm_message": "Delete schedule \"{name}\"? Screens using it will fall back to their default playlist.",
