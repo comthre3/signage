@@ -454,6 +454,7 @@ function resetOrgState() {
   safely(() => Schedules.reset());
   safely(() => AuditLog.reset());
   safely(() => Menus.reset());
+  safely(() => ApiKeys.reset());
   safely(() => SubscriptionBanner.update(null));
   safely(() => {
     document.getElementById("billing-current-body").textContent = "—";
@@ -3337,6 +3338,12 @@ const Walls = (() => {
     state.walls = [];
     const root = document.getElementById("walls-list");
     if (root) root.innerHTML = "";
+    // The last pair code (and its countdown) is the previous org's, and
+    // still redeemable until it expires.
+    const code = document.getElementById("walls-pair-code");
+    if (code) code.textContent = "—";
+    const countdown = document.getElementById("walls-pair-countdown");
+    if (countdown) countdown.textContent = Khan.t("walls.pair_expires_label", "Expires in —");
   }
 
   // openEditor and pair-flow are filled in by Task 9.
@@ -4439,6 +4446,17 @@ const ApiKeys = (() => {
     document.getElementById("api-key-reveal-modal").classList.add("hidden");
   }
 
+  // Sign-out: a key just revealed belongs to the previous org -- left in the
+  // DOM it is one click away for whoever signs in next in this tab.
+  function reset() {
+    closeRevealModal();
+    document.getElementById("api-key-create-modal")?.classList.add("hidden");
+    const name = document.getElementById("api-key-name");
+    if (name) name.value = "";
+    const list = document.getElementById("api-keys-list");
+    if (list) list.innerHTML = "";
+  }
+
   async function revokeKey(id, name) {
     const ok = await confirmDialog({
       title:        Khan.t("api_keys.revoke_confirm.title", "Revoke API key?"),
@@ -4467,7 +4485,7 @@ const ApiKeys = (() => {
     document.getElementById("api-key-reveal-done")?.addEventListener("click", closeRevealModal);
   }
 
-  return { show, init };
+  return { show, init, reset };
 })();
 
 ApiKeys.init();
