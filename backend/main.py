@@ -1717,6 +1717,7 @@ def me(user: dict = Depends(get_current_user)) -> dict:
             "screen_limit": org["screen_limit"],
             "subscription_status": org["subscription_status"],
             "trial_ends_at": org["trial_ends_at"],
+            "paid_through_at": org["paid_through_at"],
             "locale": org["locale"],
         },
     }
@@ -4666,6 +4667,9 @@ def billing_checkout(
 
 
 class BillingCallbackBody(BaseModel):
+    # A JSON callback may carry the ids as numbers; store them as text.
+    model_config = {"coerce_numbers_to_str": True}
+
     result: str | None = None
     trackid: str | None = None
     paymentID: str | None = None
@@ -4679,10 +4683,20 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
     raw_body = await request.body()
     if not _verify_billing_callback(raw_body, request.headers, s):
         raise HTTPException(status_code=404)
-    try:
-        body_dict = json.loads(raw_body) if raw_body else {}
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    # NiuPay's request endpoint accepts only form-encoding (see billing.py), so
+    # its callback may arrive as a form too: a form body and a JSON one get the
+    # same handling. Verification above is on the raw bytes either way.
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
+        form = await request.form()
+        body_dict = {k: v for k, v in form.items() if isinstance(v, str)}
+    else:
+        try:
+            body_dict = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        if not isinstance(body_dict, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
     body = BillingCallbackBody(**body_dict)
 
     if body.trackid and body.trackid != trackid:
@@ -4698,34 +4712,56 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
     captured = (body.result or "").upper() == "CAPTURED"
     if captured:
         term = int(row["term_months"])
-        execute(
-            """
-            UPDATE payments
-               SET status='captured',
-                   niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
-                   updated_at=now()
-             WHERE trackid=?
-            """,
-            (body.result, body.tranid, body.ref, body.paymentID, trackid),
-        )
-        old_plan_row = query_one("SELECT plan FROM organizations WHERE id = ?", (row["organization_id"],))
-        old_plan = old_plan_row["plan"] if old_plan_row else None
-        execute(
-            """
-            UPDATE organizations
-               SET plan               = ?,
-                   plan_term_months   = ?,
-                   screen_limit       = ?,
-                   subscription_status= 'active',
-                   paid_through_at    = now() + make_interval(days => ?)
-             WHERE id = ?
-            """,
-            (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], term * TERM_DAYS, row["organization_id"]),
-        )
-        audit(request, action="billing.plan_change",
-              actor=None, organization_id=row["organization_id"],
-              target_type="organization", target_id=row["organization_id"],
-              details={"from_plan": old_plan, "to_plan": row["tier"], "term_months": term})
+        # The status check above is only a fast path: two deliveries of one
+        # callback can both pass it. Only the one whose UPDATE moves the row out
+        # of pending extends the org, in the same transaction -- extending
+        # paid_through_at is not idempotent.
+        with transaction():
+            claimed = execute(
+                """
+                UPDATE payments
+                   SET status='captured',
+                       niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
+                       updated_at=now()
+                 WHERE trackid=? AND status NOT IN ('captured', 'failed')
+                """,
+                (body.result, body.tranid, body.ref, body.paymentID, trackid),
+            )
+            if claimed:
+                old_plan_row = query_one("SELECT plan FROM organizations WHERE id = ? FOR UPDATE",
+                                         (row["organization_id"],))
+                old_plan = old_plan_row["plan"] if old_plan_row else None
+                # Paid time still left is credit, not forfeited (renewing early is
+                # what the renewal_7day email asks for). It carries over as-is on
+                # the same tier and is converted at the two tiers' monthly prices
+                # on a change of tier -- so an upgrade cannot buy the rest of a
+                # year at the dearer tier for one month's price. An 'active' org
+                # with no paid_through_at has no expiry (first-run org, admin
+                # override) and keeps none.
+                old_price = PLAN_PRICING_KWD.get(old_plan)
+                credit_ratio = float(old_price / PLAN_PRICING_KWD[row["tier"]]) if old_price else 1.0
+                execute(
+                    """
+                    UPDATE organizations
+                       SET plan               = ?,
+                           plan_term_months   = ?,
+                           screen_limit       = ?,
+                           subscription_status= 'active',
+                           paid_through_at    = CASE
+                               WHEN subscription_status = 'active' AND paid_through_at IS NULL THEN NULL
+                               ELSE now() + GREATEST(paid_through_at - now(), interval '0') * ?
+                                          + make_interval(days => ?)
+                           END
+                     WHERE id = ?
+                    """,
+                    (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], credit_ratio,
+                     term * TERM_DAYS, row["organization_id"]),
+                )
+        if claimed:
+            audit(request, action="billing.plan_change",
+                  actor=None, organization_id=row["organization_id"],
+                  target_type="organization", target_id=row["organization_id"],
+                  details={"from_plan": old_plan, "to_plan": row["tier"], "term_months": term})
     else:
         execute(
             """
@@ -4733,7 +4769,7 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
                SET status='failed',
                    niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
                    updated_at=now()
-             WHERE trackid=?
+             WHERE trackid=? AND status NOT IN ('captured', 'failed')
             """,
             (body.result, body.tranid, body.ref, body.paymentID, trackid),
         )
