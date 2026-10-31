@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The player's pairing-screen palette (player/styles.css). -->
+<resources>
+    <color name="cream">#FFF8F0</color>
+    <color name="plum">#3E2B4F</color>
+    <color name="plum_muted">#5D4A66</color>
+    <color name="coral">#E09478</color>
+</resources>

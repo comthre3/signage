@@ -16,6 +16,8 @@ body {
 :lang(ar) .pairing-intro,
 :lang(ar) .pairing-steps,
 :lang(ar) .pairing-meta,
+:lang(ar) .pairing-fallback,
+:lang(ar) .empty-state,
 :lang(ar) #status {
   font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
 }
@@ -207,10 +209,78 @@ body {
   font-weight: 600;
 }
 
+.pairing-fallback {
+  font-size: max(12px, calc(var(--u) * 2));
+  color: #5D4A66;
+  margin: 0;
+}
+
+.pairing-fallback strong {
+  color: #3E2B4F;
+  font-weight: 600;
+}
+
 .pairing-meta {
   font-size: max(12px, calc(var(--u) * 1.8));
   color: #A89382;
   margin: 0;
+}
+
+/* ── Nothing assigned yet (a screen that was just paired) ────── */
+.empty-state {
+  --u: min(1vh, 0.5625vw);
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 2.5);
+  padding: calc(var(--u) * 3) 6vw;
+  background:
+    radial-gradient(1200px 800px at 70% 30%, #FDF3D6 0%, transparent 60%),
+    radial-gradient(900px 600px at 20% 80%, #F4B9A1 0%, transparent 55%),
+    #FFF8F0;
+  color: #3E2B4F;
+  text-align: center;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+}
+
+/* Upright tablets and portrait panels: size by width, as .pairing does. */
+@media (orientation: portrait) {
+  .empty-state { --u: min(0.75vh, 1.2vw); }
+}
+
+.empty-face {
+  width: max(64px, calc(var(--u) * 16));
+  height: auto;   /* the art is 794x700, not square */
+  image-rendering: pixelated;
+}
+
+.empty-title {
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-size: max(24px, calc(var(--u) * 7));
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.1;
+}
+
+:lang(ar) .empty-title {
+  font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+}
+
+.empty-text {
+  font-size: max(14px, calc(var(--u) * 3));
+  color: #5D4A66;
+  max-width: calc(var(--u) * 120);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.empty-text strong {
+  color: #3E2B4F;
+  font-weight: 600;
 }
 
 /* ── Animated Khanshoof mascot on pairing view ──────────────── */
@@ -247,6 +317,7 @@ code, kbd, samp, pre,
 /* Pairing codes are alphanumeric — stay LTR even in Arabic mode */
 [dir="rtl"] .pairing-code,
 [dir="rtl"] #pairing-url,
+[dir="rtl"] #empty-url,
 [dir="rtl"] #pairing-code {
   direction: ltr;
 }

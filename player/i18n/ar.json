@@ -3,10 +3,12 @@
   "pairing.intro": "اقرن هذه الشاشة بحسابك",
   "pairing.code_aria": "رمز الإقران",
   "pairing.qr_aria": "رمز QR لرابط الإقران",
-  "pairing.step1_a": "على هاتفك، افتح",
-  "pairing.step2": "أدخل الرمز أعلاه، أو امسح رمز QR للانتقال مباشرة",
-  "pairing.step3": "اختر أي شاشة هذه — تتحدث الشاشة تلقائياً",
-  "pairing.meta": "يتجدد الرمز كل 10 دقائق",
+  "pairing.scan_step1": "وجّه كاميرا هاتفك نحو رمز QR",
+  "pairing.scan_step2": "سجّل الدخول واضغط «إقران»",
+  "pairing.scan_step3": "تنتقل هذه الشاشة إلى محتواك تلقائياً",
+  "pairing.fallback_a": "لا تعمل الكاميرا؟ افتح",
+  "pairing.fallback_b": "واكتب الرمز.",
+  "pairing.meta": "جارٍ تجهيز الرمز…",
   "pairing.waiting": "في انتظار هاتفك…",
   "pairing.no_server": "تعذّر الوصول إلى الخادم. إعادة المحاولة…",
   "pairing.expired": "انتهت صلاحية الرمز — جارٍ الحصول على رمز جديد…",
@@ -25,5 +27,8 @@
   "wall.connecting": "جاري الاتصال بالجدار…",
   "wall.reconnecting": "جاري إعادة الاتصال بالجدار…",
   "lang.toggle_label": "EN",
-  "nav.lang_toggle_aria": "تبديل اللغة"
+  "nav.lang_toggle_aria": "تبديل اللغة",
+  "empty.title": "تم الاتصال!",
+  "empty.text_a": "اختر ما تريد عرضه من",
+  "empty.text_b": "وسيظهر هنا تلقائياً."
 }

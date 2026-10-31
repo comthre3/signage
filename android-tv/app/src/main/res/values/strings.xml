@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Khanshoof</string>
+
+    <string name="offline_title">Can\'t reach Khanshoof</string>
+    <string name="offline_message">Check this screen\'s internet connection. We\'ll keep trying by ourselves.</string>
+    <string name="restarting_title">One moment…</string>
+    <string name="restarting_message">Restarting the player.</string>
+
+    <string name="webview_title">This screen needs an update</string>
+    <string name="webview_message">Update \"Android System WebView\" from the Play Store, or ask the screen\'s maker for a system update. Then open Khanshoof again.</string>
+
+    <string name="press_back_again">Press BACK again to exit</string>
+
+    <string name="autostart_title">Start Khanshoof when this screen turns on?</string>
+    <string name="autostart_message">Then your screen comes back by itself after a power cut. On the next screen, turn on \"Display over other apps\" for Khanshoof.</string>
+    <string name="autostart_allow">Set it up</string>
+    <string name="autostart_later">Not now</string>
+    <string name="autostart_unavailable">This device doesn\'t have that setting. After a restart, open Khanshoof from the home screen.</string>
+</resources>

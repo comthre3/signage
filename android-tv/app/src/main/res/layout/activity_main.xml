@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Merged into the activity's content frame; the window keeps the screen on. -->
+<merge xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The player WebView goes here; it is rebuilt if its renderer dies. -->
+    <FrameLayout
+        android:id="@+id/web_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Shown only when the player can't be shown: no network on first start,
+         a renderer restart, or a WebView too old to run it. -->
+    <LinearLayout
+        android:id="@+id/overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/cream"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="48dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="160dp"
+            android:layout_height="141dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/face_smile" />
+
+        <TextView
+            android:id="@+id/overlay_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:fontFamily="serif"
+            android:gravity="center"
+            android:textColor="@color/plum"
+            android:textSize="32sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/overlay_message"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:maxWidth="640dp"
+            android:textColor="@color/plum_muted"
+            android:textSize="20sp" />
+    </LinearLayout>
+</merge>

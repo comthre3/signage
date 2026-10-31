@@ -3,10 +3,12 @@
   "pairing.intro": "Pair this display to your account",
   "pairing.code_aria": "Pairing code",
   "pairing.qr_aria": "QR code for pairing URL",
-  "pairing.step1_a": "On your phone, open",
-  "pairing.step2": "Enter the code above, or scan the QR to jump there",
-  "pairing.step3": "Pick which screen this is — the display updates automatically",
-  "pairing.meta": "Code refreshes every 10 minutes",
+  "pairing.scan_step1": "Point your phone's camera at the QR code",
+  "pairing.scan_step2": "Sign in and tap Pair",
+  "pairing.scan_step3": "This screen switches to your content by itself",
+  "pairing.fallback_a": "No camera? Open",
+  "pairing.fallback_b": "and type the code.",
+  "pairing.meta": "Getting your code…",
   "pairing.waiting": "Waiting for your phone…",
   "pairing.no_server": "Can't reach server. Retrying…",
   "pairing.expired": "Code expired — getting a new one…",
@@ -25,5 +27,8 @@
   "wall.connecting": "Connecting to wall…",
   "wall.reconnecting": "Reconnecting to wall…",
   "lang.toggle_label": "عربي",
-  "nav.lang_toggle_aria": "Switch language"
+  "nav.lang_toggle_aria": "Switch language",
+  "empty.title": "You're connected!",
+  "empty.text_a": "Pick what to show at",
+  "empty.text_b": "and it will appear here by itself."
 }
