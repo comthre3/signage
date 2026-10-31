@@ -3253,7 +3253,7 @@ const Walls = (() => {
         <div class="walls-meta">
           ${w.mode === "mirrored" ? Khan.t("walls.mode_mirrored", "Mirrored")
                                    : Khan.t("walls.mode_spanned", "Spanned")}
-          · ${w.rows}×${w.cols}
+          · <bdi dir="ltr">${w.rows}×${w.cols}</bdi>
         </div>
         <div class="walls-mosaic" style="grid-template-columns: repeat(${w.cols}, 1fr);">
           ${(w.cells || []).map(c => `
@@ -3485,7 +3485,7 @@ const Walls = (() => {
                 ? " · " + Khan.t("walls.synced_rotation_short", "Synced rotation")
                 : " · " + Khan.t("walls.same_playlist_short", "Same playlist"))
             : Khan.t("walls.mode_spanned", "Spanned")}
-          · ${wall.rows}×${wall.cols}
+          · <bdi dir="ltr">${wall.rows}×${wall.cols}</bdi>
         </span>
         ${samePlaylistPicker}
       </div>
@@ -3522,14 +3522,17 @@ const Walls = (() => {
       if (!wall.mirrored_mode) fields.mirrored_mode = "same_playlist";
       try {
         await api(`/walls/${wall.id}`, { method: "PATCH", body: JSON.stringify(fields) });
-        toast(Khan.t("walls.playlist_updated", "Wall playlist updated"), "success");
-        await renderEditor(wall.id);
       } catch (err) {
         // Put back what the wall is really playing: left on the new choice,
         // the picker claims a change the server refused.
         select.value = wall.mirrored_playlist_id ? String(wall.mirrored_playlist_id) : "";
         toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
+        return;
       }
+      // Saved. A failure re-reading the editor below must not undo the
+      // picker: the server is already playing the new playlist.
+      toast(Khan.t("walls.playlist_updated", "Wall playlist updated"), "success");
+      await renderEditor(wall.id);
     });
     if (canEdit) mountModeSwitchButton(wall);
     refreshMosaic(wall.id);
@@ -3672,8 +3675,8 @@ const Walls = (() => {
       <div class="canvas-editor-summary">
         <span class="walls-meta">
           ${Khan.t("walls.mode_spanned", "Spanned")} ·
-          ${wall.canvas_width_px}×${wall.canvas_height_px} ·
-          ${wall.rows}×${wall.cols}
+          <bdi dir="ltr">${wall.canvas_width_px}×${wall.canvas_height_px}</bdi> ·
+          <bdi dir="ltr">${wall.rows}×${wall.cols}</bdi>
         </span>
       </div>
       <div class="canvas-editor-grid">
