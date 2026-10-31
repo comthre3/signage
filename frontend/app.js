@@ -348,8 +348,9 @@ async function apiFetch(url, init) {
   }
 }
 
-async function failedResponse(res, text, headers) {
-  if (res.status === 401) handleAuthFailure();
+async function failedResponse(res, text, headers, { anonymous = false } = {}) {
+  // An anonymous request's 401 says nothing about the session this tab holds.
+  if (res.status === 401 && !anonymous) handleAuthFailure();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
   const err = apiError(res.status, data, text);
@@ -368,14 +369,16 @@ async function failedResponse(res, text, headers) {
 
 /** JSON API call. Resolves to the parsed body, or null for an empty one
  *  (204 No Content: DELETE /schedules/{id}, /api-keys/{id}, /menus/{id}...).
- *  Rejects with an Error whose message is ready to show to the user. */
+ *  Rejects with an Error whose message is ready to show to the user.
+ *  `anonymous: true` sends no session token even when one is held. */
 async function api(path, options = {}) {
-  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
-  const headers = { ...(isForm ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await apiFetch(`${API_BASE}${path}`, { ...options, headers });
+  const { anonymous = false, ...init } = options;
+  const isForm = typeof FormData !== "undefined" && init.body instanceof FormData;
+  const headers = { ...(isForm ? {} : { "Content-Type": "application/json" }), ...(init.headers || {}) };
+  if (authToken && !anonymous) headers.Authorization = `Bearer ${authToken}`;
+  const res = await apiFetch(`${API_BASE}${path}`, { ...init, headers });
   const text = await res.text();
-  if (!res.ok) throw await failedResponse(res, text, headers);
+  if (!res.ok) throw await failedResponse(res, text, headers, { anonymous });
   if (!text) return null;
   try { return JSON.parse(text); } catch (_) { return text; }
 }
@@ -1658,6 +1661,7 @@ document.getElementById("auth-tab-signup").addEventListener("click", () => showA
 const SOCIAL_PENDING_KEY    = "khan_social_auth_pending";
 const SOCIAL_PENDING_TTL_MS = 15 * 60 * 1000;
 const SOCIAL_NONCE_PARAM    = "sa_nonce";
+const SOCIAL_PROVIDERS      = ["google", "apple"];
 const FLASH_KEY             = "khan_flash";
 
 function randomNonce() {
@@ -1821,11 +1825,14 @@ function handleAuthBounce() {
   }
   if (stash) {
     if (!startedHere) { refuse(); return; }
+    // The payload is read unverified (only the backend can check the
+    // signature), so it may only pick between the two known providers --
+    // never put arbitrary text into the request path.
     let provider = "google";
     try {
       const b64 = stash.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
       const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
-      provider = payload.provider || "google";
+      if (payload && SOCIAL_PROVIDERS.includes(payload.provider)) provider = payload.provider;
     } catch (e) { /* fall through with default */ }
     history.replaceState({}, "", "/auth-bounce");   // keep the stash out of history
 
@@ -1856,8 +1863,11 @@ function handleAuthBounce() {
       const submit = e.target.querySelector("button[type=submit]");
       try {
         await withLoading(submit, async () => {
+          // anonymous: this creates a brand-new account, so whoever may be
+          // signed in elsewhere in this browser has no business riding along.
           const body = await api(`/auth/${provider}/complete-signup`, {
             method: "POST",
+            anonymous: true,
             body: JSON.stringify({ stash_token: stash, business_name: businessName }),
           });
           localStorage.setItem(AUTH_STORAGE_KEY, body.token);
