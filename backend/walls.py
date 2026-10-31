@@ -578,6 +578,10 @@ async def wall_ws(websocket: WebSocket, wall_id: int,
     _server_loop = asyncio.get_running_loop()
     info = _wall_for_token(wall_id, screen_token)
     if info is None:
+        # Accept first: a close before accept becomes an HTTP 403 on the
+        # upgrade, which browsers report as 1006 -- indistinguishable from a
+        # network blip -- so the player never learned it had left the wall.
+        await websocket.accept()
         await websocket.close(code=4401)
         return
     wall, cell, screen = info
