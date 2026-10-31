@@ -37,5 +37,5 @@ exec docker run --rm --network "$network" \
   -e DATABASE_URL="postgresql://sawwii:${pw}@postgres:5432/${db}" \
   -e TEST_DATABASE_URL="postgresql://sawwii:${pw}@postgres:5432/${db}" \
   -e REDIS_URL="redis://redis:6379/${redis_db}" \
-  -e RATE_LIMITS_ENABLED=0 -e UPLOAD_DIR=/tmp/uploads -e DEV_MODE=1 \
+  -e RATE_LIMITS_ENABLED=0 -e UPLOAD_DIR=/tmp/uploads -e DATA_DIR=/tmp/data -e DEV_MODE=1 \
   "$image" python -m pytest -q -p no:cacheprovider "$@"
