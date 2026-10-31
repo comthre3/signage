@@ -150,6 +150,16 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: https:; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self' https://api.khanshoof.com"
+    # Uploads are served from this origin, beside the OAuth consent pages and
+    # their cookie. An SVG (or anything that is not plain media) opened here
+    # directly could run script, so it gets a sandbox with no script at all.
+    # Raster images, videos and PDFs keep the normal policy: the dashboard
+    # opens them directly and the player frames PDFs, which a sandbox breaks.
+    content_type = response.headers.get("content-type", "")
+    if request.url.path.startswith("/uploads/") and (
+            content_type.startswith("image/svg+xml")
+            or not content_type.startswith(("image/", "video/", "application/pdf"))):
+        response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     return response
 
@@ -236,7 +246,9 @@ def slugify(value: str) -> str:
 
 
 def generate_pair_code() -> str:
-    return f"{random.randint(100000, 999999)}"
+    # secrets, not random: a Mersenne Twister's next outputs can be recovered
+    # from earlier ones, and this code alone hands out the screen's token.
+    return f"{100000 + secrets.randbelow(900000)}"
 
 
 def generate_unique_pair_code() -> str:
@@ -3294,6 +3306,15 @@ def poll_pair_code(request: Request, code: str) -> dict:
         return {"status": "pending"}
 
     if row["status"] == "paired":
+        # Anyone holding the code gets the screen's token, so hand it out only
+        # while the TV that showed the code can still be polling for it (every
+        # few seconds). Later, a code read off the screen unlocks nothing.
+        try:
+            claimed_dt = datetime.fromisoformat(row["claimed_at"])
+        except (TypeError, ValueError):
+            claimed_dt = None
+        if claimed_dt is None or now > claimed_dt + timedelta(seconds=PAIR_CODE_TTL_SECONDS):
+            return {"status": "expired"}
         screen = query_one("SELECT * FROM screens WHERE id = ?", (row["screen_id"],))
         if not screen:
             return {"status": "expired"}
@@ -3360,6 +3381,7 @@ def claim_pair_code(
 
 
 @app.post("/screens/pair")
+@limiter.limit("10/minute")
 def pair_screen(request: Request, payload: PairRequest) -> dict:
     screen = query_one("SELECT * FROM screens WHERE pair_code = ?", (payload.pair_code,))
     if not screen:
@@ -4459,6 +4481,35 @@ def list_media(
     return media
 
 
+import mimetypes
+
+# What /media/upload accepts: extension -> the type it is served as. /uploads
+# is served from the API origin, so an uploaded .html or script would run there
+# (stored XSS); the player only renders images, videos and PDFs anyway.
+# StaticFiles picks Content-Type from the extension, which is why the extension
+# itself must be on this list, not just the client's Content-Type claim.
+UPLOAD_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
+    ".bmp": "image/bmp", ".svg": "image/svg+xml",
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+    ".webm": "video/webm", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
+    ".pdf": "application/pdf",
+}
+# The image's mimetypes table lacks some of these (.webp, .m4v, .mkv); without
+# them StaticFiles serves text/plain, which nosniff makes the player refuse.
+for _ext, _mime in UPLOAD_TYPES.items():
+    mimetypes.add_type(_mime, _ext)
+
+
+def _media_class(mime: str) -> str | None:
+    mime = mime.split(";")[0].strip().lower()
+    if mime == "application/pdf":
+        return "pdf"
+    major = mime.split("/")[0]
+    return major if major in ("image", "video") else None
+
+
 @app.post("/media/upload")
 async def upload_media(
     background_tasks: BackgroundTasks,
@@ -4474,13 +4525,22 @@ async def upload_media(
     max_bytes = max(MAX_UPLOAD_MB, 1) * 1024 * 1024
     if len(contents) > max_bytes:
         raise HTTPException(status_code=413, detail="File too large")
-    ext = os.path.splitext(file.filename or "")[1]
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    content_type = file.content_type or "application/octet-stream"
+    # A generic type is no claim at all (curl -F sends it for .mp4): take the
+    # extension's own. Otherwise the claim and the extension must agree, so a
+    # row never says "image" for a file served as something else.
+    if content_type.split(";")[0].strip().lower() == "application/octet-stream":
+        content_type = UPLOAD_TYPES.get(ext, content_type)
+    ext_class = _media_class(UPLOAD_TYPES.get(ext, ""))
+    if ext_class is None or _media_class(content_type) != ext_class:
+        raise http_error(415, "media.unsupported_type",
+                         "Only images, videos and PDFs can be uploaded.")
     filename = f"{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as f:
         f.write(contents)
 
-    content_type = file.content_type or "application/octet-stream"
     media_id = execute(
         """
         INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
