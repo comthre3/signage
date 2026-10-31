@@ -300,30 +300,65 @@ function statusErrorText(status) {
   return null;
 }
 
+// What a status means, for an error whose own text is the server's English:
+// a plain-string detail ("Playlist not found"), a code with no translation,
+// Pydantic's messages. In English the server's text is kept -- it is more
+// specific -- and these are only the fallback; in Arabic they replace it.
+const STATUS_FALLBACK_TEXT = {
+  400: ["error.bad_request", "The server couldn't accept that. Check what you entered and try again."],
+  404: ["error.not_found", "That item no longer exists. It may have been deleted; refresh the page and try again."],
+  409: ["error.conflict", "That clashes with something that already exists. Refresh the page and try again."],
+  422: ["error.validation", "Some values aren't valid."],
+};
+
+// Plain-string details the dashboard can run into whose meaning a status
+// alone would lose (both are 400s).
+const DETAIL_TEXT = {
+  "Empty file": ["error.empty_file", "That file is empty."],
+  "URL must start with http:// or https://": ["error.url_scheme", "The address must start with http:// or https://."],
+};
+
+function serverTextReadable() { return Khan.currentLocale() !== "ar"; }
+
+/** The server's English `serverText` where the reader reads English, else
+ *  what `status` means in the reader's language. */
+function serverOrStatusText(status, serverText) {
+  const fallback = STATUS_FALLBACK_TEXT[status] ? Khan.t(...STATUS_FALLBACK_TEXT[status]) : null;
+  const generic = Khan.t("error.generic", "Something went wrong. Please try again.");
+  return serverTextReadable() ? (serverText || fallback || generic) : (fallback || generic);
+}
+
 // FastAPI/Pydantic 422: [{loc: ["body", "rules", 0, "days_of_week"], msg}, ...]
+// The field paths and messages are English, so Arabic gets the summary only.
 function formatValidationErrors(list) {
+  const summary = Khan.t("error.validation", "Some values aren't valid.");
+  if (!serverTextReadable()) return summary;
   const parts = list.map((e) => {
     const loc = (Array.isArray(e && e.loc) ? e.loc : [])
       .filter((p) => !["body", "query", "path"].includes(p));
     const msg = (e && e.msg) || "";
     return loc.length ? `${loc.join(" › ")}: ${msg}` : msg;
   }).filter(Boolean);
-  return [Khan.t("error.validation", "Some values aren't valid."), ...parts.slice(0, 3)].join(" ");
+  return [summary, ...parts.slice(0, 3)].join(" ");
 }
 
 /** Localized, human-readable text for a failed response. Backend errors are
  *  {detail: {code, message}}, {detail: "string"} or a Pydantic 422 list;
- *  none of them is ever shown to the user as raw JSON. */
+ *  none of them is ever shown to the user as raw JSON, nor as English to
+ *  someone using the dashboard in Arabic. */
 function describeApiError(status, data, text) {
   const detail = data ? data.detail : undefined;
   if (Array.isArray(detail)) return formatValidationErrors(detail);
   if (detail && typeof detail === "object") {
     if (detail.code && Khan.has(`error.${detail.code}`)) return Khan.t(`error.${detail.code}`);
-    return statusErrorText(status) || detail.message || Khan.t("error.generic", "Something went wrong. Please try again.");
+    return statusErrorText(status) || serverOrStatusText(status, detail.message);
   }
-  if (typeof detail === "string" && detail) return statusErrorText(status) || detail;
+  if (typeof detail === "string" && detail) {
+    if (DETAIL_TEXT[detail]) return Khan.t(...DETAIL_TEXT[detail]);
+    return statusErrorText(status) || serverOrStatusText(status, detail);
+  }
   const plain = typeof text === "string" && text.length < 200 && !/^\s*[<{[]/.test(text) ? text.trim() : "";
-  return statusErrorText(status) || plain || Khan.t("error.generic", "Something went wrong. Please try again.");
+  return statusErrorText(status) || serverOrStatusText(status, plain);
 }
 
 function apiError(status, data, text) {
