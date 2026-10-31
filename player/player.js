@@ -40,6 +40,7 @@ const WALL_RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 // Deploys: how often to look for a new player version.
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const RELOAD_GUARD_MS = 60000;
+const CONTROLLER_RELOAD_DELAY_MS = 3000;
 const MANIFEST_RESEND_MS = 10 * 60 * 1000;
 
 let activePairCode = null;
@@ -107,22 +108,26 @@ function getParam(name) {
   return new URLSearchParams(window.location.search).get(name);
 }
 
-function getCacheKey(type) {
-  const key = previewToken ? `preview_${previewToken}` : `screen_${screenToken}`;
+// The key names the screen explicitly: a response that arrives after the
+// token changed (a "bye", a re-pair) must not be filed under the new one --
+// or under "screen_null".
+function getCacheKey(type, token = screenToken) {
+  const key = previewToken ? `preview_${previewToken}` : `screen_${token}`;
   return `${cachePrefix}${type}_${key}`;
 }
 
-function readCache(type) {
+function readCache(type, token = screenToken) {
   try {
-    const raw = localStorage.getItem(getCacheKey(type));
+    const raw = localStorage.getItem(getCacheKey(type, token));
     return raw ? JSON.parse(raw) : null;
   } catch (_) {
     return null;
   }
 }
 
-function writeCache(type, data) {
-  try { localStorage.setItem(getCacheKey(type), JSON.stringify(data)); } catch (_) {}
+function writeCache(type, data, token = screenToken) {
+  if (!token && !previewToken) return;
+  try { localStorage.setItem(getCacheKey(type, token), JSON.stringify(data)); } catch (_) {}
 }
 
 /* Media URLs from the API are relative ("/uploads/x.png") and live on the API
@@ -134,13 +139,35 @@ function resolveMediaUrl(url) {
   return `${API_BASE}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
+/* fetch() plus the whole body, under one timeout. A response whose headers
+   arrive and whose body then stalls must not hang the caller (the refresh
+   loop stays "in flight" for good otherwise). Returns
+   { ok, status, headers, text, json() } with the body already read. */
 async function apiFetch(url, options = {}) {
   const ctrl = typeof AbortController === "function" ? new AbortController() : null;
-  const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, API_TIMEOUT_MS);
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (ctrl) ctrl.abort();
+      reject(new Error(`timeout after ${API_TIMEOUT_MS}ms: ${url}`));
+    }, API_TIMEOUT_MS);
+  });
+  const request = (async () => {
+    const res = await fetch(url, ctrl ? { ...options, signal: ctrl.signal } : options);
+    const text = await res.text();
+    return {
+      ok: res.ok,
+      status: res.status,
+      headers: res.headers,
+      text,
+      json() { return JSON.parse(text); },
+    };
+  })();
   try {
-    return await fetch(url, ctrl ? { ...options, signal: ctrl.signal } : options);
+    return await Promise.race([request, timeout]);
   } finally {
     clearTimeout(timer);
+    request.catch(() => {});   // the loser of the race must not go unhandled
   }
 }
 
@@ -600,6 +627,9 @@ function renderContentData(data) {
 
 function applyState(content, layout) {
   if (!content && !layout) return;
+  // Unpaired meanwhile (a wall "bye", a rejected token): nothing to show,
+  // and entering a mode now would strand the pairing screen without a code.
+  if ((!screenToken && !previewToken) || mode === "pairing") return;
   if (!previewToken && content && content.wall_id) {
     enterWallMode(content.wall_id);
     announceMedia(Array.from(wallSeen.values()));
@@ -616,9 +646,47 @@ function applyState(content, layout) {
   announceMedia(content.items || []);
 }
 
+/* Tokens the API has rejected. A kiosk URL carrying ?token= would otherwise
+   win over the token this TV re-paired with, on every reboot or update
+   reload, and unpair it again. */
+const REJECTED_TOKENS_KEY = "khan_rejected_tokens";
+
+function rejectedTokens() {
+  try {
+    const list = JSON.parse(localStorage.getItem(REJECTED_TOKENS_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function rememberRejectedToken(token) {
+  try {
+    const list = rejectedTokens().filter((t) => t !== token);
+    list.push(token);
+    localStorage.setItem(REJECTED_TOKENS_KEY, JSON.stringify(list.slice(-5)));
+  } catch (_) {}
+}
+
+function stripPairingParamsFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    let changed = false;
+    ["token", "code"].forEach((name) => {
+      if (url.searchParams.has(name)) {
+        url.searchParams.delete(name);
+        changed = true;
+      }
+    });
+    if (changed) history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch (_) {}
+}
+
 async function handleAuthFailure() {
   console.warn("Screen token rejected — returning to pairing view");
+  if (screenToken) rememberRejectedToken(screenToken);
   try { localStorage.removeItem("screen_token"); } catch (_) {}
+  stripPairingParamsFromUrl();
   screenToken = null;
   leaveMode();
   clearTimeout(refreshTimer);
@@ -626,37 +694,48 @@ async function handleAuthFailure() {
   await startPairingFlow();
 }
 
-/* A 401/404 only means "this screen no longer exists" when our API says so
-   (FastAPI answers JSON). An HTML 404 from a proxy or tunnel misroute must
-   not wipe the TV's token. */
+/* Only our API saying exactly "this screen does not exist" unpairs a TV --
+   the detail both /screens/{token}/content and /layout return. Not an HTML
+   404 from a proxy, and not any JSON 404: another FastAPI on the same host
+   answers {"detail": "Not Found"}, so a tunnel port typo would otherwise
+   unpair every TV at once. */
+const SCREEN_GONE_DETAIL = "Screen not found";
+
 function isAuthFailure(res) {
   if (previewToken) return false;
   if (res.status !== 401 && res.status !== 404) return false;
-  return (res.headers.get("content-type") || "").includes("application/json");
+  try {
+    const body = res.json();
+    return Boolean(body) && body.detail === SCREEN_GONE_DETAIL;
+  } catch (_) {
+    return false;
+  }
 }
 
 /* Reads content or layout. Any failure — a rejected fetch (network down,
    tunnel outage without CORS headers), a timeout, an error status, a broken
    body — falls back to the last good copy in localStorage. */
-async function loadEndpoint(kind) {
+async function loadEndpoint(kind, token) {
   const endpoint = previewToken
     ? `${API_BASE}/preview/${previewToken}/${kind}`
-    : `${API_BASE}/screens/${screenToken}/${kind}`;
+    : `${API_BASE}/screens/${token}/${kind}`;
   let res;
   try {
     res = await apiFetch(endpoint);
   } catch (_) {
-    return { data: readCache(kind), live: false };
+    return { data: readCache(kind, token), live: false };
   }
   if (isAuthFailure(res)) return { authFailed: true };
-  if (!res.ok) return { data: readCache(kind), live: false };
+  if (!res.ok) return { data: readCache(kind, token), live: false };
+  let data;
   try {
-    const data = await res.json();
-    writeCache(kind, data);
-    return { data, live: true };
+    data = res.json();
   } catch (_) {
-    return { data: readCache(kind), live: false };
+    return { data: readCache(kind, token), live: false };
   }
+  if (screenToken !== token) return { stale: true };   // unpaired / re-paired meanwhile
+  writeCache(kind, data, token);
+  return { data, live: true };
 }
 
 /* ── Refresh loop ──────────────────────────────────────────────────────
@@ -717,7 +796,8 @@ async function runRefresh() {
 
 // Returns true when the API answered (live), false while it is unreachable.
 async function refresh() {
-  if (!screenToken && !previewToken) return true;
+  const token = screenToken;
+  if (!token && !previewToken) return true;
   if (mode === "wall" && wallSocket && wallSocket.readyState === WebSocket.OPEN) {
     if (Date.now() - wallLastMessageAt > WALL_SILENCE_LIMIT_MS) {
       // Half-open socket: the TV would wait forever for frames that never come.
@@ -727,7 +807,13 @@ async function refresh() {
       return true;
     }
   }
-  const [content, layout] = await Promise.all([loadEndpoint("content"), loadEndpoint("layout")]);
+  const [content, layout] = await Promise.all([
+    loadEndpoint("content", token), loadEndpoint("layout", token),
+  ]);
+  // A wall "bye" or a re-pair landed while these were in flight: the answer
+  // is about a screen this TV no longer is. Applying it would put a token-less
+  // TV into wall mode and strand the pairing screen with no code and no poll.
+  if (screenToken !== token || mode === "pairing") return true;
   if (content.authFailed || layout.authFailed) {
     await handleAuthFailure();
     return true;
@@ -754,6 +840,9 @@ let lastManifestAt = 0;
 let lastManifestUrls = [];
 
 function announceMedia(items) {
+  // A dashboard preview must not make the operator's browser download and
+  // pin a screen's whole media set.
+  if (previewToken) return;
   const urls = [];
   (items || []).forEach((item) => {
     if (!item || !item.url || item.mime_type === "text/url") return;
@@ -782,7 +871,10 @@ function postToServiceWorker(message) {
   } catch (_) {}
 }
 
+let pairingFlowGen = 0;
+
 async function startPairingFlow() {
+  const gen = ++pairingFlowGen;
   clearTimeout(pairRetryTimer);
   pairRetryTimer = null;
   leaveMode();
@@ -791,14 +883,14 @@ async function startPairingFlow() {
   stopPairPoll();
   try {
     const data = await requestPairingCode();
-    if (mode !== "pairing") return;
+    if (mode !== "pairing" || gen !== pairingFlowGen) return;
     activePairCode = data.code;
     renderPairingCode(data.code);
     pairingMetaEl.textContent = Khan.t("pairing.waiting", "Waiting for your phone…");
     schedulePairPoll();
   } catch (err) {
     console.error(err);
-    if (mode !== "pairing") return;
+    if (mode !== "pairing" || gen !== pairingFlowGen) return;
     pairingCodeEl.textContent = "—";
     pairingMetaEl.textContent = Khan.t("pairing.no_server", "Can't reach server. Retrying…");
     pairRetryTimer = setTimeout(startPairingFlow, 5000);
@@ -840,7 +932,11 @@ async function boot() {
   previewToken = previewParam;
   let storedToken = null;
   try { storedToken = isPreview ? null : localStorage.getItem("screen_token"); } catch (_) {}
-  screenToken = tokenParam || storedToken || screenToken;
+  // A ?token= the API already rejected must not override the token this TV
+  // has re-paired with since (the kiosk URL keeps carrying the dead one).
+  const urlToken = tokenParam && !rejectedTokens().includes(tokenParam) ? tokenParam : null;
+  if (tokenParam && !urlToken) stripPairingParamsFromUrl();
+  screenToken = urlToken || storedToken || screenToken;
 
   if (!screenToken && codeParam) {
     setStatus(Khan.t("status.pairing", "Pairing..."));
@@ -1162,7 +1258,7 @@ function startVersionPoll() {
     try {
       const res = await apiFetch(`/sw.js?check=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) return;
-      const match = /PLAYER_VERSION\s*=\s*"([^"]*)"/.exec(await res.text());
+      const match = /PLAYER_VERSION\s*=\s*"([^"]*)"/.exec(res.text);
       if (!match) return;
       if (seen === null) seen = match[1];
       else if (match[1] !== seen && navigator.onLine !== false) safeReload();
@@ -1173,6 +1269,9 @@ function startVersionPoll() {
 }
 
 function setupServiceWorker() {
+  // The dashboard's preview iframe is not a TV: no offline cache, no pinned
+  // media, no update reloads in the operator's browser.
+  if (getParam("preview_token")) return;
   if (!("serviceWorker" in navigator)) {
     startVersionPoll();
     return;
@@ -1188,7 +1287,10 @@ function setupServiceWorker() {
       }
       return;
     }
-    safeReload();
+    // The new worker navigates its pages itself (so pages of older players,
+    // which have no handler like this one, update too). Reload only if that
+    // has not happened within a few seconds.
+    setTimeout(safeReload, CONTROLLER_RELOAD_DELAY_MS);
   });
   navigator.serviceWorker.register("/sw.js").then((reg) => {
     setInterval(() => { reg.update().catch(() => {}); }, UPDATE_CHECK_INTERVAL_MS);
