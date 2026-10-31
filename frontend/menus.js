@@ -3,6 +3,11 @@ const Menus = (() => {
   const st = { menus: [], current: null, templates: [] };
   let rendering = false; // Task 10 fix: in-flight guard so double-clicking Render can't start two jobs.
   let playlistCreated = false; // Task 10 fix: dispatch #menu-playlist-btn on state instead of double-binding it.
+  // Bumped whenever the boards view a render poll was started for goes away:
+  // sign-out (reset), another menu or the list opening, a fresh boards view.
+  // A poll from an older generation stops instead of polling -- after a
+  // sign-out, st.current is null and every tick threw a raw TypeError toast.
+  let renderGen = 0;
 
   // app.js's formatDate is private to the ApiKeys module, so define our own.
   function formatDate(iso) {
@@ -12,6 +17,7 @@ const Menus = (() => {
   }
 
   async function show() {
+    renderGen++;
     document.getElementById("menu-editor").classList.add("hidden");
     document.getElementById("menu-renders").classList.add("hidden");
     document.getElementById("menus-list").classList.remove("hidden");
@@ -87,6 +93,7 @@ const Menus = (() => {
   const BADGES = ["new", "spicy", "vegan", "halal", "popular"];
 
   async function openEditor(id) {
+    renderGen++;
     try {
       const [menu, tpls] = await Promise.all([api(`/menus/${id}`), api("/menus/templates")]);
       st.current = menu; st.templates = tpls.items || [];
@@ -348,6 +355,7 @@ const Menus = (() => {
   }
 
   async function showRenders() {
+    renderGen++;
     document.getElementById("menu-editor").classList.add("hidden");
     const box = document.getElementById("menu-renders");
     box.classList.remove("hidden");
@@ -370,24 +378,28 @@ const Menus = (() => {
   async function startRender() {
     if (rendering) return;
     rendering = true;
+    const gen = renderGen;
     const btn = document.getElementById("menu-render-go");
     if (btn) btn.disabled = true;
     try {
       const body = { languages: picked("lang"), aspects: picked("aspect"), kinds: picked("kind") };
       const r = await api(`/menus/${st.current.id}/render`, { method: "POST", body: JSON.stringify(body) });
+      if (gen !== renderGen) return;
       document.getElementById("menu-renders-status").textContent = Khan.t("menus.render.queued", "Rendering {n} boards…").replace("{n}", r.queued);
-      await pollRenders();
+      await pollRenders(gen);
     } catch (err) {
-      toast(err.message, "error");
+      if (gen === renderGen) toast(err.message, "error");
     } finally {
       rendering = false;
       if (btn) btn.disabled = false;
     }
   }
 
-  async function pollRenders() {
+  async function pollRenders(gen) {
     for (let i = 0; i < 45; i++) {
-      const items = await refreshRenders();
+      if (gen !== renderGen) return;
+      const items = await refreshRenders(gen);
+      if (gen !== renderGen) return;
       if (items === null) {
         // Transient API failure: keep polling instead of declaring success or giving up.
         await new Promise((res) => setTimeout(res, 2000));
@@ -401,12 +413,16 @@ const Menus = (() => {
     }
   }
 
-  async function refreshRenders() {
-    const grid = document.getElementById("menu-renders-grid");
+  async function refreshRenders(gen = renderGen) {
+    const menu = st.current;
+    if (gen !== renderGen || !menu) return null;
     let items = [];
-    try { items = (await api(`/menus/${st.current.id}/renders`)).items || []; } catch (err) { toast(err.message, "error"); return null; }
+    try { items = (await api(`/menus/${menu.id}/renders`)).items || []; }
+    catch (err) { if (gen === renderGen) toast(err.message, "error"); return null; }
+    const grid = document.getElementById("menu-renders-grid");
+    if (gen !== renderGen || !grid) return null;
     grid.innerHTML = items.length ? "" : `<p class="empty-state">${escHtml(Khan.t("menus.render.empty", "No boards yet."))}</p>`;
-    const stale = st.current.last_rendered_at && st.current.updated_at > st.current.last_rendered_at;
+    const stale = menu.last_rendered_at && menu.updated_at > menu.last_rendered_at;
     document.getElementById("menu-renders-stale")?.remove();
     if (stale) grid.insertAdjacentHTML("beforebegin", `<p id="menu-renders-stale" class="muted stale-note">${escHtml(Khan.t("menus.render.stale", "The menu changed after these boards were rendered."))}</p>`);
     items.forEach((x) => {
@@ -436,6 +452,7 @@ const Menus = (() => {
   // Sign-out: drop the open menu and every rendered list, so the next account
   // in this tab never sees (or saves over) the previous org's menu.
   function reset() {
+    renderGen++;
     st.menus = []; st.current = null; st.templates = [];
     playlistCreated = false;
     ["menu-editor", "menu-renders"].forEach((id) => {

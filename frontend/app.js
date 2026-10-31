@@ -456,6 +456,7 @@ function resetOrgState() {
   safely(() => Menus.reset());
   safely(() => ApiKeys.reset());
   safely(() => SubscriptionBanner.update(null));
+  safely(() => stopBillingPoll());
   safely(() => {
     document.getElementById("billing-current-body").textContent = "—";
     document.getElementById("billing-history-body").innerHTML = "";
@@ -2611,6 +2612,14 @@ const BILLING_TERM_LABEL_KEYS = { 1: "billing.term_monthly", 6: "billing.term_6m
 let billingCurrentTerm = 1;
 let billingPollTimer = null;
 let billingPollStartedAt = 0;
+// Bumped by stopBillingPoll: a status request already in flight when the
+// tab signs out must not re-arm the timer or write into the next session.
+let billingPollGen = 0;
+
+function stopBillingPoll() {
+  billingPollGen++;
+  if (billingPollTimer) { clearTimeout(billingPollTimer); billingPollTimer = null; }
+}
 
 function billingAmountsFor(tier, months) {
   const plan = PLAN_TIERS.find((p) => p.tier === tier);
@@ -2783,18 +2792,23 @@ function maybeResumeBillingStatus() {
   sessionStorage.removeItem("billing_pending_trackid");
   setBillingBanner("success", Khan.t("billing.confirming", "Confirming payment…"));
   billingPollStartedAt = Date.now();
-  pollBillingStatus(trackid);
+  stopBillingPoll();
+  pollBillingStatus(trackid, billingPollGen);
 }
 
-async function pollBillingStatus(trackid) {
+async function pollBillingStatus(trackid, gen) {
+  if (gen !== billingPollGen) return;
   try {
     const data = await api(`/billing/status/${encodeURIComponent(trackid)}`);
+    if (gen !== billingPollGen) return;
     if (data.status === "captured") {
       const plan = PLAN_TIERS.find((p) => p.tier === data.tier);
       setBillingBanner("success", Khan.t("billing.upgraded", "Plan upgraded · {plan} · paid through {date}")
         .replace("{plan}", plan ? plan.label : data.tier)
         .replace("{date}", formatDay(data.paid_through_at)));
-      renderBillingCurrent(await fetchBillingOrg());
+      const org = await fetchBillingOrg();
+      if (gen !== billingPollGen) return;
+      renderBillingCurrent(org);
       if (state.org) { renderPlanCard(state.org); SubscriptionBanner.update(state.org); }
       loadBillingHistory();
       history.replaceState({}, "", "/billing");
@@ -2810,8 +2824,9 @@ async function pollBillingStatus(trackid) {
       setBillingBanner("success", Khan.t("billing.still_processing", "Payment is still processing — check back in a minute."));
       return;
     }
-    billingPollTimer = setTimeout(() => pollBillingStatus(trackid), 2000);
+    billingPollTimer = setTimeout(() => pollBillingStatus(trackid, gen), 2000);
   } catch (err) {
+    if (gen !== billingPollGen) return;
     setBillingBanner("error", Khan.t("billing.status_unknown", "Couldn't confirm payment status."));
   }
 }
