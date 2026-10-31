@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<!--
+  DRAFT for legal review. Not deployed: once reviewed, copy to landing/privacy.html
+  (remove the draft banner and the .todo highlighting) so it is served at
+  https://khanshoof.com/privacy.html, the URL to give Play Console.
+
+  Written from what the code stores (backend/main.py, backend/db.py, player/).
+  Before publishing, confirm or fill in:
+    - [legal entity], [address]: the business that operates Khanshoof
+    - [audit log retention]: audit_log rows are currently kept indefinitely
+    - [deletion timeline]: how fast you act on deletion requests
+    - whether AI menu import is switched on in production, and if so which AI
+      provider receives the uploaded menu images; add it to "Service providers"
+    - your hosting provider, if you want it named
+-->
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Khanshoof</title>
+  <meta name="description" content="How Khanshoof handles data across its website, dashboard, player and Android TV app." />
+  <link rel="icon" type="image/png" href="assets/faces/v1_smile.png" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Serif:wght@700&display=swap" />
+  <style>
+    :root { --bg: #FFF8F0; --ink: #3E2B4F; --muted: #5D4A66; --line: #E8DCC6; --accent: #E09478; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.65 'IBM Plex Sans', system-ui, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 48px 16px 80px; }
+    h1 { font: 700 40px/1.15 'IBM Plex Serif', Georgia, serif; margin: 0 0 8px; }
+    h2 { font: 700 22px/1.3 'IBM Plex Serif', Georgia, serif; margin: 40px 0 8px; }
+    p, li { color: var(--muted); }
+    strong { color: var(--ink); }
+    ul { padding-inline-start: 1.2em; }
+    a { color: var(--ink); }
+    .updated { color: var(--muted); margin: 0 0 32px; }
+    .draft { background: #FDF3D6; border: 1px solid var(--accent); border-radius: 10px; padding: 12px 16px; margin-bottom: 32px; }
+    .todo { background: #F4B9A1; border-radius: 4px; padding: 0 4px; color: var(--ink); }
+    table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+    th, td { text-align: start; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--muted); }
+    th { color: var(--ink); font-weight: 600; }
+  </style>
+</head>
+<body>
+<main>
+  <p class="draft"><strong>Draft for review.</strong> Not published. Highlighted items need your input.</p>
+
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: <span class="todo">[date of publication]</span></p>
+
+  <p>Khanshoof is digital signage for cafés, restaurants and shops. This policy explains what
+  information we handle when you use the Khanshoof website (khanshoof.com), the dashboard
+  (app.khanshoof.com), the screen player (play.khanshoof.com) and the Khanshoof app for
+  Android TV, and what we do with it.</p>
+
+  <p>Khanshoof is operated by <span class="todo">[legal entity]</span>,
+  <span class="todo">[address]</span>, Kuwait ("we", "us"). Questions:
+  <a href="mailto:hello@khanshoof.com">hello@khanshoof.com</a>.</p>
+
+  <h2>What we collect</h2>
+  <table>
+    <tr><th>What</th><th>Why</th></tr>
+    <tr><td><strong>Account details</strong>: business name, email address, username, language,
+      and your password (stored only as a salted hash). If you sign in with Google: your email
+      and Google account ID (your Google name is offered as the business name, which you can change).</td><td>To create and secure your account and let you sign in.</td></tr>
+    <tr><td><strong>Your content</strong>: images, videos, PDFs and web addresses you add, and the
+      playlists, schedules, screens and sites you set up.</td><td>To show it on your screens.</td></tr>
+    <tr><td><strong>Billing</strong>: your plan, payment status and payment references. Card and
+      bank details are entered on the KNET payment page of our payment provider; we never
+      receive them.</td><td>To run your subscription.</td></tr>
+    <tr><td><strong>Security records</strong>: the IP address and browser of sign-ins and account
+      changes, and failed sign-in attempts.</td><td>To protect accounts (for example, locking an
+      account after repeated wrong passwords) and to show you an activity log.</td></tr>
+    <tr><td><strong>Screens</strong>: short-lived pairing codes, a random token that identifies each
+      paired screen, and when it was last online.</td><td>To connect a TV to your account, send it
+      your content and show you whether it is online.</td></tr>
+  </table>
+
+  <h2>The Android TV app and the player</h2>
+  <p>The TV app shows the Khanshoof player full screen. It stores the screen's token and a copy
+  of your content on the TV so the screen keeps playing when the internet drops. It does
+  <strong>not</strong> collect information about the people who watch the screen, does not use
+  the TV's advertising ID or other hardware identifiers, and contains no ads or analytics.
+  Pairing codes expire after 5 minutes. Deleting a screen in the dashboard removes its token,
+  and the TV goes back to the pairing screen. The app's data is excluded from Android backups
+  and device transfers.</p>
+
+  <h2>How we use information</h2>
+  <ul>
+    <li>to provide Khanshoof: store your content and play it on your screens;</li>
+    <li>to keep accounts secure, including checking new passwords against known data breaches;</li>
+    <li>to send service emails: sign-up codes, and reminders before a trial or subscription ends;</li>
+    <li>to take payments for your plan.</li>
+  </ul>
+  <p>We do not sell your information, and we do not use it for advertising.</p>
+
+  <h2>Service providers</h2>
+  <p>We share only what each one needs to do its job:</p>
+  <ul>
+    <li><strong>Cloudflare</strong>: delivers our websites and connections securely.</li>
+    <li><strong>Google</strong>: Google Sign-In, if you choose it, and web fonts loaded by our pages.</li>
+    <li><strong>Resend</strong>: delivers our emails.</li>
+    <li><strong>NiuPay / KNET</strong>: process payments.</li>
+    <li><strong>Have I Been Pwned</strong>: password breach check. Only the first five characters of
+      a one-way hash of a new password are sent, never the password itself.</li>
+  </ul>
+  <p>We may also disclose information if the law requires it.</p>
+
+  <h2>How long we keep it</h2>
+  <ul>
+    <li>Sign-in sessions end after a period of inactivity.</li>
+    <li>Pairing codes: 5 minutes.</li>
+    <li>Security records: <span class="todo">[audit log retention]</span>.</li>
+    <li>Account data and content: while your account is open. After you ask us to delete your
+      account, we delete it within <span class="todo">[deletion timeline]</span>.</li>
+  </ul>
+
+  <h2>Your choices and rights</h2>
+  <p>You can view and change your account details and content in the dashboard at any time. To
+  get a copy of your data or have your account deleted, email
+  <a href="mailto:hello@khanshoof.com">hello@khanshoof.com</a> from the address on the account.</p>
+
+  <h2>Security</h2>
+  <p>All connections use HTTPS. Passwords are stored only as salted hashes. Accounts are locked
+  temporarily after repeated failed sign-ins.</p>
+
+  <h2>Children</h2>
+  <p>Khanshoof is a tool for businesses and is not directed at children under 13. We do not
+  knowingly collect children's information.</p>
+
+  <h2>Changes</h2>
+  <p>If we change this policy, we will post the new version here with a new date, and tell
+  account holders by email about significant changes.</p>
+</main>
+</body>
+</html>

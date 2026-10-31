@@ -20,6 +20,12 @@
       <div id="content" class="single-content"></div>
       <div id="zones" class="zones-layout hidden"></div>
 
+      <section id="empty-state" class="empty-state hidden" aria-live="polite">
+        <img class="empty-face" src="assets/faces/v1_heart.png" alt="" width="160" height="141" />
+        <h1 class="empty-title" data-i18n="empty.title">You're connected!</h1>
+        <p class="empty-text"><span data-i18n="empty.text_a">Pick what to show at</span> <strong id="empty-url" dir="ltr">app.khanshoof.com</strong> <span data-i18n="empty.text_b">and it will appear here by itself.</span></p>
+      </section>
+
       <section id="pairing" class="pairing hidden" aria-live="polite">
         <div class="pairing-header">
           <img class="pairing-face" src="assets/faces/v1_smile.png" alt="" width="160" height="160" />
@@ -31,11 +37,12 @@
           <div class="pairing-qr" id="pairing-qr" data-i18n-aria-label="pairing.qr_aria" aria-label="QR code for pairing URL"></div>
         </div>
         <ol class="pairing-steps">
-          <li><span data-i18n="pairing.step1_a">On your phone, open</span> <strong id="pairing-url">app.khanshoof.com/pair</strong></li>
-          <li data-i18n="pairing.step2">Enter the code above, or scan the QR to jump there</li>
-          <li data-i18n="pairing.step3">Pick which screen this is — the display updates automatically</li>
+          <li data-i18n="pairing.scan_step1">Point your phone's camera at the QR code</li>
+          <li data-i18n="pairing.scan_step2">Sign in and tap Pair</li>
+          <li data-i18n="pairing.scan_step3">This screen switches to your content by itself</li>
         </ol>
-        <p class="pairing-meta" id="pairing-meta" data-i18n="pairing.meta">Code refreshes every 10 minutes</p>
+        <p class="pairing-fallback"><span data-i18n="pairing.fallback_a">No camera? Open</span> <strong id="pairing-url" dir="ltr">app.khanshoof.com/pair</strong> <span data-i18n="pairing.fallback_b">and type the code.</span></p>
+        <p class="pairing-meta" id="pairing-meta" data-i18n="pairing.meta">Getting your code…</p>
         <div class="admin-code-affordance">
           <button id="admin-code-toggle" type="button" class="link"
                   data-i18n="pairing.code_from_admin">Have a code from admin? Enter it here.</button>

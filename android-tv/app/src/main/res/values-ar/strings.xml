@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">خنشوف</string>
+
+    <string name="offline_title">تعذّر الوصول إلى خنشوف</string>
+    <string name="offline_message">تحقّق من اتصال هذه الشاشة بالإنترنت. سنواصل المحاولة تلقائياً.</string>
+    <string name="restarting_title">لحظة…</string>
+    <string name="restarting_message">جارٍ إعادة تشغيل المشغّل.</string>
+
+    <string name="webview_title">تحتاج هذه الشاشة إلى تحديث</string>
+    <string name="webview_message">حدّث «Android System WebView» من متجر Play، أو اطلب تحديث النظام من الشركة المصنّعة للشاشة. ثم افتح خنشوف مرة أخرى.</string>
+
+    <string name="press_back_again">اضغط رجوع مرة أخرى للخروج</string>
+
+    <string name="autostart_title">تشغيل خنشوف عند تشغيل هذه الشاشة؟</string>
+    <string name="autostart_message">هكذا تعود شاشتك تلقائياً بعد انقطاع الكهرباء. في الشاشة التالية، فعّل «الظهور فوق التطبيقات الأخرى» لخنشوف.</string>
+    <string name="autostart_allow">إعداد</string>
+    <string name="autostart_later">ليس الآن</string>
+    <string name="autostart_unavailable">لا يوفّر هذا الجهاز هذا الإعداد. بعد إعادة التشغيل، افتح خنشوف من الشاشة الرئيسية.</string>
+</resources>

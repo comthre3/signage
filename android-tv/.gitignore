@@ -1,0 +1,14 @@
+# Build outputs and caches
+/dist/
+/.cache/
+/.gradle/
+/build/
+/app/build/
+/local.properties
+*.iml
+/.idea/
+
+# The upload key and its passwords never go in git (see make-upload-key.sh)
+/keystore/
+*.jks
+*.keystore

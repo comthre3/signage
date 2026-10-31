@@ -14,8 +14,11 @@ const pairingCodeEl = document.getElementById("pairing-code");
 const pairingQrEl = document.getElementById("pairing-qr");
 const pairingUrlEl = document.getElementById("pairing-url");
 const pairingMetaEl = document.getElementById("pairing-meta");
+const emptyStateEl = document.getElementById("empty-state");
 
 const APP_URL = (window.APP_URL || "").trim() || "https://app.khanshoof.com";
+const APP_HOST = APP_URL.replace(/^https?:\/\//, "").replace(/\/$/, "");
+document.getElementById("empty-url").textContent = APP_HOST;
 const PAIR_POLL_INTERVAL_MS = 3000;
 
 // How often a healthy player re-reads its content/layout, and how it backs off
@@ -255,8 +258,7 @@ function hidePairingView() {
 function renderPairingCode(code) {
   pairingCodeEl.textContent = code;
   const url = `${APP_URL}/pair?code=${encodeURIComponent(code)}`;
-  const host = APP_URL.replace(/^https?:\/\//, "").replace(/\/$/, "");
-  pairingUrlEl.textContent = `${host}/pair`;
+  pairingUrlEl.textContent = `${APP_HOST}/pair`;
 
   // QR — type 0 = auto-fit version, "M" error correction handles modest TV glare
   const qr = qrcode(0, "M");
@@ -558,6 +560,20 @@ function getLayoutSignature(zones) {
   );
 }
 
+/* A screen with nothing assigned at all -- no playlist, no schedule -- is in
+   practice one that was just paired. The status line is hidden on TVs, so
+   without this the customer who just paired would be looking at black. A
+   schedule with nothing on right now, or an emptied playlist, stays black:
+   the operator chose that, and the cafe's customers can see this screen. */
+function isUnassigned(data) {
+  const screen = data && data.screen;
+  return Boolean(screen && !screen.playlist_id && !screen.schedule_id);
+}
+
+function setEmptyState(visible) {
+  emptyStateEl.classList.toggle("hidden", !visible);
+}
+
 function showSingleContainer() {
   zonesEl.classList.add("hidden");
   contentEl.classList.remove("hidden");
@@ -585,6 +601,7 @@ function leaveMode() {
   }
   zonesEl.classList.add("hidden");
   contentEl.classList.remove("hidden");
+  setEmptyState(false);
   mode = null;
 }
 
@@ -616,8 +633,10 @@ function renderContentData(data) {
     currentSignature = "";
     currentItems = [];
     setStatus(Khan.t("status.no_content", "No content assigned"));
+    setEmptyState(isUnassigned(data));
     return;
   }
+  setEmptyState(false);
   const signature = buildSignature(items);
   if (signature !== currentSignature) {
     currentSignature = signature;

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Khanshoof" parent="android:Theme.Material.Light.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/cream</item>
+        <item name="android:colorAccent">@color/coral</item>
+        <item name="android:colorPrimary">@color/plum</item>
+    </style>
+
+    <style name="Theme.Khanshoof.Dialog" parent="android:Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">@color/plum</item>
+    </style>
+</resources>
