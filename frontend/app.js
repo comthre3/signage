@@ -2756,7 +2756,7 @@ function renderBillingTiers() {
       <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
       <div class="billing-tier-limit">${escHtml(upToScreensLabel(plan.screens))}</div>
       <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " " + escHtml(Khan.t("billing.per_month", "/ month")) : ""}</div>
-      <div class="billing-tier-usd" dir="ltr">≈ $${amounts.usdApprox}</div>
+      <div class="billing-tier-usd"><bdi dir="ltr">≈ $${amounts.usdApprox}</bdi></div>
       ${saveMarkup}
       ${canPay ? `<button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
         ${escHtml(Khan.t("billing.pay_btn", "Pay {amount} KWD").replace("{amount}", amounts.kwd))}${saveLabel ? " · " + escHtml(saveLabel) : ""}
