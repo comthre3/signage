@@ -2128,19 +2128,18 @@ const connectionReset  = document.getElementById("connection-reset");
 
 connectionToggle?.addEventListener("click", () => connectionPanel.classList.toggle("hidden"));
 
-/** Why a Connection field can't be saved, or null. `overridable`: whether a
- *  configured deployment lets this browser move it within its own origin
- *  (the API) or not at all (the player). */
-function connectionFieldProblem(raw, configured, overridable) {
+/** Why a Connection field can't be saved, or null: not an http(s) URL, or
+ *  off the origin this deployment is configured for. */
+function connectionFieldProblem(raw, configured) {
   const value = String(raw || "").trim();
   if (!value) return null;
-  if (configured && (!overridable || !acceptedConnectionOverride(value, configured))) {
+  if (!httpOrigin(value)) {
+    return Khan.t("toast.connection_bad_url", "Enter a full address that starts with http:// or https://.");
+  }
+  if (!acceptedConnectionOverride(value, configured)) {
     return Khan.t("toast.connection_locked",
       "This deployment only connects to {origin}; another address can't be used here.")
       .replace("{origin}", httpOrigin(configured) || configured);
-  }
-  if (!acceptedConnectionOverride(value, configured)) {
-    return Khan.t("toast.connection_bad_url", "Enter a full address that starts with http:// or https://.");
   }
   return null;
 }
@@ -2155,8 +2154,8 @@ connectionForm?.addEventListener("submit", (e) => {
   e.preventDefault();
   // Say so now rather than silently ignoring the value on the next load.
   if (connectionMode.value === "external") {
-    const problem = connectionFieldProblem(connectionApi.value, CONFIGURED_API_BASE, true)
-                 || connectionFieldProblem(connectionPlayer.value, CONFIGURED_PLAYER_BASE, false);
+    const problem = connectionFieldProblem(connectionApi.value, CONFIGURED_API_BASE)
+                 || connectionFieldProblem(connectionPlayer.value, CONFIGURED_PLAYER_BASE);
     if (problem) { toast(problem, "error", 6000); return; }
   }
   localStorage.setItem(CONNECTION_STORAGE_KEY, connectionMode.value);
