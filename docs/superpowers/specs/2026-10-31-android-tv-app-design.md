@@ -58,7 +58,8 @@ No TWA (Google TV often has no Chrome), no Capacitor (extra toolchain, no gain).
   gone → rebuild the WebView; hang watchdog (JS ping every 60 s, rebuild if no
   answer in 30 s).
 - Back: "Press BACK again to exit" within 2 s.
-- WebView older than Chrome 80 → "Update Android System WebView" screen.
+- WebView older than Chrome 66 (Android 9's stock WebView, the player's
+  floor) → "Update Android System WebView" screen.
 - Boot: `BOOT_COMPLETED` receiver starts the Activity. Android 10+ needs
   "Display over other apps": asked once after first load (skippable); adb
   fallback documented.

@@ -41,15 +41,17 @@ class PolicyTest {
     @Test
     fun webViewMajorVersionIsReadFromVersionName() {
         assertEquals(119, Policy.webViewMajor("119.0.6045.193"))
-        assertEquals(80, Policy.webViewMajor("80"))
+        assertEquals(66, Policy.webViewMajor("66"))
         assertNull(Policy.webViewMajor(null))
         assertNull(Policy.webViewMajor("unknown"))
     }
 
     @Test
     fun onlyAKnownOldWebViewIsRefused() {
-        assertTrue(Policy.isWebViewTooOld("79.0.3945.136"))
-        assertFalse(Policy.isWebViewTooOld("80.0.3987.99"))
+        assertTrue(Policy.isWebViewTooOld("61.0.3163.98"))    // Android 8.1's stock WebView
+        assertTrue(Policy.isWebViewTooOld("65.0.3325.109"))
+        assertFalse(Policy.isWebViewTooOld("66.0.3359.158"))  // Android 9's
+        assertFalse(Policy.isWebViewTooOld("74.0.3729.186"))  // Android 10's
         assertFalse(Policy.isWebViewTooOld("138.0.7204.63"))
         // Unknown versions get the benefit of the doubt: refusing to run on a
         // TV that would have worked is worse than trying.

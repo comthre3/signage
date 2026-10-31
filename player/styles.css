@@ -58,7 +58,10 @@ body {
 
 .zones-layout {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   width: 100%;
   height: 100%;
 }
@@ -85,7 +88,7 @@ body {
 #status {
   position: absolute;
   top: 16px;
-  inset-inline-start: 16px;
+  left: 16px;
   background: rgba(0, 0, 0, 0.6);
   padding: 6px 10px;
   border-radius: 4px;
@@ -93,6 +96,8 @@ body {
   z-index: 2;
   display: none;
 }
+
+[dir="rtl"] #status { left: auto; right: 16px; }
 
 .hidden { display: none !important; }
 
@@ -103,11 +108,21 @@ body {
    runs out there) and is width-bound in portrait and on narrower screens.
    It used to be laid out in px clamps that overflowed #player (overflow:
    hidden) at 1280x720 and even 1920x1080, cutting off the mascot and the
-   admin-code link. */
+   admin-code link.
+
+   The player must look right on Chrome 66 (Android 9's stock WebView, see
+   player.js), which has no min()/max() (79), flexbox gap (84) or inset (87).
+   So --u comes from aspect-ratio queries, items are spaced with margins, and
+   sizes are plain calc(): the px floors for tiny viewports are max()es in the
+   @supports block at the end of this file. (A max() fallback can't sit after
+   a calc() in the same rule: with var() inside, an old WebView keeps it and
+   then resets the property to its default.) */
 .pairing {
-  --u: min(1vh, 0.5625vw);
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   overflow: hidden;
   background:
     radial-gradient(1200px 800px at 70% 30%, #FDF3D6 0%, transparent 60%),
@@ -118,26 +133,43 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: calc(var(--u) * 2.2);
   padding: calc(var(--u) * 3) 4vw;
   z-index: 10;
   font-family: 'IBM Plex Sans', system-ui, sans-serif;
   text-align: center;
 }
 
-@media (orientation: portrait) {
-  .pairing { --u: min(0.75vh, 1.2vw); }
+/* --u is min(1vh, 0.5625vw) in landscape and min(0.75vh, 1.2vw) in portrait,
+   written as aspect-ratio queries: the vh term is the smaller one from 16:9
+   (landscape) or 5:8 (portrait) up, the vw term below that. */
+.pairing,
+.empty-state { --u: 0.5625vw; }
+
+@media (min-aspect-ratio: 16/9) {
+  .pairing,
+  .empty-state { --u: 1vh; }
 }
+
+@media (orientation: portrait) {
+  .pairing,
+  .empty-state { --u: 1.2vw; }
+}
+
+@media (orientation: portrait) and (min-aspect-ratio: 5/8) {
+  .pairing,
+  .empty-state { --u: 0.75vh; }
+}
+
+#pairing > * + * { margin-top: calc(var(--u) * 2.2); }
 
 .pairing-header {
   display: flex;
   align-items: center;
-  gap: calc(var(--u) * 2);
 }
 
 .pairing-brand {
   font-family: 'IBM Plex Serif', Georgia, serif;
-  font-size: max(20px, calc(var(--u) * 5));
+  font-size: calc(var(--u) * 5);
   font-weight: 700;
   letter-spacing: 0.5px;
   color: #3E2B4F;
@@ -146,7 +178,7 @@ body {
 }
 
 .pairing-intro {
-  font-size: max(14px, calc(var(--u) * 2.6));
+  font-size: calc(var(--u) * 2.6);
   color: #5D4A66;
   margin: 0;
 }
@@ -155,16 +187,27 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: calc(var(--u) * 4);
+}
+
+/* On the QR, not the code: the code is direction: ltr even in Arabic, so its
+   inline end would be the wrong side there. */
+.pairing-row > .pairing-qr {
+  -webkit-margin-start: calc(var(--u) * 4);
+  margin-inline-start: calc(var(--u) * 4);
 }
 
 @media (orientation: portrait) {
-  .pairing-row { flex-direction: column; gap: calc(var(--u) * 2.2); }
+  .pairing-row { flex-direction: column; }
+  .pairing-row > .pairing-qr {
+    -webkit-margin-start: 0;
+    margin-inline-start: 0;
+    margin-top: calc(var(--u) * 2.2);
+  }
 }
 
 .pairing-code {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: max(36px, calc(var(--u) * 13));
+  font-size: calc(var(--u) * 13);
   line-height: 1.15;
   font-weight: 700;
   letter-spacing: calc(var(--u) * 1);
@@ -189,15 +232,16 @@ body {
 .pairing-qr img,
 .pairing-qr canvas {
   display: block;
-  width: max(140px, calc(var(--u) * 34));
-  height: max(140px, calc(var(--u) * 34));
+  width: calc(var(--u) * 34);
+  height: calc(var(--u) * 34);
   image-rendering: pixelated;
 }
 
 .pairing-steps {
-  font-size: max(12px, calc(var(--u) * 2.3));
+  font-size: calc(var(--u) * 2.3);
   color: #5D4A66;
-  max-width: min(92vw, calc(var(--u) * 90));
+  max-width: 92vw;
+  -webkit-padding-start: 1.4em;
   padding-inline-start: 1.4em;
   line-height: 1.5;
   margin: 0;
@@ -210,7 +254,7 @@ body {
 }
 
 .pairing-fallback {
-  font-size: max(12px, calc(var(--u) * 2));
+  font-size: calc(var(--u) * 2);
   color: #5D4A66;
   margin: 0;
 }
@@ -221,22 +265,25 @@ body {
 }
 
 .pairing-meta {
-  font-size: max(12px, calc(var(--u) * 1.8));
+  font-size: calc(var(--u) * 1.8);
   color: #A89382;
   margin: 0;
 }
 
 /* ── Nothing assigned yet (a screen that was just paired) ────── */
+/* Sized in --u like .pairing (set with it, above), and kept to Chrome 66
+   CSS the same way. */
 .empty-state {
-  --u: min(1vh, 0.5625vw);
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 5;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: calc(var(--u) * 2.5);
   padding: calc(var(--u) * 3) 6vw;
   background:
     radial-gradient(1200px 800px at 70% 30%, #FDF3D6 0%, transparent 60%),
@@ -247,13 +294,10 @@ body {
   font-family: 'IBM Plex Sans', system-ui, sans-serif;
 }
 
-/* Upright tablets and portrait panels: size by width, as .pairing does. */
-@media (orientation: portrait) {
-  .empty-state { --u: min(0.75vh, 1.2vw); }
-}
+#empty-state > * + * { margin-top: calc(var(--u) * 2.5); }
 
 .empty-face {
-  width: max(64px, calc(var(--u) * 16));
+  width: calc(var(--u) * 16);
   height: auto;   /* the art is 794x700, not square */
   image-rendering: pixelated;
   /* Never a still image on a screen kept awake (Android TV guideline TV-BY). */
@@ -273,7 +317,7 @@ body {
 
 .empty-title {
   font-family: 'IBM Plex Serif', Georgia, serif;
-  font-size: max(24px, calc(var(--u) * 7));
+  font-size: calc(var(--u) * 7);
   font-weight: 700;
   margin: 0;
   line-height: 1.1;
@@ -284,7 +328,7 @@ body {
 }
 
 .empty-text {
-  font-size: max(14px, calc(var(--u) * 3));
+  font-size: calc(var(--u) * 3);
   color: #5D4A66;
   max-width: calc(var(--u) * 120);
   margin: 0;
@@ -298,8 +342,10 @@ body {
 
 /* ── Animated Khanshoof mascot on pairing view ──────────────── */
 .pairing-face {
-  width: max(48px, calc(var(--u) * 10));
-  height: max(48px, calc(var(--u) * 10));
+  width: calc(var(--u) * 10);
+  height: calc(var(--u) * 10);
+  -webkit-margin-end: calc(var(--u) * 2);   /* from the brand name beside it */
+  margin-inline-end: calc(var(--u) * 2);
   image-rendering: pixelated;
   display: block;
   animation: pairingFaceCycle 4.8s steps(1, end) infinite;
@@ -338,15 +384,22 @@ code, kbd, samp, pre,
 /* Pairing — "Have a code from admin?" affordance (Task 11) */
 .admin-code-affordance {
   text-align: center;
-  font-size: max(12px, calc(var(--u, 1vh) * 1.8));
+  font-size: calc(var(--u, 1vh) * 1.8);
 }
-/* TV remotes move focus with the D-pad: make it visible from across the room. */
-.admin-code-affordance .link:focus-visible,
-.admin-code-form input:focus-visible,
-.admin-code-form button:focus-visible {
+/* TV remotes move focus with the D-pad: make it visible from across the room.
+   Set on :focus because WebViews before Chrome 86 have no :focus-visible (and
+   drop any rule that names it); newer ones take the ring off again when focus
+   came from a tap or a click. */
+.admin-code-affordance .link:focus,
+.admin-code-form input:focus,
+.admin-code-form button:focus {
   outline: 4px solid #E09478;
   outline-offset: 4px;
   border-radius: 6px;
+}
+.admin-code-affordance .link:focus:not(:focus-visible),
+.admin-code-form button:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .admin-code-affordance .link {
@@ -359,12 +412,16 @@ code, kbd, samp, pre,
   padding: 0;
 }
 .admin-code-form {
-  margin-block-start: 0.75em;
+  margin-top: 0.75em;
   display: flex;
-  gap: 8px;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
+}
+.admin-code-form label,
+.admin-code-form input,
+.admin-code-form .btn {
+  margin: 4px;
 }
 .admin-code-form input {
   font: inherit;
@@ -393,7 +450,7 @@ code, kbd, samp, pre,
 .admin-code-form .btn:hover { filter: brightness(0.95); }
 .admin-code-error {
   color: var(--rose, #b53939);
-  margin-block-start: 0.5em;
+  margin-top: 0.5em;
   width: 100%;
   text-align: center;
   min-height: 1em;
@@ -401,7 +458,7 @@ code, kbd, samp, pre,
 .admin-code-form.hidden { display: none; }
 
 .cell-viewport {
-  position: fixed; inset: 0; overflow: hidden; background: #000;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; background: #000;
 }
 .wall-canvas {
   position: absolute;
@@ -420,8 +477,8 @@ code, kbd, samp, pre,
 /* Phase 2.5d — connection indicator */
 .conn-dot {
   position: fixed;
-  inset-block-start: 12px;
-  inset-inline-end: 12px;
+  top: 12px;
+  right: 12px;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -432,4 +489,32 @@ code, kbd, samp, pre,
 .conn-green { background: #5fc26b; }
 .conn-amber { background: #d8a23a; }
 .conn-red   { background: #c84a4a; }
+[dir="rtl"] .conn-dot { right: auto; left: 12px; }
 .conn-dot.hidden { display: none; }
+
+/* px floors for the pairing and welcome views on tiny viewports. max() and
+   min() need Chrome 79; older WebViews use the plain calc() sizes above. */
+@supports (width: max(1px, 2px)) {
+  .pairing-brand { font-size: max(20px, calc(var(--u) * 5)); }
+  .pairing-intro { font-size: max(14px, calc(var(--u) * 2.6)); }
+  .pairing-code { font-size: max(36px, calc(var(--u) * 13)); }
+  .pairing-qr img,
+  .pairing-qr canvas {
+    width: max(140px, calc(var(--u) * 34));
+    height: max(140px, calc(var(--u) * 34));
+  }
+  .pairing-steps {
+    font-size: max(12px, calc(var(--u) * 2.3));
+    max-width: min(92vw, calc(var(--u) * 90));
+  }
+  .pairing-fallback { font-size: max(12px, calc(var(--u) * 2)); }
+  .pairing-meta { font-size: max(12px, calc(var(--u) * 1.8)); }
+  .pairing-face {
+    width: max(48px, calc(var(--u) * 10));
+    height: max(48px, calc(var(--u) * 10));
+  }
+  .admin-code-affordance { font-size: max(12px, calc(var(--u, 1vh) * 1.8)); }
+  .empty-face { width: max(64px, calc(var(--u) * 16)); }
+  .empty-title { font-size: max(24px, calc(var(--u) * 7)); }
+  .empty-text { font-size: max(14px, calc(var(--u) * 3)); }
+}

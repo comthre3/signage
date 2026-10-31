@@ -16,7 +16,7 @@ What the app adds on top of opening the player in a browser:
 | Recovers | retries with backoff when the player can't load, retries at once when the network returns, replaces the WebView if its renderer crashes or hangs |
 | Offline | service workers on, so the player's media cache keeps playing without internet |
 | BACK | on a TV, straight to the home screen (Android TV requires it); on a touch screen, twice, so an accidental edge swipe doesn't take the menu off the wall |
-| Old TVs | asks for an Android System WebView update if it is older than Chrome 80 |
+| Old TVs | asks for an Android System WebView update if it is older than Chrome 66 (Android 9's stock WebView) |
 
 Package: `com.khanshoof.tv` (debug builds: `com.khanshoof.tv.debug`, installs alongside).
 Android 6.0+ (minSdk 23), targets Android 16 (API 36). Not TV-only: Play offers
@@ -122,11 +122,12 @@ Many large-format Android displays ship without Google Play. For those:
   upload key: it would clash with Play installs.
 - **Updates** need no app reinstall for player changes: the app loads the
   player from play.khanshoof.com every time.
-- **WebView age** is the real limit. The player needs Chrome 80 or newer
+- **WebView age** is the real limit. The player needs Chrome 66 or newer
   (Settings → Apps → Android System WebView shows the version). Without Play
-  the WebView only updates with the maker's system updates, so in practice
-  that means roughly Android 11 or newer, or a maker who updated it. Older
-  panels get a "This screen needs an update" message instead of a broken page.
+  the WebView only updates with the maker's system updates. Android 9 shipped
+  with Chrome 66, so in practice that means Android 9 or newer, or a maker who
+  updated it. Older panels (Android 8 and earlier) get a "This screen needs an
+  update" message instead of a broken page.
 - **Public tablets**: BACK twice stops accidental exits, but anyone can still
   swipe home. Turn on *App pinning* (Settings → Security → App pinning) to keep
   passers-by in the app.
