@@ -1698,12 +1698,23 @@ function takePendingSocialAuth() {
 }
 
 /** A same-origin URL for a relative path like "/billing?x=1", else null.
- *  Rejects absolute and protocol-relative URLs ("https://…", "//…", "/\\…"). */
+ *  The same rules as the backend's _safe_return_to: no absolute or
+ *  protocol-relative URL ("https://…", "//…"), no backslash ("/\\host"),
+ *  no control character (browsers drop tabs and newlines, so "/\t/host" is
+ *  "//host"), and no dot-segment, raw or percent-encoded: "/.//host" and
+ *  "/%2e//host" both resolve to the path "//host", which is
+ *  protocol-relative the moment it is reused as a URL. */
 function safeReturnUrl(raw) {
-  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return null;
+  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")
+      || raw.includes("\\") || /[\u0000-\u001f\u007f]/.test(raw)) return null;
+  const path = raw.split("?", 1)[0].split("#", 1)[0];
+  let decoded;
+  try { decoded = decodeURIComponent(path); } catch (_) { return null; }
+  if (decoded.split("/").some((segment) => segment === "." || segment === "..")) return null;
   let url;
   try { url = new URL(raw, window.location.origin); } catch (_) { return null; }
-  if (url.origin !== window.location.origin || url.pathname === "/auth-bounce") return null;
+  if (url.origin !== window.location.origin || url.pathname.startsWith("//")
+      || url.pathname === "/auth-bounce") return null;
   return url;
 }
 
@@ -1819,8 +1830,10 @@ function handleAuthBounce() {
     if (!startedHere) { refuse(); return; }
     target.searchParams.delete(SOCIAL_NONCE_PARAM);
     localStorage.setItem(AUTH_STORAGE_KEY, token);
-    // replace(): the token-bearing URL must not stay in the history.
-    window.location.replace(target.pathname + target.search + target.hash);
+    // replace(): the token-bearing URL must not stay in the history. The
+    // absolute href, never a path rebuilt from its parts: a pathname such as
+    // "//host/x" would be read as protocol-relative, i.e. off-site.
+    window.location.replace(target.href);
     return;
   }
   if (stash) {
