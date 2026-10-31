@@ -305,8 +305,18 @@ const Menus = (() => {
       frame.dataset.h = h;
       frame.onload = () => scalePreview();
     } catch (err) {
-      frame.srcdoc = `<p style="font:14px system-ui;padding:12px;color:#a33">${
-        escHtml(err.message || Khan.t("menus.editor.preview_failed", "Preview failed"))}</p>`;
+      // A document of its own, so it needs its own language and direction:
+      // without them an Arabic message is laid out left-to-right. And no
+      // leftover onload: scalePreview would shrink it to a 1920px board's
+      // scale. A light page, too -- dark red on the stage's near-black was
+      // barely legible.
+      const lang = Khan.currentLocale() === "ar" ? "ar" : "en";
+      const dir = lang === "ar" ? "rtl" : "ltr";
+      frame.onload = null;
+      frame.srcdoc = `<!doctype html><html lang="${lang}" dir="${dir}" style="background:#fff8ee">` +
+        `<head><meta charset="utf-8"></head>` +
+        `<body style="margin:0"><p lang="${lang}" dir="${dir}" style="font:14px system-ui;padding:12px;color:#a33">${
+        escHtml(err.message || Khan.t("menus.editor.preview_failed", "Preview failed"))}</p></body></html>`;
     } finally {
       stage.classList.remove("loading");
     }
