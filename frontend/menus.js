@@ -9,11 +9,9 @@ const Menus = (() => {
   // sign-out, st.current is null and every tick threw a raw TypeError toast.
   let renderGen = 0;
 
-  // app.js's formatDate is private to the ApiKeys module, so define our own.
+  // app.js's formatDateTime: the UI's language, Western digits in Arabic.
   function formatDate(iso) {
-    if (!iso) return "";
-    const locale = document.documentElement.lang === "ar" ? "ar-KW" : "en-GB";
-    return new Date(iso).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+    return iso ? formatDateTime(iso) : "";
   }
 
   async function show() {

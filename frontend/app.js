@@ -2445,13 +2445,33 @@ function escHtml(str) {
 function escAttr(str) {
   return String(str ?? "").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
 }
-/** A calendar date in the UI's language (Arabic as used in Kuwait). */
+/** The locale for dates and times: the UI's language (not the browser's),
+ *  and in Arabic as used in Kuwait but with Western digits -- plain "ar-KW"
+ *  writes Arabic-Indic digits, while every other number in the dashboard
+ *  (prices, counts, codes) is Western. */
+function uiDateLocale() {
+  return Khan.currentLocale() === "ar" ? "ar-KW-u-nu-latn" : "en-GB";
+}
+
+/** A calendar date in the UI's language. */
 function formatDay(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
-  const locale = Khan.currentLocale() === "ar" ? "ar-KW" : "en-GB";
-  return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+  return d.toLocaleDateString(uiDateLocale(), { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** A date and time in the UI's language; `withSeconds` for logs. */
+function formatDateTime(iso, { withSeconds = false } = {}) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  // The month by name, as formatDay writes it: "15/10" vs "10/15" is
+  // ambiguous, "15 Oct" / "15 أكتوبر" is not.
+  return d.toLocaleString(uiDateLocale(), {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", ...(withSeconds ? { second: "2-digit" } : {}),
+  });
 }
 
 /** Absolute URL of an uploaded file. The API serves /uploads; relative to the
@@ -4285,11 +4305,7 @@ const AuditLog = (() => {
   }
 
   function formatWhen(iso) {
-    if (!iso) return "—";
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString();
-    } catch (_) { return iso; }
+    return formatDateTime(iso, { withSeconds: true });
   }
 
   function renderPagination() {
@@ -4483,8 +4499,7 @@ const ApiKeys = (() => {
       c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   }
   function formatDate(iso) {
-    if (!iso) return "—";
-    try { return new Date(iso).toLocaleString(); } catch (_) { return iso; }
+    return escHtml(formatDateTime(iso));
   }
 
   function openCreateModal() {
