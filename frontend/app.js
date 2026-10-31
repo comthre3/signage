@@ -1,22 +1,69 @@
-const urlOverrides = new URLSearchParams(window.location.search);
+/* ── Where the API and the player live ───────────────────────────
+   config.js, written at container start from the deployment's own
+   API_BASE_URL / PLAYER_BASE_URL, is the source of truth; the CSP's
+   connect-src is generated from the same value.
+
+   There is deliberately no ?api_base= / ?player_base= override: any link
+   could set one, and sign-in navigates top-level to the API base carrying
+   the one-time sign-in nonce -- so https://app…/?api_base=https://evil
+   handed the visitor and the nonce to that host, which bounced them back
+   signed in to the attacker's organization.
+
+   The "Connection" panel (saved in this browser) may still move API calls,
+   but only within the configured API origin, which is all the CSP lets the
+   page reach anyway. Only with nothing configured (local development) does
+   it accept any http(s) URL. The navigations that carry secrets ignore it:
+   social sign-in always goes to DEPLOYED_API_BASE, and the player link and
+   preview always use the configured player when there is one. */
 const CONNECTION_STORAGE_KEY = "signage_connection_mode";
 const CONNECTION_API_KEY     = "signage_connection_api";
 const CONNECTION_PLAYER_KEY  = "signage_connection_player";
 
-const savedMode       = localStorage.getItem(CONNECTION_STORAGE_KEY) || "local";
-const savedApiBase    = localStorage.getItem(CONNECTION_API_KEY)    || "";
-const savedPlayerBase = localStorage.getItem(CONNECTION_PLAYER_KEY) || "";
+const CONFIGURED_API_BASE    = String(window.API_BASE_URL || "").trim();
+const CONFIGURED_PLAYER_BASE = String(window.PLAYER_BASE_URL || "").trim();
 
-const API_BASE =
-  urlOverrides.get("api_base") ||
-  (savedMode === "external" ? savedApiBase : "") ||
-  (window.API_BASE_URL || "").trim() ||
+/** The API this deployment is configured for (local development falls back
+ *  to port 8000 of this host). Never influenced by anything the visitor or
+ *  a link can set. */
+const DEPLOYED_API_BASE = CONFIGURED_API_BASE ||
   `${window.location.protocol}//${window.location.hostname}:8000`;
 
-const PLAYER_BASE =
-  urlOverrides.get("player_base") ||
-  (savedMode === "external" ? savedPlayerBase : "") ||
-  (window.PLAYER_BASE_URL || "").trim() ||
+function httpOrigin(raw) {
+  try {
+    const url = new URL(raw);
+    return /^https?:$/.test(url.protocol) ? url.origin : null;
+  } catch (_) { return null; }
+}
+
+/** A saved Connection override, if this deployment allows it: an http(s)
+ *  URL on the configured origin, or any http(s) URL when nothing is
+ *  configured. Anything else is ignored (""). */
+function acceptedConnectionOverride(raw, configured) {
+  const value = String(raw || "").trim();
+  const origin = value ? httpOrigin(value) : null;
+  if (!origin) return "";
+  if (configured && origin !== httpOrigin(configured)) return "";
+  return value.replace(/\/+$/, "");
+}
+
+function readSetting(key) {
+  try { return localStorage.getItem(key) || ""; } catch (_) { return ""; }
+}
+
+const savedMode       = readSetting(CONNECTION_STORAGE_KEY) || "local";
+const savedApiBase    = readSetting(CONNECTION_API_KEY);
+const savedPlayerBase = readSetting(CONNECTION_PLAYER_KEY);
+
+/** Base URL for API calls (fetch). */
+const API_BASE =
+  (savedMode === "external" && acceptedConnectionOverride(savedApiBase, CONFIGURED_API_BASE)) ||
+  DEPLOYED_API_BASE;
+
+/** Base URL of the player, for the "Player URL" link and the preview frame.
+ *  The configured value always wins; a saved override only applies when no
+ *  player is configured (local development). */
+const PLAYER_BASE = CONFIGURED_PLAYER_BASE ||
+  (savedMode === "external" && acceptedConnectionOverride(savedPlayerBase, "")) ||
   `${window.location.protocol}//${window.location.hostname}:3001`;
 
 const AUTH_STORAGE_KEY = "signage_auth_token";
@@ -211,11 +258,13 @@ function buildPlayerUrl(base, params) {
 }
 
 function getPlayerBaseWithOverrides() {
-  const base = PLAYER_BASE || `${window.location.protocol}//${window.location.hostname}:3001`;
-  if (savedMode === "external" && savedApiBase && !savedPlayerBase) {
-    return buildPlayerUrl(base, { api_base: savedApiBase });
+  // Local development that points the dashboard at another API hands the
+  // player the same one. A configured deployment never does: its player has
+  // its own config.js, and a link must not carry a browser-local setting.
+  if (!CONFIGURED_API_BASE && API_BASE !== DEPLOYED_API_BASE) {
+    return buildPlayerUrl(PLAYER_BASE, { api_base: API_BASE });
   }
-  return base;
+  return PLAYER_BASE;
 }
 
 function getScreenResolutionInput() {
@@ -252,30 +301,65 @@ function statusErrorText(status) {
   return null;
 }
 
+// What a status means, for an error whose own text is the server's English:
+// a plain-string detail ("Playlist not found"), a code with no translation,
+// Pydantic's messages. In English the server's text is kept -- it is more
+// specific -- and these are only the fallback; in Arabic they replace it.
+const STATUS_FALLBACK_TEXT = {
+  400: ["error.bad_request", "The server couldn't accept that. Check what you entered and try again."],
+  404: ["error.not_found", "That item no longer exists. It may have been deleted; refresh the page and try again."],
+  409: ["error.conflict", "That clashes with something that already exists. Refresh the page and try again."],
+  422: ["error.validation", "Some values aren't valid."],
+};
+
+// Plain-string details the dashboard can run into whose meaning a status
+// alone would lose (both are 400s).
+const DETAIL_TEXT = {
+  "Empty file": ["error.empty_file", "That file is empty."],
+  "URL must start with http:// or https://": ["error.url_scheme", "The address must start with http:// or https://."],
+};
+
+function serverTextReadable() { return Khan.currentLocale() !== "ar"; }
+
+/** The server's English `serverText` where the reader reads English, else
+ *  what `status` means in the reader's language. */
+function serverOrStatusText(status, serverText) {
+  const fallback = STATUS_FALLBACK_TEXT[status] ? Khan.t(...STATUS_FALLBACK_TEXT[status]) : null;
+  const generic = Khan.t("error.generic", "Something went wrong. Please try again.");
+  return serverTextReadable() ? (serverText || fallback || generic) : (fallback || generic);
+}
+
 // FastAPI/Pydantic 422: [{loc: ["body", "rules", 0, "days_of_week"], msg}, ...]
+// The field paths and messages are English, so Arabic gets the summary only.
 function formatValidationErrors(list) {
+  const summary = Khan.t("error.validation", "Some values aren't valid.");
+  if (!serverTextReadable()) return summary;
   const parts = list.map((e) => {
     const loc = (Array.isArray(e && e.loc) ? e.loc : [])
       .filter((p) => !["body", "query", "path"].includes(p));
     const msg = (e && e.msg) || "";
     return loc.length ? `${loc.join(" › ")}: ${msg}` : msg;
   }).filter(Boolean);
-  return [Khan.t("error.validation", "Some values aren't valid."), ...parts.slice(0, 3)].join(" ");
+  return [summary, ...parts.slice(0, 3)].join(" ");
 }
 
 /** Localized, human-readable text for a failed response. Backend errors are
  *  {detail: {code, message}}, {detail: "string"} or a Pydantic 422 list;
- *  none of them is ever shown to the user as raw JSON. */
+ *  none of them is ever shown to the user as raw JSON, nor as English to
+ *  someone using the dashboard in Arabic. */
 function describeApiError(status, data, text) {
   const detail = data ? data.detail : undefined;
   if (Array.isArray(detail)) return formatValidationErrors(detail);
   if (detail && typeof detail === "object") {
     if (detail.code && Khan.has(`error.${detail.code}`)) return Khan.t(`error.${detail.code}`);
-    return statusErrorText(status) || detail.message || Khan.t("error.generic", "Something went wrong. Please try again.");
+    return statusErrorText(status) || serverOrStatusText(status, detail.message);
   }
-  if (typeof detail === "string" && detail) return statusErrorText(status) || detail;
+  if (typeof detail === "string" && detail) {
+    if (DETAIL_TEXT[detail]) return Khan.t(...DETAIL_TEXT[detail]);
+    return statusErrorText(status) || serverOrStatusText(status, detail);
+  }
   const plain = typeof text === "string" && text.length < 200 && !/^\s*[<{[]/.test(text) ? text.trim() : "";
-  return statusErrorText(status) || plain || Khan.t("error.generic", "Something went wrong. Please try again.");
+  return statusErrorText(status) || serverOrStatusText(status, plain);
 }
 
 function apiError(status, data, text) {
@@ -300,8 +384,9 @@ async function apiFetch(url, init) {
   }
 }
 
-async function failedResponse(res, text, headers) {
-  if (res.status === 401) handleAuthFailure();
+async function failedResponse(res, text, headers, { anonymous = false } = {}) {
+  // An anonymous request's 401 says nothing about the session this tab holds.
+  if (res.status === 401 && !anonymous) handleAuthFailure();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
   const err = apiError(res.status, data, text);
@@ -320,14 +405,16 @@ async function failedResponse(res, text, headers) {
 
 /** JSON API call. Resolves to the parsed body, or null for an empty one
  *  (204 No Content: DELETE /schedules/{id}, /api-keys/{id}, /menus/{id}...).
- *  Rejects with an Error whose message is ready to show to the user. */
+ *  Rejects with an Error whose message is ready to show to the user.
+ *  `anonymous: true` sends no session token even when one is held. */
 async function api(path, options = {}) {
-  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
-  const headers = { ...(isForm ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await apiFetch(`${API_BASE}${path}`, { ...options, headers });
+  const { anonymous = false, ...init } = options;
+  const isForm = typeof FormData !== "undefined" && init.body instanceof FormData;
+  const headers = { ...(isForm ? {} : { "Content-Type": "application/json" }), ...(init.headers || {}) };
+  if (authToken && !anonymous) headers.Authorization = `Bearer ${authToken}`;
+  const res = await apiFetch(`${API_BASE}${path}`, { ...init, headers });
   const text = await res.text();
-  if (!res.ok) throw await failedResponse(res, text, headers);
+  if (!res.ok) throw await failedResponse(res, text, headers, { anonymous });
   if (!text) return null;
   try { return JSON.parse(text); } catch (_) { return text; }
 }
@@ -403,7 +490,9 @@ function resetOrgState() {
   safely(() => Schedules.reset());
   safely(() => AuditLog.reset());
   safely(() => Menus.reset());
+  safely(() => ApiKeys.reset());
   safely(() => SubscriptionBanner.update(null));
+  safely(() => stopBillingPoll());
   safely(() => {
     document.getElementById("billing-current-body").textContent = "—";
     document.getElementById("billing-history-body").innerHTML = "";
@@ -1610,6 +1699,7 @@ document.getElementById("auth-tab-signup").addEventListener("click", () => showA
 const SOCIAL_PENDING_KEY    = "khan_social_auth_pending";
 const SOCIAL_PENDING_TTL_MS = 15 * 60 * 1000;
 const SOCIAL_NONCE_PARAM    = "sa_nonce";
+const SOCIAL_PROVIDERS      = ["google", "apple"];
 const FLASH_KEY             = "khan_flash";
 
 function randomNonce() {
@@ -1628,7 +1718,9 @@ function startSocialAuth(provider) {
   const here = new URL(window.location.href);
   here.searchParams.set(SOCIAL_NONCE_PARAM, nonce);
   const params = new URLSearchParams({ intent, return_to: here.pathname + here.search });
-  window.location = `${API_BASE}/auth/${provider}/start?${params}`;
+  // DEPLOYED_API_BASE, never API_BASE: this navigation carries the nonce,
+  // so it may only ever go to the API the deployment is configured for.
+  window.location = `${DEPLOYED_API_BASE}/auth/${provider}/start?${params}`;
 }
 
 /** The sign-in this tab started, if any (consumed: one use only). */
@@ -1644,12 +1736,23 @@ function takePendingSocialAuth() {
 }
 
 /** A same-origin URL for a relative path like "/billing?x=1", else null.
- *  Rejects absolute and protocol-relative URLs ("https://…", "//…", "/\\…"). */
+ *  The same rules as the backend's _safe_return_to: no absolute or
+ *  protocol-relative URL ("https://…", "//…"), no backslash ("/\\host"),
+ *  no control character (browsers drop tabs and newlines, so "/\t/host" is
+ *  "//host"), and no dot-segment, raw or percent-encoded: "/.//host" and
+ *  "/%2e//host" both resolve to the path "//host", which is
+ *  protocol-relative the moment it is reused as a URL. */
 function safeReturnUrl(raw) {
-  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return null;
+  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")
+      || raw.includes("\\") || /[\u0000-\u001f\u007f]/.test(raw)) return null;
+  const path = raw.split("?", 1)[0].split("#", 1)[0];
+  let decoded;
+  try { decoded = decodeURIComponent(path); } catch (_) { return null; }
+  if (decoded.split("/").some((segment) => segment === "." || segment === "..")) return null;
   let url;
   try { url = new URL(raw, window.location.origin); } catch (_) { return null; }
-  if (url.origin !== window.location.origin || url.pathname === "/auth-bounce") return null;
+  if (url.origin !== window.location.origin || url.pathname.startsWith("//")
+      || url.pathname === "/auth-bounce") return null;
   return url;
 }
 
@@ -1737,6 +1840,10 @@ function _escapeHtml(s) {
   ));
 }
 
+/** Runs on /auth-bounce. Returns true when it is navigating away (signed in,
+ *  refused or failed): boot() must then stop, or it carries on in the
+ *  outgoing page -- showing, and so consuming, the flash meant for the next
+ *  one, and calling /auth/me with whatever token was there before. */
 function handleAuthBounce() {
   const params = new URLSearchParams(window.location.search);
   const token   = params.get("token");
@@ -1748,33 +1855,40 @@ function handleAuthBounce() {
     setFlash("auth.social.link_refused",
              "That sign-in link didn't start in this browser, so it was ignored. Please sign in again.");
     window.location.replace("/");
+    return true;
   };
 
   if (error) {
     setFlash("auth.social.failed", "Sign-in was cancelled or didn't complete. Please try again.");
     window.location.replace("/");
-    return;
+    return true;
   }
+  // Both legs -- the session token and the "finish creating your account"
+  // stash -- must echo the nonce this tab put in return_to. A stash from
+  // someone else's sign-in would otherwise tie a new org to their identity.
+  const target = safeReturnUrl(params.get("return_to") || "/");
+  const echoed = target ? target.searchParams.get(SOCIAL_NONCE_PARAM) : null;
+  const startedHere = Boolean(pending && echoed && echoed === pending.nonce);
   if (token) {
-    const target = safeReturnUrl(params.get("return_to") || "/");
-    const echoed = target ? target.searchParams.get(SOCIAL_NONCE_PARAM) : null;
-    if (!pending || !echoed || echoed !== pending.nonce) { refuse(); return; }
+    if (!startedHere) return refuse();
     target.searchParams.delete(SOCIAL_NONCE_PARAM);
     localStorage.setItem(AUTH_STORAGE_KEY, token);
-    // replace(): the token-bearing URL must not stay in the history.
-    window.location.replace(target.pathname + target.search + target.hash);
-    return;
+    // replace(): the token-bearing URL must not stay in the history. The
+    // absolute href, never a path rebuilt from its parts: a pathname such as
+    // "//host/x" would be read as protocol-relative, i.e. off-site.
+    window.location.replace(target.href);
+    return true;
   }
   if (stash) {
-    // No return_to on this leg to carry the nonce, but a stash nobody in this
-    // tab asked for is still refused: completing it would tie the new org to
-    // whoever's Google/Apple identity the stash holds.
-    if (!pending) { refuse(); return; }
+    if (!startedHere) return refuse();
+    // The payload is read unverified (only the backend can check the
+    // signature), so it may only pick between the two known providers --
+    // never put arbitrary text into the request path.
     let provider = "google";
     try {
       const b64 = stash.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
       const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
-      provider = payload.provider || "google";
+      if (payload && SOCIAL_PROVIDERS.includes(payload.provider)) provider = payload.provider;
     } catch (e) { /* fall through with default */ }
     history.replaceState({}, "", "/auth-bounce");   // keep the stash out of history
 
@@ -1805,8 +1919,11 @@ function handleAuthBounce() {
       const submit = e.target.querySelector("button[type=submit]");
       try {
         await withLoading(submit, async () => {
+          // anonymous: this creates a brand-new account, so whoever may be
+          // signed in elsewhere in this browser has no business riding along.
           const body = await api(`/auth/${provider}/complete-signup`, {
             method: "POST",
+            anonymous: true,
             body: JSON.stringify({ stash_token: stash, business_name: businessName }),
           });
           localStorage.setItem(AUTH_STORAGE_KEY, body.token);
@@ -1819,11 +1936,10 @@ function handleAuthBounce() {
       }
     });
   }
+  return false;   // staying: the finish-signup form is on this page
 }
 
-if (window.location.pathname === "/auth-bounce") {
-  handleAuthBounce();
-}
+const leavingAuthBounce = window.location.pathname === "/auth-bounce" && handleAuthBounce();
 
 /* ── Signup (3-step OTP wizard) ──────────────────────────────── */
 const signupState = { email: "", business_name: "", verification_token: "" };
@@ -2013,6 +2129,22 @@ const connectionReset  = document.getElementById("connection-reset");
 
 connectionToggle?.addEventListener("click", () => connectionPanel.classList.toggle("hidden"));
 
+/** Why a Connection field can't be saved, or null: not an http(s) URL, or
+ *  off the origin this deployment is configured for. */
+function connectionFieldProblem(raw, configured) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  if (!httpOrigin(value)) {
+    return Khan.t("toast.connection_bad_url", "Enter a full address that starts with http:// or https://.");
+  }
+  if (!acceptedConnectionOverride(value, configured)) {
+    return Khan.t("toast.connection_locked",
+      "This deployment only connects to {origin}; another address can't be used here.")
+      .replace("{origin}", httpOrigin(configured) || configured);
+  }
+  return null;
+}
+
 if (connectionMode && connectionApi && connectionPlayer) {
   connectionMode.value   = savedMode;
   connectionApi.value    = savedApiBase;
@@ -2021,6 +2153,12 @@ if (connectionMode && connectionApi && connectionPlayer) {
 
 connectionForm?.addEventListener("submit", (e) => {
   e.preventDefault();
+  // Say so now rather than silently ignoring the value on the next load.
+  if (connectionMode.value === "external") {
+    const problem = connectionFieldProblem(connectionApi.value, CONFIGURED_API_BASE)
+                 || connectionFieldProblem(connectionPlayer.value, CONFIGURED_PLAYER_BASE);
+    if (problem) { toast(problem, "error", 6000); return; }
+  }
   localStorage.setItem(CONNECTION_STORAGE_KEY, connectionMode.value);
   localStorage.setItem(CONNECTION_API_KEY,     connectionApi.value.trim());
   localStorage.setItem(CONNECTION_PLAYER_KEY,  connectionPlayer.value.trim());
@@ -2241,6 +2379,7 @@ function bindLangToggle() {
 }
 
 async function boot() {
+  if (leavingAuthBounce) return;   // the page is already on its way elsewhere
   let orgLocale;
   if (authToken) {
     try {
@@ -2306,13 +2445,33 @@ function escHtml(str) {
 function escAttr(str) {
   return String(str ?? "").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
 }
-/** A calendar date in the UI's language (Arabic as used in Kuwait). */
+/** The locale for dates and times: the UI's language (not the browser's),
+ *  and in Arabic as used in Kuwait but with Western digits -- plain "ar-KW"
+ *  writes Arabic-Indic digits, while every other number in the dashboard
+ *  (prices, counts, codes) is Western. */
+function uiDateLocale() {
+  return Khan.currentLocale() === "ar" ? "ar-KW-u-nu-latn" : "en-GB";
+}
+
+/** A calendar date in the UI's language. */
 function formatDay(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
-  const locale = Khan.currentLocale() === "ar" ? "ar-KW" : "en-GB";
-  return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+  return d.toLocaleDateString(uiDateLocale(), { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** A date and time in the UI's language; `withSeconds` for logs. */
+function formatDateTime(iso, { withSeconds = false } = {}) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  // The month by name, as formatDay writes it: "15/10" vs "10/15" is
+  // ambiguous, "15 Oct" / "15 أكتوبر" is not.
+  return d.toLocaleString(uiDateLocale(), {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", ...(withSeconds ? { second: "2-digit" } : {}),
+  });
 }
 
 /** Absolute URL of an uploaded file. The API serves /uploads; relative to the
@@ -2455,9 +2614,17 @@ async function onPairSubmit(e) {
     } catch (err) {
       console.error(err);
       let message = mapPairErrorMessage(err);
-      if (createdScreen) {
-        // The claim failed after we created a screen for it. Left in place it
-        // is an unpaired screen counting against the plan's limit.
+      // Only a 4xx is the server saying no. With no answer at all (status 0)
+      // or a 5xx, the claim may well have bound the TV to the new screen, and
+      // deleting it would unpair a display that just paired.
+      const rejected = err?.status >= 400 && err.status < 500;
+      if (createdScreen && !rejected) {
+        message += " " + Khan.t("pair.error.unconfirmed_kept",
+          "The screen \"{name}\" was kept in case pairing went through. Check Screens: if it isn't paired, an admin can delete it there.")
+          .replace("{name}", createdScreen.name || "");
+      } else if (createdScreen) {
+        // The claim was refused after we created a screen for it. Left in
+        // place it is an unpaired screen counting against the plan's limit.
         try {
           await api(`/screens/${createdScreen.id}`, { method: "DELETE" });
         } catch (cleanupErr) {
@@ -2513,6 +2680,14 @@ const BILLING_TERM_LABEL_KEYS = { 1: "billing.term_monthly", 6: "billing.term_6m
 let billingCurrentTerm = 1;
 let billingPollTimer = null;
 let billingPollStartedAt = 0;
+// Bumped by stopBillingPoll: a status request already in flight when the
+// tab signs out must not re-arm the timer or write into the next session.
+let billingPollGen = 0;
+
+function stopBillingPoll() {
+  billingPollGen++;
+  if (billingPollTimer) { clearTimeout(billingPollTimer); billingPollTimer = null; }
+}
 
 function billingAmountsFor(tier, months) {
   const plan = PLAN_TIERS.find((p) => p.tier === tier);
@@ -2581,7 +2756,7 @@ function renderBillingTiers() {
       <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
       <div class="billing-tier-limit">${escHtml(upToScreensLabel(plan.screens))}</div>
       <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " " + escHtml(Khan.t("billing.per_month", "/ month")) : ""}</div>
-      <div class="billing-tier-usd" dir="ltr">≈ $${amounts.usdApprox}</div>
+      <div class="billing-tier-usd"><bdi dir="ltr">≈ $${amounts.usdApprox}</bdi></div>
       ${saveMarkup}
       ${canPay ? `<button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
         ${escHtml(Khan.t("billing.pay_btn", "Pay {amount} KWD").replace("{amount}", amounts.kwd))}${saveLabel ? " · " + escHtml(saveLabel) : ""}
@@ -2685,18 +2860,23 @@ function maybeResumeBillingStatus() {
   sessionStorage.removeItem("billing_pending_trackid");
   setBillingBanner("success", Khan.t("billing.confirming", "Confirming payment…"));
   billingPollStartedAt = Date.now();
-  pollBillingStatus(trackid);
+  stopBillingPoll();
+  pollBillingStatus(trackid, billingPollGen);
 }
 
-async function pollBillingStatus(trackid) {
+async function pollBillingStatus(trackid, gen) {
+  if (gen !== billingPollGen) return;
   try {
     const data = await api(`/billing/status/${encodeURIComponent(trackid)}`);
+    if (gen !== billingPollGen) return;
     if (data.status === "captured") {
       const plan = PLAN_TIERS.find((p) => p.tier === data.tier);
       setBillingBanner("success", Khan.t("billing.upgraded", "Plan upgraded · {plan} · paid through {date}")
         .replace("{plan}", plan ? plan.label : data.tier)
         .replace("{date}", formatDay(data.paid_through_at)));
-      renderBillingCurrent(await fetchBillingOrg());
+      const org = await fetchBillingOrg();
+      if (gen !== billingPollGen) return;
+      renderBillingCurrent(org);
       if (state.org) { renderPlanCard(state.org); SubscriptionBanner.update(state.org); }
       loadBillingHistory();
       history.replaceState({}, "", "/billing");
@@ -2712,8 +2892,9 @@ async function pollBillingStatus(trackid) {
       setBillingBanner("success", Khan.t("billing.still_processing", "Payment is still processing — check back in a minute."));
       return;
     }
-    billingPollTimer = setTimeout(() => pollBillingStatus(trackid), 2000);
+    billingPollTimer = setTimeout(() => pollBillingStatus(trackid, gen), 2000);
   } catch (err) {
+    if (gen !== billingPollGen) return;
     setBillingBanner("error", Khan.t("billing.status_unknown", "Couldn't confirm payment status."));
   }
 }
@@ -3240,6 +3421,12 @@ const Walls = (() => {
     state.walls = [];
     const root = document.getElementById("walls-list");
     if (root) root.innerHTML = "";
+    // The last pair code (and its countdown) is the previous org's, and
+    // still redeemable until it expires.
+    const code = document.getElementById("walls-pair-code");
+    if (code) code.textContent = "—";
+    const countdown = document.getElementById("walls-pair-countdown");
+    if (countdown) countdown.textContent = Khan.t("walls.pair_expires_label", "Expires in —");
   }
 
   // openEditor and pair-flow are filled in by Task 9.
@@ -3316,20 +3503,31 @@ const Walls = (() => {
         () => openPairModal(wall.id, r, c));
       el.querySelector('[data-action="unpair"]')?.addEventListener("click",
         () => unpairCell(wall.id, r, c));
-      el.querySelector('select[data-action="cell-playlist"]')?.addEventListener("change", (ev) =>
-        patchCell(wall.id, r, c, {
-          playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
-        }));
+      const cellSelect = el.querySelector('select[data-action="cell-playlist"]');
+      const cell = wall.cells.find((x) => x.row_index === r && x.col_index === c);
+      cellSelect?.addEventListener("change", async () => {
+        const playlistId = cellSelect.value === "" ? null : parseInt(cellSelect.value, 10);
+        // Same as the wall's own picker: a refused change is undone on screen.
+        if (await patchCell(wall.id, r, c, { playlist_id: playlistId })) {
+          if (cell) cell.playlist_id = playlistId;
+        } else {
+          cellSelect.value = cell && cell.playlist_id ? String(cell.playlist_id) : "";
+        }
+      });
     });
     body.querySelector('select[data-action="wall-playlist"]')?.addEventListener("change", async (ev) => {
-      if (!ev.target.value) return;
-      const fields = { mirrored_playlist_id: parseInt(ev.target.value, 10) };
+      const select = ev.target;
+      if (!select.value) return;
+      const fields = { mirrored_playlist_id: parseInt(select.value, 10) };
       if (!wall.mirrored_mode) fields.mirrored_mode = "same_playlist";
       try {
         await api(`/walls/${wall.id}`, { method: "PATCH", body: JSON.stringify(fields) });
         toast(Khan.t("walls.playlist_updated", "Wall playlist updated"), "success");
         await renderEditor(wall.id);
       } catch (err) {
+        // Put back what the wall is really playing: left on the new choice,
+        // the picker claims a change the server refused.
+        select.value = wall.mirrored_playlist_id ? String(wall.mirrored_playlist_id) : "";
         toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
       }
     });
@@ -3365,7 +3563,7 @@ const Walls = (() => {
     return `
       <div class="walls-editor-cell ${paired ? "paired" : "empty"}"
            data-row="${c.row_index}" data-col="${c.col_index}">
-        <strong>(${c.row_index},${c.col_index})</strong>
+        <strong dir="ltr">(${c.row_index},${c.col_index})</strong>
         ${paired
           ? `<span>${Khan.t("walls.cell_paired", "Paired")}</span>
              <button class="btn btn-ghost" data-action="unpair">${Khan.t("walls.cell_unpair", "Unpair")}</button>`
@@ -3437,8 +3635,10 @@ const Walls = (() => {
         body: JSON.stringify({ row_index: row, col_index: col, ...fields }),
       });
       toast(Khan.t("walls.cell_updated", "Cell updated"));
+      return true;
     } catch (err) {
       toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update cell"), "error");
+      return false;
     }
   }
 
@@ -3722,6 +3922,7 @@ const Walls = (() => {
 const Schedules = (() => {
   let cachedPlaylists = [];
   let currentSchedule = null;     // {id, name, rules} or null when creating new
+  let saving = false;             // a second Save before POST /schedules answers made a duplicate
 
   const DOW_LABELS = ["dow.mon", "dow.tue", "dow.wed", "dow.thu", "dow.fri", "dow.sat", "dow.sun"];
 
@@ -3898,6 +4099,19 @@ const Schedules = (() => {
   }
 
   async function save() {
+    if (saving) return;
+    const btn = document.getElementById("schedule-save-btn");
+    saving = true;
+    try {
+      // withLoading disables the button before the first await, so the
+      // second click of a double-click never reaches this handler at all.
+      await (btn ? withLoading(btn, saveNow) : saveNow());
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function saveNow() {
     const nameEl = document.getElementById("schedule-editor-name");
     const name = nameEl.value.trim();
     if (!name) {
@@ -3944,7 +4158,7 @@ const Schedules = (() => {
     } catch (err) {
       const code = err.data?.detail?.code;
       const msg = code === "schedule.rule_overlap"
-        ? Khan.t("schedules.overlap_error", "Two rules overlap on the same day.")
+        ? Khan.t("schedules.overlap_error", "Two rules overlap in time (including rules that run past midnight).")
         : ((err.isApiError && err.message) || Khan.t("schedules.error.save", "Failed to save schedule."));
       toast(msg, "error");
     }
@@ -4091,11 +4305,7 @@ const AuditLog = (() => {
   }
 
   function formatWhen(iso) {
-    if (!iso) return "—";
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString();
-    } catch (_) { return iso; }
+    return formatDateTime(iso, { withSeconds: true });
   }
 
   function renderPagination() {
@@ -4289,8 +4499,7 @@ const ApiKeys = (() => {
       c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   }
   function formatDate(iso) {
-    if (!iso) return "—";
-    try { return new Date(iso).toLocaleString(); } catch (_) { return iso; }
+    return escHtml(formatDateTime(iso));
   }
 
   function openCreateModal() {
@@ -4342,6 +4551,17 @@ const ApiKeys = (() => {
     document.getElementById("api-key-reveal-modal").classList.add("hidden");
   }
 
+  // Sign-out: a key just revealed belongs to the previous org -- left in the
+  // DOM it is one click away for whoever signs in next in this tab.
+  function reset() {
+    closeRevealModal();
+    document.getElementById("api-key-create-modal")?.classList.add("hidden");
+    const name = document.getElementById("api-key-name");
+    if (name) name.value = "";
+    const list = document.getElementById("api-keys-list");
+    if (list) list.innerHTML = "";
+  }
+
   async function revokeKey(id, name) {
     const ok = await confirmDialog({
       title:        Khan.t("api_keys.revoke_confirm.title", "Revoke API key?"),
@@ -4370,7 +4590,7 @@ const ApiKeys = (() => {
     document.getElementById("api-key-reveal-done")?.addEventListener("click", closeRevealModal);
   }
 
-  return { show, init };
+  return { show, init, reset };
 })();
 
 ApiKeys.init();

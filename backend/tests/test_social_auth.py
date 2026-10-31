@@ -737,6 +737,72 @@ def test_google_signin_keeps_dashboard_nonce_return_to(client, google_env,
     assert q["return_to"] == rt
 
 
+# The "finish creating your account" leg needs the dashboard's nonce too:
+# without it, the dashboard cannot tell a stash from its own sign-in from
+# one an attacker minted with their own Google account and planted in the
+# victim's tab.
+
+
+@pytest.mark.parametrize("raw", ["/?sa_nonce=0f1e2d3c4b5a6978",
+                                 "/billing?sa_nonce=0f1e2d3c4b5a6978"])
+def test_stash_bounce_carries_return_to(google_env, raw):
+    import urllib.parse
+    from social_auth import _bounce_with_stash
+    url = _bounce_with_stash("stash-tok", "Café", return_to=raw)
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    assert q["complete_signup"] == "stash-tok"
+    assert q["suggested_name"] == "Café"
+    assert q["return_to"] == raw
+
+
+@pytest.mark.parametrize("raw", _UNSAFE_RETURN_TO)
+def test_stash_bounce_never_carries_offsite_return_to(google_env, raw):
+    import urllib.parse
+    from social_auth import _bounce_with_stash
+    url = _bounce_with_stash("stash-tok", "", return_to=raw)
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    assert q["return_to"] == "/"
+
+
+def test_google_new_user_stash_bounce_keeps_dashboard_nonce(client, google_env,
+                                                            respx_mock):
+    """start -> callback for an email nobody has signed up with: the stash
+    bounce echoes the return_to (and so the nonce) the dashboard sent."""
+    import respx, uuid, urllib.parse
+    sfx = uuid.uuid4().hex[:8]
+    id_token = _sign_google_id_token(google_env, sub=f"g-stashrt-{sfx}",
+                                     email=f"stashrt-{sfx}@example.com",
+                                     name="Stash Nonce")
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    rt = "/?sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    r = client.get("/auth/google/start",
+                   params={"intent": "signup", "return_to": rt},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    r = client.get("/auth/google/callback",
+                   params={"code": "any", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = urllib.parse.urlparse(r.headers["location"])
+    assert loc.path == "/auth-bounce"
+    q = dict(urllib.parse.parse_qsl(loc.query))
+    assert q["complete_signup"]
+    assert "token" not in q
+    assert q["return_to"] == rt
+
+
 # ── Apple flow ────────────────────────────────────────────────────────
 
 
@@ -850,6 +916,8 @@ def test_apple_callback_post_form_new_user(client, apple_env, respx_mock):
     assert "/auth-bounce" in loc
     assert "complete_signup=" in loc
     assert "Apple+Tester" in loc or "Apple%20Tester" in loc
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(loc).query))
+    assert q["return_to"] == "/"
 
 
 def test_apple_callback_subsequent_signin_without_user_field(client, apple_env,

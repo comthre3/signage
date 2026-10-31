@@ -1866,6 +1866,17 @@ code, kbd, samp, pre,
 }
 .walls-editor-cell.paired { background: var(--mint, #c4e7d4); color: #1a3a26; }
 
+/* Wall cells are physical TV positions, not text: column 0 is the leftmost
+   screen, the one backend/walls.py hands the leftmost slice of a spanned
+   canvas (x = col_index * cell width). Inheriting dir="rtl" drew column 0 on
+   the right in Arabic, so the operator paired the left TV to the right cell.
+   Both grids are laid out left-to-right in every language; only what is
+   inside a cell follows the page's direction. */
+.walls-card .walls-mosaic,
+.walls-editor-grid { direction: ltr; }
+[dir="rtl"] .walls-card .walls-mosaic-cell,
+[dir="rtl"] .walls-editor-cell { direction: rtl; }
+
 .walls-pair-code {
   font-size: 2.5em; font-family: var(--font-mono, monospace);
   letter-spacing: 0.15em; text-align: center;
