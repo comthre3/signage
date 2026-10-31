@@ -222,6 +222,34 @@ def test_audit_log_endpoint_filters_by_date(client, signed_up_org):
     assert r.json()["items"] == []
 
 
+@pytest.mark.parametrize("param", ["since", "until"])
+@pytest.mark.parametrize("value", ["garbage", "2030-13-01", "2030-01-01T25:00"])
+def test_audit_log_endpoint_rejects_unparseable_date(client, signed_up_org, param, value):
+    """Handed to Postgres as text, a value it cannot read as a timestamp
+    failed the whole query: a 500 instead of telling the caller."""
+    r = client.get(f"/audit-log?{param}={value}",
+                   headers=_bearer(signed_up_org["token"]))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "audit_log.date_invalid"
+
+
+def test_audit_log_endpoint_accepts_date_without_time(client, signed_up_org):
+    bearer = _bearer(signed_up_org["token"])
+    client.post("/auth/login", json={
+        "username": signed_up_org["user"]["username"],
+        "password": "Khanshoof2026Test",
+    })
+    r = client.get("/audit-log?since=2000-01-01&until=2100-01-01", headers=bearer)
+    assert r.status_code == 200, r.text
+    assert r.json()["total"] >= 1
+    r = client.get("/audit-log?since=2030-01-01", headers=bearer)
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []
+    r = client.get("/audit-log?until=2000-01-01", headers=bearer)
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []
+
+
 def test_audit_log_endpoint_forbidden_for_viewer(client, signed_up_org):
     # Create a viewer user; log in as them.
     import uuid

@@ -51,6 +51,18 @@ def test_site_timezone_returns_kuwait_for_unknown_site():
     assert tz == ZoneInfo("Asia/Kuwait")
 
 
+def test_site_timezone_falls_back_for_malformed_stored_key(client, signed_up_org):
+    """A bad value already in the row (edited by hand, say) must not take
+    every screen at the site down: ZoneInfo raises ValueError for "Asia/"."""
+    from db import execute
+    bearer = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    r = client.post("/sites", headers=bearer, json={"name": "Hand-edited"})
+    assert r.status_code == 200, r.text
+    site_id = r.json()["id"]
+    execute("UPDATE sites SET timezone = ? WHERE id = ?", ("Asia/", site_id))
+    assert _site_timezone(site_id) == ZoneInfo("Asia/Kuwait")
+
+
 # ── resolve_active_playlist ───────────────────────────────────────────
 
 def test_resolve_no_schedule_returns_default_playlist():
@@ -169,3 +181,73 @@ def test_content_endpoint_picks_scheduled_playlist(client, signed_up_org):
     body = r.json()
     assert body["playlist"]["id"] == info["playlist_b"], \
         f"expected scheduled playlist, got {body['playlist']}"
+
+
+# ── Wrap-midnight rules belong to the day they START on ───────────────
+# 2026-10-26 is a Monday, so 2026-10-30 is a Friday and 2026-10-31 a Saturday.
+_KUWAIT = ZoneInfo("Asia/Kuwait")
+_FRI_BIT, _SUN_BIT = 1 << 4, 1 << 6
+
+
+def _resolve_at(screen, when):
+    """resolve_active_playlist as if the site's wall clock read `when`."""
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when.astimezone(tz) if tz else when
+    with patch("main.datetime", _Frozen):
+        return resolve_active_playlist(screen)
+
+
+def _late_night_schedule(client, signed_up_org, days_of_week):
+    """A schedule whose only rule is 22:00-02:00 on `days_of_week`.
+
+    Returns (screen dict for the resolver, the rule's playlist id). The
+    screen's own default playlist is a different one, so a miss is visible.
+    """
+    bearer = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    ids = []
+    for name in ("Default", "Late"):
+        r = client.post("/playlists", headers=bearer, json={"name": name})
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
+    default_pl, late_pl = ids
+    r = client.post("/schedules", headers=bearer, json={"name": "Late show"})
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    r = client.put(f"/schedules/{sid}/rules", headers=bearer, json={"rules": [
+        {"playlist_id": late_pl, "start_time": "22:00", "end_time": "02:00",
+         "days_of_week": days_of_week, "position": 0},
+    ]})
+    assert r.status_code == 200, r.text
+    return {"schedule_id": sid, "playlist_id": default_pl, "site_id": None}, late_pl
+
+
+def test_wrap_rule_plays_its_own_evening(client, signed_up_org):
+    screen, late = _late_night_schedule(client, signed_up_org, _FRI_BIT)
+    assert _resolve_at(screen, datetime(2026, 10, 30, 23, 0, tzinfo=_KUWAIT)) == late
+
+
+def test_wrap_rule_runs_past_midnight_into_the_next_day(client, signed_up_org):
+    """Friday 22:00-02:00 is Friday night: it is still on at Saturday 01:00."""
+    screen, late = _late_night_schedule(client, signed_up_org, _FRI_BIT)
+    assert _resolve_at(screen, datetime(2026, 10, 31, 1, 0, tzinfo=_KUWAIT)) == late
+
+
+def test_wrap_rule_does_not_play_early_on_its_own_day(client, signed_up_org):
+    """Friday 01:00 is the tail of THURSDAY night, which has no rule."""
+    screen, late = _late_night_schedule(client, signed_up_org, _FRI_BIT)
+    got = _resolve_at(screen, datetime(2026, 10, 30, 1, 0, tzinfo=_KUWAIT))
+    assert got == screen["playlist_id"]
+
+
+def test_wrap_rule_stops_at_end_time_next_day(client, signed_up_org):
+    screen, late = _late_night_schedule(client, signed_up_org, _FRI_BIT)
+    got = _resolve_at(screen, datetime(2026, 10, 31, 2, 0, tzinfo=_KUWAIT))
+    assert got == screen["playlist_id"]
+
+
+def test_sunday_wrap_rule_runs_into_monday(client, signed_up_org):
+    """The day after Sunday (bit 6) is Monday (bit 0), not bit 7."""
+    screen, late = _late_night_schedule(client, signed_up_org, _SUN_BIT)
+    assert _resolve_at(screen, datetime(2026, 10, 26, 1, 0, tzinfo=_KUWAIT)) == late

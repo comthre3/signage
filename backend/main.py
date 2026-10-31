@@ -643,15 +643,22 @@ def is_online(last_seen: Optional[str]) -> bool:
     return (datetime.now(timezone.utc) - last_seen_dt).total_seconds() < 90
 
 
+# last_used is rewritten at most this often rather than on every request,
+# which would make each authenticated call a write. The idle clock can thus
+# run up to this far ahead of the true last use.
+_SESSION_TOUCH_SECONDS = 60
+
+
 def _session_lookup(token: str) -> Optional[dict]:
     """Look up an active session by bearer token. Returns user dict or None.
 
-    Idle TTL eviction + last_used update preserved from the original
-    get_current_user body.
+    A session idle longer than SESSION_TTL_SECONDS is deleted and refused
+    here, on the request; cleanup_sessions() only sweeps at startup and login.
     """
     session = query_one(
         """
-        SELECT sessions.token, sessions.user_id, users.username, users.is_admin,
+        SELECT sessions.token, sessions.user_id, sessions.created_at,
+               sessions.last_used, users.username, users.is_admin,
                users.role, users.organization_id
         FROM sessions
         JOIN users ON users.id = sessions.user_id
@@ -661,6 +668,7 @@ def _session_lookup(token: str) -> Optional[dict]:
     )
     if not session:
         return None
+    idle = None
     last_used = session.get("last_used") or session.get("created_at")
     if last_used:
         try:
@@ -668,13 +676,17 @@ def _session_lookup(token: str) -> Optional[dict]:
         except ValueError:
             last_used_dt = None
         if last_used_dt:
-            if (datetime.now(timezone.utc) - last_used_dt).total_seconds() > SESSION_TTL_SECONDS:
+            if last_used_dt.tzinfo is None:
+                last_used_dt = last_used_dt.replace(tzinfo=timezone.utc)
+            idle = (datetime.now(timezone.utc) - last_used_dt).total_seconds()
+            if idle > SESSION_TTL_SECONDS:
                 execute("DELETE FROM sessions WHERE token = ?", (token,))
                 return None
-    execute(
-        "UPDATE sessions SET last_used = ? WHERE token = ?",
-        (utc_now_iso(), token),
-    )
+    if idle is None or idle > min(_SESSION_TOUCH_SECONDS, SESSION_TTL_SECONDS / 2):
+        execute(
+            "UPDATE sessions SET last_used = ? WHERE token = ?",
+            (utc_now_iso(), token),
+        )
     return {
         "id": session["user_id"],
         "username": session["username"],
@@ -1924,6 +1936,17 @@ def get_audit_log(
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
 
+    def _bound(name: str, value: str) -> datetime:
+        # Parsed here rather than passed to Postgres as text, where a value it
+        # cannot read as a timestamp failed the whole query with a 500. A bare
+        # date or a time without an offset is taken as UTC.
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            raise http_error(422, "audit_log.date_invalid",
+                             f"{name} is not an ISO 8601 date or time: {value}")
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
     where = ["organization_id = ?"]
     params: list = [org_id(user)]
     if action:
@@ -1934,10 +1957,10 @@ def get_audit_log(
         params.append(actor_id)
     if since:
         where.append("created_at >= ?")
-        params.append(since)
+        params.append(_bound("since", since))
     if until:
         where.append("created_at <= ?")
-        params.append(until)
+        params.append(_bound("until", until))
     where_sql = " AND ".join(where)
 
     total_row = query_one(
@@ -2249,7 +2272,9 @@ def update_site(
     if payload.timezone is not None:
         try:
             ZoneInfo(payload.timezone)
-        except ZoneInfoNotFoundError:
+        # ValueError: a key that is not a zone name at all ("/etc/x", "../x",
+        # "Asia/", a non-TZif file such as "zone.tab").
+        except (ZoneInfoNotFoundError, ValueError):
             raise http_error(422, "site.timezone_invalid",
                              f"Unknown timezone: {payload.timezone}")
 
@@ -3107,35 +3132,47 @@ def _time_in_window(now: _time_type, start: _time_type, end: _time_type) -> bool
     return now >= start or now < end
 
 
-def _time_windows_overlap(s1, e1, s2, e2) -> bool:
-    """True iff the two TIME windows overlap. Both may wrap midnight."""
-    def expand(s, e):
-        if s <= e:
-            return [(s, e)]
-        return [(s, _time_type(23, 59, 59, 999999)), (_time_type(0, 0), e)]
-    for a_s, a_e in expand(s1, e1):
-        for b_s, b_e in expand(s2, e2):
-            if a_s < b_e and b_s < a_e:
+def _next_days(days: int) -> int:
+    """The day after each day in a Mon=bit0..Sun=bit6 mask (Sunday -> Monday)."""
+    return ((days << 1) | (days >> 6)) & 0x7F
+
+
+def _rule_pieces(rule: dict) -> list:
+    """A rule as (days_of_week, start, end) pieces, none wrapping midnight.
+
+    A rule that wraps midnight belongs to the day it STARTS on: Friday
+    22:00-02:00 is Friday night, so its after-midnight piece runs on Saturday.
+    This is how resolve_active_playlist plays it.
+    """
+    s, e, days = rule["start_time"], rule["end_time"], rule["days_of_week"]
+    if s <= e:
+        return [(days, s, e)]
+    return [(days, s, _time_type(23, 59, 59, 999999)),
+            (_next_days(days), _time_type(0, 0), e)]
+
+
+def _rules_overlap(a: dict, b: dict) -> bool:
+    """True iff rules a and b are ever active on the same day at the same time."""
+    for a_days, a_s, a_e in _rule_pieces(a):
+        for b_days, b_s, b_e in _rule_pieces(b):
+            if a_days & b_days and a_s < b_e and b_s < a_e:
                 return True
     return False
 
 
-def _rules_overlap(a: dict, b: dict) -> bool:
-    """True iff rules a and b share at least one day AND time windows overlap."""
-    if not (a["days_of_week"] & b["days_of_week"]):
-        return False
-    return _time_windows_overlap(
-        a["start_time"], a["end_time"],
-        b["start_time"], b["end_time"],
-    )
-
-
 def _parse_time(s: str) -> _time_type:
-    """Parse HH:MM or HH:MM:SS into datetime.time."""
+    """Parse HH:MM or HH:MM:SS into datetime.time.
+
+    ScheduleRuleIn's pattern checks only the shape, so "25:99" gets here;
+    an out-of-range field is the caller's error (422), not ours (500).
+    """
     parts = s.split(":")
     h = int(parts[0]); m = int(parts[1])
     sec = int(parts[2]) if len(parts) > 2 else 0
-    return _time_type(h, m, sec)
+    try:
+        return _time_type(h, m, sec)
+    except ValueError:
+        raise http_error(422, "schedule.time_invalid", f"Invalid time: {s}")
 
 
 def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
@@ -3147,7 +3184,7 @@ def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
         return _KUWAIT_TZ
     try:
         return ZoneInfo(row["timezone"])
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ValueError):     # ValueError: malformed key
         logger.warning("invalid_site_timezone site_id=%s tz=%s", site_id, row["timezone"])
         return _KUWAIT_TZ
 
@@ -3165,6 +3202,7 @@ def resolve_active_playlist(screen: dict) -> Optional[int]:
     site_tz = _site_timezone(screen.get("site_id"))
     now_local = datetime.now(site_tz)
     weekday_bit = 1 << now_local.weekday()      # Mon=0..Sun=6
+    yesterday_bit = 1 << ((now_local.weekday() - 1) % 7)
     now_t = now_local.time()
 
     rules = query_all(
@@ -3173,9 +3211,14 @@ def resolve_active_playlist(screen: dict) -> Optional[int]:
         (screen["schedule_id"],),
     )
     for rule in rules:
-        if not (rule["days_of_week"] & weekday_bit):
+        start, end = rule["start_time"], rule["end_time"]
+        # Past midnight, a wrapping rule is still the night it started on:
+        # at Saturday 01:00, Friday 22:00-02:00 needs Friday's bit, not
+        # Saturday's (see _rule_pieces, which the overlap check uses).
+        day_bit = yesterday_bit if start > end and now_t < start else weekday_bit
+        if not (rule["days_of_week"] & day_bit):
             continue
-        if _time_in_window(now_t, rule["start_time"], rule["end_time"]):
+        if _time_in_window(now_t, start, end):
             return rule["playlist_id"]
 
     return screen.get("playlist_id")            # fallback to default
