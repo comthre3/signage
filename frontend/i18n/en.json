@@ -154,6 +154,7 @@
   "error.email_taken": "This email is already registered.",
   "error.invalid_email": "Please enter a valid email address.",
   "error.password_too_short": "Password must be at least 12 characters.",
+  "error.media.unsupported_type": "Only images, videos and PDFs can be uploaded.",
   "error.password_no_lowercase": "Password must include a lowercase letter.",
   "error.password_no_uppercase": "Password must include an uppercase letter.",
   "error.password_no_number": "Password must include a number.",
