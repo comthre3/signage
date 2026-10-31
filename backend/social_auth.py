@@ -425,7 +425,8 @@ def _finalize_social_signin(request: Request, provider: str,
     stash = _sign_stash(provider=provider, subject_id=subject_id,
                         email=email, name=name, ttl_seconds=_STASH_TTL)
     return RedirectResponse(
-        _bounce_with_stash(stash, suggested_name=name or ""),
+        _bounce_with_stash(stash, suggested_name=name or "",
+                           return_to=return_to),
         status_code=302,
     )
 
@@ -447,11 +448,17 @@ def _bounce_with_token(token: str, return_to: str) -> str:
     return f"{_app_url()}/auth-bounce?{qs}"
 
 
-def _bounce_with_stash(stash: str, suggested_name: str) -> str:
+def _bounce_with_stash(stash: str, suggested_name: str,
+                       return_to: str = "/") -> str:
+    """The "finish creating your account" leg. It carries return_to like the
+    token leg does: the dashboard put a one-time nonce in it before leaving
+    for Google/Apple and refuses a stash that comes back without it, so a
+    stash from someone else's sign-in cannot be planted in this tab."""
     import urllib.parse
     qs = urllib.parse.urlencode({
         "complete_signup": stash,
         "suggested_name": suggested_name,
+        "return_to": _safe_return_to(return_to),
     })
     return f"{_app_url()}/auth-bounce?{qs}"
 

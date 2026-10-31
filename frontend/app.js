@@ -1805,10 +1805,14 @@ function handleAuthBounce() {
     window.location.replace("/");
     return;
   }
+  // Both legs -- the session token and the "finish creating your account"
+  // stash -- must echo the nonce this tab put in return_to. A stash from
+  // someone else's sign-in would otherwise tie a new org to their identity.
+  const target = safeReturnUrl(params.get("return_to") || "/");
+  const echoed = target ? target.searchParams.get(SOCIAL_NONCE_PARAM) : null;
+  const startedHere = Boolean(pending && echoed && echoed === pending.nonce);
   if (token) {
-    const target = safeReturnUrl(params.get("return_to") || "/");
-    const echoed = target ? target.searchParams.get(SOCIAL_NONCE_PARAM) : null;
-    if (!pending || !echoed || echoed !== pending.nonce) { refuse(); return; }
+    if (!startedHere) { refuse(); return; }
     target.searchParams.delete(SOCIAL_NONCE_PARAM);
     localStorage.setItem(AUTH_STORAGE_KEY, token);
     // replace(): the token-bearing URL must not stay in the history.
@@ -1816,10 +1820,7 @@ function handleAuthBounce() {
     return;
   }
   if (stash) {
-    // No return_to on this leg to carry the nonce, but a stash nobody in this
-    // tab asked for is still refused: completing it would tie the new org to
-    // whoever's Google/Apple identity the stash holds.
-    if (!pending) { refuse(); return; }
+    if (!startedHere) { refuse(); return; }
     let provider = "google";
     try {
       const b64 = stash.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
