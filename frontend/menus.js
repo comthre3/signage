@@ -3,15 +3,19 @@ const Menus = (() => {
   const st = { menus: [], current: null, templates: [] };
   let rendering = false; // Task 10 fix: in-flight guard so double-clicking Render can't start two jobs.
   let playlistCreated = false; // Task 10 fix: dispatch #menu-playlist-btn on state instead of double-binding it.
+  // Bumped whenever the boards view a render poll was started for goes away:
+  // sign-out (reset), another menu or the list opening, a fresh boards view.
+  // A poll from an older generation stops instead of polling -- after a
+  // sign-out, st.current is null and every tick threw a raw TypeError toast.
+  let renderGen = 0;
 
-  // app.js's formatDate is private to the ApiKeys module, so define our own.
+  // app.js's formatDateTime: the UI's language, Western digits in Arabic.
   function formatDate(iso) {
-    if (!iso) return "";
-    const locale = document.documentElement.lang === "ar" ? "ar-KW" : "en-GB";
-    return new Date(iso).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+    return iso ? formatDateTime(iso) : "";
   }
 
   async function show() {
+    renderGen++;
     document.getElementById("menu-editor").classList.add("hidden");
     document.getElementById("menu-renders").classList.add("hidden");
     document.getElementById("menus-list").classList.remove("hidden");
@@ -51,12 +55,13 @@ const Menus = (() => {
           <span class="muted">${escHtml(Khan.t("menus.card.items", "{n} items").replace("{n}", m.item_count))}</span>
           <span class="muted">${escHtml(rendered)}</span>
         </div>
-        <div class="menu-card-actions">
+        ${canEditContent() ? `<div class="menu-card-actions">
           <button class="btn" data-edit="${escAttr(m.id)}">${escHtml(Khan.t("menus.card.edit", "Edit"))}</button>
           <button class="btn btn-ghost delete-btn" data-delete="${escAttr(m.id)}">${escHtml(Khan.t("menus.card.delete", "Delete"))}</button>
-        </div>`;
-      card.querySelector("[data-edit]").addEventListener("click", () => openEditor(m.id));
-      card.querySelector("[data-delete]").addEventListener("click", () => removeMenu(m.id));
+        </div>` : ""}`;
+      // Every menu write is admin/editor; viewers get the list only.
+      card.querySelector("[data-edit]")?.addEventListener("click", () => openEditor(m.id));
+      card.querySelector("[data-delete]")?.addEventListener("click", () => removeMenu(m.id));
       el.appendChild(card);
     });
   }
@@ -86,6 +91,7 @@ const Menus = (() => {
   const BADGES = ["new", "spicy", "vegan", "halal", "popular"];
 
   async function openEditor(id) {
+    renderGen++;
     try {
       const [menu, tpls] = await Promise.all([api(`/menus/${id}`), api("/menus/templates")]);
       st.current = menu; st.templates = tpls.items || [];
@@ -178,7 +184,7 @@ const Menus = (() => {
         <button class="btn btn-ghost" data-cat-down title="${escAttr(Khan.t("menus.editor.move_down", "Move down"))}">↓</button>
         <button class="btn btn-ghost delete-btn" data-cat-remove>${escHtml(Khan.t("menus.editor.remove", "Remove"))}</button>
       </div>
-      <table class="menu-items">
+      <div class="scroll-x"><table class="menu-items">
         <thead><tr>
           <th>${escHtml(Khan.t("menus.editor.col.name_en", "Name (EN)"))}</th><th>${escHtml(Khan.t("menus.editor.col.name_ar", "Name (AR)"))}</th>
           <th>${escHtml(Khan.t("menus.editor.col.desc_en", "Description (EN)"))}</th><th>${escHtml(Khan.t("menus.editor.col.desc_ar", "Description (AR)"))}</th>
@@ -186,7 +192,7 @@ const Menus = (() => {
           <th>${escHtml(Khan.t("menus.editor.col.badges", "Badges"))}</th><th>${escHtml(Khan.t("menus.editor.col.available", "Available"))}</th><th></th>
         </tr></thead>
         <tbody>${c.items.map((it, ii) => itemHtml(it, ii)).join("")}</tbody>
-      </table>
+      </table></div>
       <button class="btn" data-add-item>${escHtml(Khan.t("menus.editor.add_item", "+ Item"))}</button>
     </div>`;
   }
@@ -299,8 +305,18 @@ const Menus = (() => {
       frame.dataset.h = h;
       frame.onload = () => scalePreview();
     } catch (err) {
-      frame.srcdoc = `<p style="font:14px system-ui;padding:12px;color:#a33">${
-        escHtml(err.message || "Preview failed")}</p>`;
+      // A document of its own, so it needs its own language and direction:
+      // without them an Arabic message is laid out left-to-right. And no
+      // leftover onload: scalePreview would shrink it to a 1920px board's
+      // scale. A light page, too -- dark red on the stage's near-black was
+      // barely legible.
+      const lang = Khan.currentLocale() === "ar" ? "ar" : "en";
+      const dir = lang === "ar" ? "rtl" : "ltr";
+      frame.onload = null;
+      frame.srcdoc = `<!doctype html><html lang="${lang}" dir="${dir}" style="background:#fff8ee">` +
+        `<head><meta charset="utf-8"></head>` +
+        `<body style="margin:0"><p lang="${lang}" dir="${dir}" style="font:14px system-ui;padding:12px;color:#a33">${
+        escHtml(err.message || Khan.t("menus.editor.preview_failed", "Preview failed"))}</p></body></html>`;
     } finally {
       stage.classList.remove("loading");
     }
@@ -347,6 +363,7 @@ const Menus = (() => {
   }
 
   async function showRenders() {
+    renderGen++;
     document.getElementById("menu-editor").classList.add("hidden");
     const box = document.getElementById("menu-renders");
     box.classList.remove("hidden");
@@ -369,24 +386,28 @@ const Menus = (() => {
   async function startRender() {
     if (rendering) return;
     rendering = true;
+    const gen = renderGen;
     const btn = document.getElementById("menu-render-go");
     if (btn) btn.disabled = true;
     try {
       const body = { languages: picked("lang"), aspects: picked("aspect"), kinds: picked("kind") };
       const r = await api(`/menus/${st.current.id}/render`, { method: "POST", body: JSON.stringify(body) });
+      if (gen !== renderGen) return;
       document.getElementById("menu-renders-status").textContent = Khan.t("menus.render.queued", "Rendering {n} boards…").replace("{n}", r.queued);
-      await pollRenders();
+      await pollRenders(gen);
     } catch (err) {
-      toast(err.message, "error");
+      if (gen === renderGen) toast(err.message, "error");
     } finally {
       rendering = false;
       if (btn) btn.disabled = false;
     }
   }
 
-  async function pollRenders() {
+  async function pollRenders(gen) {
     for (let i = 0; i < 45; i++) {
-      const items = await refreshRenders();
+      if (gen !== renderGen) return;
+      const items = await refreshRenders(gen);
+      if (gen !== renderGen) return;
       if (items === null) {
         // Transient API failure: keep polling instead of declaring success or giving up.
         await new Promise((res) => setTimeout(res, 2000));
@@ -400,12 +421,16 @@ const Menus = (() => {
     }
   }
 
-  async function refreshRenders() {
-    const grid = document.getElementById("menu-renders-grid");
+  async function refreshRenders(gen = renderGen) {
+    const menu = st.current;
+    if (gen !== renderGen || !menu) return null;
     let items = [];
-    try { items = (await api(`/menus/${st.current.id}/renders`)).items || []; } catch (err) { toast(err.message, "error"); return null; }
+    try { items = (await api(`/menus/${menu.id}/renders`)).items || []; }
+    catch (err) { if (gen === renderGen) toast(err.message, "error"); return null; }
+    const grid = document.getElementById("menu-renders-grid");
+    if (gen !== renderGen || !grid) return null;
     grid.innerHTML = items.length ? "" : `<p class="empty-state">${escHtml(Khan.t("menus.render.empty", "No boards yet."))}</p>`;
-    const stale = st.current.last_rendered_at && st.current.updated_at > st.current.last_rendered_at;
+    const stale = menu.last_rendered_at && menu.updated_at > menu.last_rendered_at;
     document.getElementById("menu-renders-stale")?.remove();
     if (stale) grid.insertAdjacentHTML("beforebegin", `<p id="menu-renders-stale" class="muted stale-note">${escHtml(Khan.t("menus.render.stale", "The menu changed after these boards were rendered."))}</p>`);
     items.forEach((x) => {
@@ -427,10 +452,29 @@ const Menus = (() => {
       toast(Khan.t("menus.render.playlist_done", 'Playlist "{name}" updated.').replace("{name}", pl.name), "success");
       playlistCreated = true;
       document.getElementById("menu-playlist-btn").textContent = Khan.t("menus.render.playlist_open", "Open playlist");
-    } catch (err) { toast(err.message, "error"); }
+    } catch (err) { toast(err.message, "error"); return; }
+    // The Playlists section, the playlist dropdowns and every screen card's
+    // picker are built from state.playlists, which knows nothing of the
+    // playlist just made -- "Open playlist" would land on a list without it.
+    try { await loadPlaylists(); }
+    catch (err) { console.warn("refreshing playlists after creating the menu's", err); }
   }
 
   document.getElementById("menu-new-btn")?.addEventListener("click", createMenu);
 
-  return { show, refreshList, openEditor, save, renderBoards, showRenders, _st: st };
+  // Sign-out: drop the open menu and every rendered list, so the next account
+  // in this tab never sees (or saves over) the previous org's menu.
+  function reset() {
+    renderGen++;
+    st.menus = []; st.current = null; st.templates = [];
+    playlistCreated = false;
+    ["menu-editor", "menu-renders"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) { el.innerHTML = ""; el.classList.add("hidden"); }
+    });
+    const list = document.getElementById("menus-list");
+    if (list) { list.innerHTML = ""; list.classList.remove("hidden"); }
+  }
+
+  return { show, refreshList, openEditor, save, renderBoards, showRenders, reset, _st: st };
 })();

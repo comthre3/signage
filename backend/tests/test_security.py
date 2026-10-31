@@ -224,6 +224,25 @@ def test_signup_rejects_password_too_short(client, unique_business):
     assert r.json()["detail"]["code"] == "password_too_short"
 
 
+@pytest.mark.parametrize("password", ["", "short", "Aa1aaaaaaa"])
+def test_admin_created_user_short_password_gets_the_policy_error(client, signed_up_org, password):
+    """Every too-short password gets the structured code the dashboard localizes.
+
+    A Pydantic min_length of 8 used to answer first for anything under 8, with
+    raw English text quoting the wrong minimum -- the policy is 12.
+    """
+    headers = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    r = client.post("/users", headers=headers,
+                    json={"username": f"u-{len(password)}-{os.urandom(3).hex()}",
+                          "password": password, "role": "viewer"})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "password_too_short"
+    r = client.put(f"/users/{signed_up_org['user']['id']}", headers=headers,
+                   json={"password": password})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "password_too_short"
+
+
 def test_signup_rejects_password_no_lowercase(client, unique_business):
     vt = _signup_through_otp(client, unique_business)
     r = client.post("/auth/signup/complete",
@@ -370,3 +389,31 @@ def test_login_attempts_cleanup_purges_old_rows(client, signed_up_org):
         "SELECT id FROM login_attempts WHERE ip = '1.2.3.4'",
     )
     assert row_after is None
+
+
+def test_admin_password_reset_ends_the_users_sessions_and_grants(client, signed_up_org, monkeypatch):
+    """A reset is how an admin locks out a compromised account; it has to stick.
+
+    Self-service change-password already ends sessions and OAuth grants; the
+    admin reset (PUT /users/{id}) changed the hash and left both alive.
+    """
+    import oauth
+    revoked = []
+    monkeypatch.setattr(oauth, "revoke_user_grants", lambda uid: revoked.append(uid))
+    admin = {"Authorization": f"Bearer {signed_up_org['token']}"}
+    creds = {"username": f"emp-{os.urandom(3).hex()}@example.com", "password": "Khanshoof2026Pass"}
+    uid = client.post("/users", headers=admin, json={**creds, "role": "editor"}).json()["id"]
+    emp = {"Authorization": f"Bearer {client.post('/auth/login', json=creds).json()['token']}"}
+    assert client.get("/auth/me", headers=emp).status_code == 200
+
+    r = client.put(f"/users/{uid}", headers=admin, json={"password": "Fresh2026Password"})
+    assert r.status_code == 200, r.text
+    assert client.get("/auth/me", headers=emp).status_code == 401
+    assert revoked == [uid]
+    # The admin's own session is untouched by resetting someone else.
+    assert client.get("/auth/me", headers=admin).status_code == 200
+
+    r = client.put(f"/users/{signed_up_org['user']['id']}", headers=admin,
+                   json={"password": "Another2026Password"})
+    assert r.status_code == 200, r.text
+    assert client.get("/auth/me", headers=admin).status_code == 200, "own reset must not log the admin out"

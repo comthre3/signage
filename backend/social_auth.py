@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.parse
 import json
 import secrets
 import logging
@@ -35,6 +36,27 @@ def _app_url() -> str:
 # ── Signed state for CSRF ──────────────────────────────────────────────
 
 
+def _safe_return_to(return_to: Optional[str]) -> str:
+    """return_to as a same-origin path ("/billing?x=1"), else "/".
+
+    The dashboard navigates to it after sign-in, so anything that could
+    leave the app origin is refused: absolute URLs and other schemes (no
+    leading "/"), protocol-relative "//host", and backslashes, which
+    browsers read as "/" ("/\\host"). Control characters too: browsers drop
+    tabs and newlines inside a URL, so "/<TAB>/host" would become "//host".
+    And dot-segments, raw or percent-encoded: a URL parser resolves
+    "/..//host" (or "/%2e%2e//host") to the path "//host", which is
+    protocol-relative wherever that path is reused as a URL."""
+    if (not return_to or not return_to.startswith("/")
+            or return_to.startswith("//") or "\\" in return_to
+            or any(ord(c) < 0x20 or ord(c) == 0x7f for c in return_to)):
+        return "/"
+    path = return_to.split("?", 1)[0].split("#", 1)[0]
+    if any(segment in (".", "..") for segment in urllib.parse.unquote(path).split("/")):
+        return "/"
+    return return_to
+
+
 def _sign_state(provider: str, intent: str, return_to: str,
                 ttl_seconds: int = 300) -> str:
     """Sign a state token for the OAuth CSRF cookie + URL parameter."""
@@ -43,7 +65,7 @@ def _sign_state(provider: str, intent: str, return_to: str,
         "kind": "social_state",
         "provider": provider,
         "intent": intent,
-        "return_to": return_to or "/",
+        "return_to": _safe_return_to(return_to),
         "nonce": secrets.token_urlsafe(16),
         "iat": now,
         "exp": now + ttl_seconds,
@@ -201,10 +223,12 @@ async def verify_google_id_token(id_token: str, audience: str) -> dict:
 
 async def verify_apple_id_token(id_token: str, audience: str) -> dict:
     # Apple always sets email_verified=true (they own the email)
+    # Apple signs ID tokens with the RSA keys in its JWKS. ES256 is only for
+    # the client_secret JWT we sign with our own .p8 key.
     return await _verify_id_token(
         id_token,
         jwks_url="https://appleid.apple.com/auth/keys",
-        algorithm="ES256",
+        algorithm="RS256",
         audience=audience,
         issuer="https://appleid.apple.com",
     )
@@ -315,10 +339,14 @@ def apple_start(intent: str = Query("signup"),
                         return_to=return_to, ttl_seconds=_STATE_TTL)
     resp = RedirectResponse(_build_apple_authorize_url(state),
                             status_code=302)
+    # Apple comes back with a cross-site POST (response_mode=form_post), and
+    # browsers withhold SameSite=Lax cookies from that, so this cookie is
+    # SameSite=None. Browsers accept that only with Secure, which always
+    # holds here: Apple allows https redirect URIs only. _validate_csrf is
+    # unchanged -- the cookie must still equal the signed state.
     resp.set_cookie(
         _STATE_COOKIE, state,
-        httponly=True, samesite="lax", max_age=_STATE_TTL,
-        secure=_api_base_url().startswith("https://"),
+        httponly=True, samesite="none", secure=True, max_age=_STATE_TTL,
     )
     return resp
 
@@ -397,7 +425,8 @@ def _finalize_social_signin(request: Request, provider: str,
     stash = _sign_stash(provider=provider, subject_id=subject_id,
                         email=email, name=name, ttl_seconds=_STASH_TTL)
     return RedirectResponse(
-        _bounce_with_stash(stash, suggested_name=name or ""),
+        _bounce_with_stash(stash, suggested_name=name or "",
+                           return_to=return_to),
         status_code=302,
     )
 
@@ -414,15 +443,22 @@ def _audit_or_noop():
 
 def _bounce_with_token(token: str, return_to: str) -> str:
     import urllib.parse
-    qs = urllib.parse.urlencode({"token": token, "return_to": return_to})
+    qs = urllib.parse.urlencode({"token": token,
+                                 "return_to": _safe_return_to(return_to)})
     return f"{_app_url()}/auth-bounce?{qs}"
 
 
-def _bounce_with_stash(stash: str, suggested_name: str) -> str:
+def _bounce_with_stash(stash: str, suggested_name: str,
+                       return_to: str = "/") -> str:
+    """The "finish creating your account" leg. It carries return_to like the
+    token leg does: the dashboard put a one-time nonce in it before leaving
+    for Google/Apple and refuses a stash that comes back without it, so a
+    stash from someone else's sign-in cannot be planted in this tab."""
     import urllib.parse
     qs = urllib.parse.urlencode({
         "complete_signup": stash,
         "suggested_name": suggested_name,
+        "return_to": _safe_return_to(return_to),
     })
     return f"{_app_url()}/auth-bounce?{qs}"
 
@@ -608,13 +644,16 @@ def complete_social_signup(provider: str, payload: CompleteSocialSignup,
             "message": "This identity is already linked to another account.",
         })
 
+    # Same plan, and so the same screen limit, as an email signup.
+    from main import PLANS
     slug = _unique_slug(_slug(payload.business_name))
     trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
     execute(
         "INSERT INTO organizations (name, slug, plan, screen_limit, "
         "subscription_status, trial_ends_at, locale, created_at) "
-        "VALUES (?, ?, 'starter', 5, 'trialing', ?, 'en', now())",
-        (payload.business_name, slug, trial_ends_at),
+        "VALUES (?, ?, 'starter', ?, 'trialing', ?, 'en', now())",
+        (payload.business_name, slug, PLANS["starter"]["screen_limit"],
+         trial_ends_at),
     )
     org = query_one("SELECT * FROM organizations WHERE slug = ?", (slug,))
     execute(

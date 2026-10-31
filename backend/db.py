@@ -40,6 +40,29 @@ def connect() -> psycopg.Connection:
     raise RuntimeError(f"Could not connect to Postgres: {last_err}")
 
 
+# Connection budget. connect() keeps one connection per thread for that
+# thread's life, so a worker can hold as many connections as it has threads
+# that touch the database: anyio's threadpool, which runs every sync route and
+# dependency, plus the event-loop thread (startup, the reminder tick, async
+# routes calling these helpers directly). Past Postgres's max_connections,
+# connect() retries for 30s and the request fails, so the pool size is set
+# here rather than left to anyio's default (also 40 today, so concurrency is
+# unchanged -- this pins the number the budget is computed from):
+#
+#   per worker:  THREADPOOL_SIZE 40 + 1 event-loop thread   =  41
+#   backend:     WEB_CONCURRENCY 4 x 41                     = 164
+#
+# Postgres's default max_connections is 100. docker-compose.yml raises it from
+# these same numbers; change either one only together with it.
+THREADPOOL_SIZE = int(os.getenv("THREADPOOL_SIZE", "40"))
+
+
+async def bound_threadpool() -> None:
+    """Startup hook: cap this worker's threadpool at THREADPOOL_SIZE."""
+    import anyio.to_thread
+    anyio.to_thread.current_default_thread_limiter().total_tokens = THREADPOOL_SIZE
+
+
 # SQL strings here are static literals, so the same handful of strings are
 # translated over and over -- this ran a per-character Python loop on every
 # query. Caching makes a repeat call ~138x cheaper. Bounded so that any
@@ -125,6 +148,20 @@ def advisory_lock(lock_id: int = _INIT_DB_LOCK_ID):
     finally:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+
+
+@contextmanager
+def transaction():
+    """Make the enclosed execute()/query_*() calls one atomic unit.
+
+    The thread's connection runs in autocommit mode, so every statement
+    normally commits on its own. Inside this block psycopg wraps them in
+    BEGIN/COMMIT and rolls all of them back if the block raises -- for
+    replace-style writes (delete the old rows, insert the new) that must not
+    be left half-done.
+    """
+    with connect().transaction():
+        yield
 
 
 def init_db() -> None:
@@ -448,12 +485,6 @@ def _init_db_locked(conn) -> None:
         cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS pdf_pages_status TEXT")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS duration_override_seconds INTEGER")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS fit_mode TEXT NOT NULL DEFAULT 'fit' CHECK (fit_mode IN ('fit','fill','stretch'))")
-        # API keys are high-entropy random tokens (secrets.token_urlsafe(24) =
-        # 192 bits), not user-chosen passwords, so they do not need a slow KDF.
-        # key_sha256 lets an authenticated request resolve with one indexed
-        # lookup instead of a PBKDF2-120k verification (~82ms of CPU each).
-        # Nullable: rows minted before this column are upgraded in place on
-        # their next successful use. See lookup_api_key() in main.py.
         # First-run setup. A deployment with no users publishes a one-time token
         # that must be presented to create the first administrator, so that
         # whoever merely reaches the URL first cannot claim the deployment.
@@ -467,8 +498,6 @@ def _init_db_locked(conn) -> None:
               CONSTRAINT setup_token_single_row CHECK (id = 1)
             )
         """)
-        cursor.execute("ALTER TABLE api_keys      ADD COLUMN IF NOT EXISTS key_sha256 TEXT")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_sha256 ON api_keys (key_sha256) WHERE key_sha256 IS NOT NULL")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_screens_wall_cell ON screens(wall_cell_id)")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sites_org       ON sites       (organization_id)")
@@ -664,6 +693,16 @@ def _init_db_locked(conn) -> None:
             "CREATE INDEX IF NOT EXISTS idx_api_keys_prefix "
             "ON api_keys (key_prefix)"
         )
+        # API keys are high-entropy random tokens (secrets.token_urlsafe(24) =
+        # 192 bits), not user-chosen passwords, so they do not need a slow KDF.
+        # key_sha256 lets an authenticated request resolve with one indexed
+        # lookup instead of a PBKDF2-120k verification (~82ms of CPU each).
+        # Nullable: rows minted before this column are upgraded in place on
+        # their next successful use. See lookup_api_key() in main.py.
+        # Must follow CREATE TABLE api_keys: ahead of it, a fresh database
+        # crashes on boot because the table does not exist yet.
+        cursor.execute("ALTER TABLE api_keys      ADD COLUMN IF NOT EXISTS key_sha256 TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_sha256 ON api_keys (key_sha256) WHERE key_sha256 IS NOT NULL")
 
         # ── Phase 2.5j: Social auth (Google + Apple) ────────────────────
         cursor.execute(
@@ -764,4 +803,44 @@ def _init_db_locked(conn) -> None:
                 "VALUES (%s, %s, %s::jsonb, true) "
                 "ON CONFLICT (client_id) DO NOTHING",
                 (cid, name, uris_json),
+            )
+
+        # OAuth authorization-flow state (/oauth/authorize -> /oauth/login ->
+        # /oauth/authorize/decision). Kept here rather than in process memory
+        # because the backend runs several uvicorn workers and the three
+        # requests of one flow usually land on different ones. Rows expire
+        # after oauth._PENDING_AUTH_TTL and are consumed by the decision.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_pending_auth (
+              request_id      TEXT PRIMARY KEY,
+              client_id       TEXT NOT NULL,
+              redirect_uri    TEXT NOT NULL,
+              scope           TEXT NOT NULL,
+              state           TEXT NOT NULL,
+              code_challenge  TEXT NOT NULL,
+              expires_at      TIMESTAMPTZ NOT NULL,
+              created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_pending_auth_expires "
+            "ON oauth_pending_auth (expires_at)"
+        )
+
+        # payments.user_id was a plain REFERENCES users(id) (NO ACTION), so
+        # DELETE /users/{id} failed with a 500 for anyone who had ever started
+        # a checkout. A payment is the org's billing history and outlives the
+        # user who made it; only the link to the payer is cleared. Checked
+        # first so a boot that finds it done does not rebuild the constraint.
+        cursor.execute(
+            "SELECT confdeltype FROM pg_constraint "
+            "WHERE conname = 'payments_user_id_fkey' AND conrelid = 'payments'::regclass"
+        )
+        fk = cursor.fetchone()
+        if not fk or fk["confdeltype"] != "n":
+            cursor.execute("ALTER TABLE payments ALTER COLUMN user_id DROP NOT NULL")
+            cursor.execute("ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_user_id_fkey")
+            cursor.execute(
+                "ALTER TABLE payments ADD CONSTRAINT payments_user_id_fkey "
+                "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
             )

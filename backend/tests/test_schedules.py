@@ -1,4 +1,5 @@
 """Tests for the Schedule + ScheduleRule CRUD endpoints."""
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -183,6 +184,28 @@ def test_post_rule_requires_at_least_one_day(client, signed_up_org):
     assert r.status_code in (400, 422)
 
 
+@pytest.mark.parametrize("start,end", [
+    ("25:99", "02:00"),       # hour and minute both out of range
+    ("24:00", "02:00"),       # there is no 24:00; the day ends at 23:59
+    ("11:00", "11:60"),
+    ("11:00", "12:00:60"),
+])
+def test_post_rule_rejects_out_of_range_time(client, signed_up_org, start, end):
+    """The pattern checks only the shape (two digits, colon, two digits), so
+    a well-shaped but impossible time must still be a 422, not a 500."""
+    bearer = _bearer(signed_up_org["token"])
+    pl = _create_playlist(client, signed_up_org)
+    r = client.post("/schedules", headers=bearer, json={"name": "BadTime"})
+    sid = r.json()["id"]
+    r = client.put(f"/schedules/{sid}/rules", headers=bearer,
+                   json={"rules": [
+                       {"playlist_id": pl, "start_time": start,
+                        "end_time": end, "days_of_week": 127, "position": 0},
+                   ]})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "schedule.time_invalid"
+
+
 def test_post_rule_rejects_playlist_from_other_org(client, signed_up_org):
     """Cannot reference a playlist that belongs to another org (we use a
     nonexistent id as a stand-in)."""
@@ -196,6 +219,46 @@ def test_post_rule_rejects_playlist_from_other_org(client, signed_up_org):
                         "days_of_week": 127, "position": 0},
                    ]})
     assert r.status_code in (404, 422)
+
+
+# ── Overlap across midnight ───────────────────────────────────────────
+# A wrap-midnight rule runs on its own days until midnight and on the FOLLOWING
+# day until end_time; the overlap check must judge it the way the resolver
+# plays it. Bits: Mon=1 ... Fri=16, Sat=32, Sun=64.
+
+def _put_two_rules(client, signed_up_org, a, b):
+    bearer = _bearer(signed_up_org["token"])
+    pl = _create_playlist(client, signed_up_org)
+    r = client.post("/schedules", headers=bearer, json={"name": "Midnight"})
+    sid = r.json()["id"]
+    rules = [dict(rule, playlist_id=pl, position=i) for i, rule in enumerate((a, b))]
+    return client.put(f"/schedules/{sid}/rules", headers=bearer,
+                      json={"rules": rules})
+
+
+def test_post_rule_rejects_overlap_spilling_into_next_day(client, signed_up_org):
+    """Friday 22:00-02:00 is still on at Saturday 01:00."""
+    r = _put_two_rules(client, signed_up_org,
+                       {"start_time": "22:00", "end_time": "02:00", "days_of_week": 16},
+                       {"start_time": "01:00", "end_time": "03:00", "days_of_week": 32})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "schedule.rule_overlap"
+
+
+def test_post_rule_rejects_sunday_night_spilling_into_monday(client, signed_up_org):
+    r = _put_two_rules(client, signed_up_org,
+                       {"start_time": "22:00", "end_time": "02:00", "days_of_week": 64},
+                       {"start_time": "01:00", "end_time": "03:00", "days_of_week": 1})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "schedule.rule_overlap"
+
+
+def test_post_rule_allows_wrap_rule_and_its_own_days_early_morning(client, signed_up_org):
+    """Friday 01:00-03:00 ends long before Friday 22:00-02:00 begins."""
+    r = _put_two_rules(client, signed_up_org,
+                       {"start_time": "22:00", "end_time": "02:00", "days_of_week": 16},
+                       {"start_time": "01:00", "end_time": "03:00", "days_of_week": 16})
+    assert r.status_code == 200, r.text
 
 
 # ── Site timezone ─────────────────────────────────────────────────────
@@ -229,6 +292,23 @@ def test_put_site_rejects_invalid_timezone(client, signed_up_org):
     r = client.put(f"/sites/{site['id']}", headers=bearer,
                    json={"timezone": "Mars/Olympus"})
     assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "site.timezone_invalid"
+
+
+@pytest.mark.parametrize("tz", [
+    "/etc/x",         # absolute path
+    "../x",           # escapes the tz database
+    "Asia/",          # not a normalized key
+    "",
+    "zone.tab",       # a file in the tz database that is not a zone
+])
+def test_put_site_rejects_malformed_timezone_key(client, signed_up_org, tz):
+    """ZoneInfo raises ValueError, not ZoneInfoNotFoundError, for these."""
+    bearer = _bearer(signed_up_org["token"])
+    r = client.post("/sites", headers=bearer, json={"name": "Malformed"})
+    site = r.json()
+    r = client.put(f"/sites/{site['id']}", headers=bearer, json={"timezone": tz})
+    assert r.status_code == 422, r.text
     assert r.json()["detail"]["code"] == "site.timezone_invalid"
 
 

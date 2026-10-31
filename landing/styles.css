@@ -281,9 +281,24 @@ p  { color: var(--text-2); }
     opacity: 1;
     pointer-events: auto;
   }
-  .nav-links a:not(.btn) { padding: 8px 0; }
-  .nav-links .btn { justify-content: center; }
-  .lang-toggle, .theme-toggle { align-self: flex-start; }
+  /* The open mobile menu is all tap targets: 44px rows and buttons
+     (Apple's minimum) instead of 30–38px. */
+  .nav-links a:not(.btn) { padding: 8px 0; min-height: 44px; display: flex; align-items: center; }
+  .nav-links .btn { justify-content: center; min-height: 44px; }
+  .lang-toggle, .theme-toggle { align-self: flex-start; min-height: 44px; min-width: 44px; }
+  .nav-toggle { width: 44px; height: 44px; align-items: center; }
+}
+
+/* Footer links are a row of short words ("FAQ" is 25px wide); give fingers
+   a 44px box without changing how they look. */
+@media (pointer: coarse) {
+  .footer-links a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -1070,6 +1085,11 @@ p  { color: var(--text-2); }
 }
 
 .ai-arrow { font-size: 24px; color: var(--accent); }
+/* Points along the reading direction. Declared before the narrow-screen
+   rotate(90deg) below so that one wins in both directions; at the end of
+   the file it overrode the rotation and Arabic phones got a sideways arrow
+   in a vertical stack. */
+[dir="rtl"] .ai-arrow { transform: scaleX(-1); }
 
 .ai-mini-tv {
   background: var(--bg-2);
@@ -1218,7 +1238,7 @@ p  { color: var(--text-2); }
 }
 
 /* ── RTL direction-aware overrides ──────────────────────────── */
-[dir="rtl"] .ai-arrow { transform: scaleX(-1); }
+/* (.ai-arrow's RTL flip lives next to .ai-arrow, ahead of its media query.) */
 
 /* Force LTR on URLs, IDs, code, mono inputs (they read in Latin even in Arabic UI) */
 input[type="url"],

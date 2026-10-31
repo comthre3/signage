@@ -3,6 +3,12 @@ version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
+    # The default (100) is below what the backend alone can open: one
+    # connection per thread, WEB_CONCURRENCY 4 x (THREADPOOL_SIZE 40 + 1
+    # event-loop thread) = 164 -- see the budget in backend/db.py. 200 leaves
+    # 36 for psql, backups and test runs against this server. Raise it with
+    # either of those. Applies when this container is next recreated.
+    command: postgres -c max_connections=200
     environment:
       POSTGRES_USER: sawwii
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

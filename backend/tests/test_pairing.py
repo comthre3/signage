@@ -230,3 +230,91 @@ def test_full_flow_request_claim_poll(client):
     r = client.get(f"/screens/{token}/content")
     assert r.status_code == 200
     assert "items" in r.json()
+
+
+# ── Legacy /screens/pair: the screen card's ?code= link ────────────────
+# A hit returns the screen's token (full content access) to an anonymous
+# caller, and the 6-digit code never expires, so guessing must be throttled
+# and the codes themselves unpredictable.
+
+def test_legacy_pair_endpoint_is_rate_limited():
+    # Tests run with RATE_LIMITS_ENABLED=0, so assert the registered limit.
+    import main
+    limits = main.limiter._route_limits.get("main.pair_screen", [])
+    assert [str(lim.limit) for lim in limits] == ["10 per 1 minute"]
+
+
+def test_legacy_pair_code_shape():
+    from main import generate_pair_code
+    for _ in range(50):
+        code = generate_pair_code()
+        assert re.fullmatch(r"[1-9]\d{5}", code), code
+
+
+def test_legacy_pair_code_does_not_come_from_the_seedable_prng():
+    """random is a Mersenne Twister: its output is recoverable from earlier
+    outputs and repeats under a fixed seed. Codes must not follow it."""
+    import random
+    from main import generate_pair_code
+    random.seed(1234)
+    first = [generate_pair_code() for _ in range(5)]
+    random.seed(1234)
+    second = [generate_pair_code() for _ in range(5)]
+    assert first != second
+
+
+def test_legacy_pair_still_returns_the_screen_token(client):
+    ctx = _login_as_signed_up_org(client)
+    screen = ctx["default_screen"]
+    r = client.post("/screens/pair", json={"pair_code": screen["pair_code"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["token"] == screen["token"]
+    assert client.post("/screens/pair", json={"pair_code": "000000"}).status_code == 404
+
+
+# ── /screens/poll after a claim ────────────────────────────────────────
+# Polling is anonymous: whoever holds a claimed code gets the screen's token.
+# The TV polls every few seconds, so it only needs that answer briefly; a code
+# read off the screen or a photo later must not still unlock the screen.
+
+def _claimed_code(client) -> tuple[str, dict]:
+    ctx = _login_as_signed_up_org(client)
+    code = client.post("/screens/request_code", json={}).json()["code"]
+    r = client.post(
+        "/screens/claim",
+        json={"code": code, "screen_id": ctx["default_screen"]["id"]},
+        headers=ctx["auth"],
+    )
+    assert r.status_code == 200, r.text
+    return code, ctx
+
+
+def _set_claimed_at(code: str, value) -> None:
+    from db import execute
+    execute("UPDATE pairing_codes SET claimed_at = ? WHERE code = ?", (value, code))
+
+
+def test_poll_still_returns_token_just_inside_the_window(client):
+    from main import PAIR_CODE_TTL_SECONDS
+    code, ctx = _claimed_code(client)
+    recent = datetime.now(timezone.utc) - timedelta(seconds=PAIR_CODE_TTL_SECONDS - 30)
+    _set_claimed_at(code, recent.isoformat())
+    body = client.get(f"/screens/poll/{code}").json()
+    assert body["status"] == "paired"
+    assert body["screen_token"] == ctx["default_screen"]["token"]
+
+
+def test_poll_stops_returning_token_once_the_window_has_passed(client):
+    from main import PAIR_CODE_TTL_SECONDS
+    code, _ctx = _claimed_code(client)
+    old = datetime.now(timezone.utc) - timedelta(seconds=PAIR_CODE_TTL_SECONDS + 1)
+    _set_claimed_at(code, old.isoformat())
+    r = client.get(f"/screens/poll/{code}")
+    assert r.status_code == 200
+    assert r.json() == {"status": "expired"}
+
+
+def test_poll_of_a_paired_code_without_claimed_at_is_expired(client):
+    code, _ctx = _claimed_code(client)
+    _set_claimed_at(code, None)
+    assert client.get(f"/screens/poll/{code}").json() == {"status": "expired"}

@@ -73,3 +73,17 @@ def test_ws_rejects_wrong_wall(client):
             f"/walls/{wall2['id']}/ws?screen_token={token1}"
         ) as ws:
             ws.receive_json()
+
+
+def test_ws_rejection_reaches_the_browser_as_4401(client):
+    """Closing before accept turns into an HTTP 403 on the upgrade, which a
+    browser reports as close code 1006 -- the player could never tell "you are
+    not in this wall" from a network blip. The socket must be accepted and then
+    closed with 4401."""
+    from starlette.websockets import WebSocketDisconnect
+
+    wall, _ = _make_paired_wall(client)
+    with client.websocket_connect(f"/walls/{wall['id']}/ws?screen_token=zzzzzzzz") as ws:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+    assert closed.value.code == 4401

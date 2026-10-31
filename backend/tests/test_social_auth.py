@@ -119,35 +119,43 @@ def google_test_keypair():
 
 @pytest.fixture(scope="session")
 def apple_test_keypair(tmp_path_factory):
-    """Generate an EC P-256 keypair for Apple signing + write .p8 to disk."""
-    priv = ec.generate_private_key(ec.SECP256R1())
+    """Two keys, as with the real Apple: our EC P-256 .p8 (written to disk)
+    signs the client_secret JWT, and Apple's own RSA key -- published in
+    its JWKS, like https://appleid.apple.com/auth/keys -- signs ID tokens
+    with RS256."""
+    p8 = ec.generate_private_key(ec.SECP256R1())
+    p8_path = tmp_path_factory.mktemp("apple") / "key.p8"
+    p8_path.write_bytes(p8.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+
+    priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     priv_pem = priv.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    p8_path = tmp_path_factory.mktemp("apple") / "key.p8"
-    p8_path.write_bytes(priv_pem)
     pub = priv.public_key().public_numbers()
 
-    def _b64url_uint(n: int, size: int) -> str:
-        b = n.to_bytes(size, "big")
+    def _b64url_uint(n: int) -> str:
+        b = n.to_bytes((n.bit_length() + 7) // 8, "big")
         return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
     jwks = {"keys": [{
-        "kty": "EC",
-        "kid": "apple-test-kid",
+        "kty": "RSA",
+        "kid": "apple-idtoken-test-kid",
         "use": "sig",
-        "alg": "ES256",
-        "crv": "P-256",
-        "x": _b64url_uint(pub.x, 32),
-        "y": _b64url_uint(pub.y, 32),
+        "alg": "RS256",
+        "n": _b64url_uint(pub.n),
+        "e": _b64url_uint(pub.e),
     }]}
     return {
         "priv_pem": priv_pem,
         "p8_path": str(p8_path),
         "jwks": jwks,
-        "kid": "apple-test-kid",
+        "kid": "apple-idtoken-test-kid",
     }
 
 
@@ -210,7 +218,7 @@ def _sign_apple_id_token(apple_test_keypair, *, sub: str, email: str,
         "exp": int(time.time()) + exp_delta,
     }
     return jwt.encode(payload, apple_test_keypair["priv_pem"],
-                      algorithm="ES256",
+                      algorithm="RS256",
                       headers={"kid": apple_test_keypair["kid"]})
 
 
@@ -330,6 +338,8 @@ def test_google_start_redirects_with_state_cookie(client, google_env):
                    follow_redirects=False)
     assert r.status_code == 302, r.text
     assert "auth_csrf" in r.headers.get("set-cookie", "")
+    # Google returns with a top-level GET, which Lax cookies ride along on.
+    assert "samesite=lax" in r.headers["set-cookie"].lower()
     loc = r.headers["location"]
     assert loc.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
     assert "client_id=test-google-client-id" in loc
@@ -556,6 +566,28 @@ def test_complete_signup_returns_trial_fields(client, google_env):
     assert org["can_write"] is True  # trial should be active
 
 
+def test_complete_signup_gets_the_starter_plan_screen_limit(client, google_env):
+    """A social signup lands on the same Starter plan as an email signup:
+    PLANS["starter"]'s screen limit, not one of its own."""
+    import uuid
+    from main import PLANS
+    from social_auth import _sign_stash
+    sfx = uuid.uuid4().hex[:8]
+    stash = _sign_stash(provider="google", subject_id=f"g-limit-{sfx}",
+                        email=f"limit-{sfx}@example.com", name=None)
+    r = client.post("/auth/google/complete-signup", json={
+        "stash_token": stash,
+        "business_name": f"LimitBiz {sfx}",
+    })
+    assert r.status_code == 200, r.text
+    org = r.json()["organization"]
+    assert org["plan"] == "starter"
+    assert org["screen_limit"] == PLANS["starter"]["screen_limit"]
+    row = query_one("SELECT plan, screen_limit FROM organizations WHERE id = ?",
+                    (org["id"],))
+    assert row["screen_limit"] == PLANS["starter"]["screen_limit"]
+
+
 def test_google_callback_user_cancels_redirects_gracefully(client, google_env):
     """Google sends ?error=access_denied when user cancels → 302 to auth-bounce."""
     r = client.get("/auth/google/callback",
@@ -565,6 +597,210 @@ def test_google_callback_user_cancels_redirects_gracefully(client, google_env):
     loc = r.headers["location"]
     assert "/auth-bounce" in loc
     assert "error=access_denied" in loc
+
+
+# ── return_to: a same-origin path, never somewhere else ───────────────
+
+
+def _google_signin_bounce(client, google_env, respx_mock, return_to: str) -> dict:
+    """Run start -> callback for a user with a linked Google identity and
+    return the query of the /auth-bounce URL the callback redirects to."""
+    import respx, uuid, urllib.parse
+    sfx = uuid.uuid4().hex[:8]
+    email = f"bounce-{sfx}@example.com"
+    sub = f"g-bounce-{sfx}"
+    execute(
+        "INSERT INTO organizations (name, slug, plan, screen_limit, "
+        "subscription_status, locale, created_at) "
+        "VALUES (?, ?, 'starter', 3, 'trialing', 'en', now())",
+        (f"Bounce {sfx}", f"bounce-{sfx}"),
+    )
+    org = query_one("SELECT id FROM organizations WHERE slug = ?",
+                    (f"bounce-{sfx}",))
+    execute(
+        "INSERT INTO users (organization_id, username, password_hash, "
+        "is_admin, role, created_at) VALUES (?, ?, NULL, 1, 'admin', now())",
+        (org["id"], email),
+    )
+    user = query_one("SELECT id FROM users WHERE username = ?", (email,))
+    execute(
+        "INSERT INTO auth_identities (user_id, provider, subject_id, "
+        "email_at_link) VALUES (?, 'google', ?, ?)",
+        (user["id"], sub, email),
+    )
+    id_token = _sign_google_id_token(google_env, sub=sub, email=email)
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    r = client.get("/auth/google/start",
+                   params={"intent": "signin", "return_to": return_to},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    cookie = r.cookies["auth_csrf"]
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    r = client.get("/auth/google/callback",
+                   params={"code": "any", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = urllib.parse.urlparse(r.headers["location"])
+    assert loc.path == "/auth-bounce"
+    return dict(urllib.parse.parse_qsl(loc.query))
+
+
+_UNSAFE_RETURN_TO = [
+    "https://evil.example/",
+    "//evil.example/",
+    "/\\evil.example/",
+    "\\\\evil.example/",
+    "/\t/evil.example/",     # browsers drop the tab: "//evil.example/"
+    "/\n/evil.example/",
+    # Dot-segments: a URL parser resolves each of these to the path
+    # "//evil.example/", which is protocol-relative wherever it is reused.
+    "/..//evil.example/",
+    "/%2e%2e//evil.example/",
+    "/%2E%2E//evil.example/",
+    "/a/../..//evil.example/",
+    "/.//evil.example/",
+    "javascript:alert(1)",
+    "evil.example",
+    "",
+]
+
+# The dashboard sends the page it was on plus a one-time nonce it checks
+# when the bounce comes back, so a query string must survive untouched.
+_SAFE_RETURN_TO = [
+    "/",
+    "/billing",
+    "/?sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "/billing?tab=plans&sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+]
+
+
+@pytest.mark.parametrize("raw", _UNSAFE_RETURN_TO)
+def test_unsafe_return_to_falls_back_to_root(raw):
+    from social_auth import _safe_return_to
+    assert _safe_return_to(raw) == "/"
+
+
+@pytest.mark.parametrize("raw", _SAFE_RETURN_TO)
+def test_same_origin_return_to_is_kept(raw):
+    from social_auth import _safe_return_to
+    assert _safe_return_to(raw) == raw
+
+
+def test_google_start_does_not_sign_offsite_return_to(client, google_env):
+    import urllib.parse
+    from social_auth import _verify_state
+    r = client.get("/auth/google/start",
+                   params={"intent": "signin",
+                           "return_to": "https://evil.example/phish"},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    assert _verify_state(state)["return_to"] == "/"
+
+
+def test_bounce_never_carries_offsite_return_to(google_env):
+    """Even a state signed before this check existed is not bounced
+    off-site: the redirect builder applies it as well."""
+    import urllib.parse
+    from social_auth import _bounce_with_token
+    url = _bounce_with_token("tok", "//evil.example/")
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    assert q["return_to"] == "/"
+
+
+def test_google_signin_offsite_return_to_bounces_to_root(client, google_env,
+                                                         respx_mock):
+    q = _google_signin_bounce(client, google_env, respx_mock,
+                              "https://evil.example/phish")
+    assert q["token"]
+    assert q["return_to"] == "/"
+
+
+def test_google_signin_keeps_dashboard_nonce_return_to(client, google_env,
+                                                       respx_mock):
+    rt = "/billing?tab=plans&sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    q = _google_signin_bounce(client, google_env, respx_mock, rt)
+    assert q["token"]
+    assert q["return_to"] == rt
+
+
+# The "finish creating your account" leg needs the dashboard's nonce too:
+# without it, the dashboard cannot tell a stash from its own sign-in from
+# one an attacker minted with their own Google account and planted in the
+# victim's tab.
+
+
+@pytest.mark.parametrize("raw", ["/?sa_nonce=0f1e2d3c4b5a6978",
+                                 "/billing?sa_nonce=0f1e2d3c4b5a6978"])
+def test_stash_bounce_carries_return_to(google_env, raw):
+    import urllib.parse
+    from social_auth import _bounce_with_stash
+    url = _bounce_with_stash("stash-tok", "Café", return_to=raw)
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    assert q["complete_signup"] == "stash-tok"
+    assert q["suggested_name"] == "Café"
+    assert q["return_to"] == raw
+
+
+@pytest.mark.parametrize("raw", _UNSAFE_RETURN_TO)
+def test_stash_bounce_never_carries_offsite_return_to(google_env, raw):
+    import urllib.parse
+    from social_auth import _bounce_with_stash
+    url = _bounce_with_stash("stash-tok", "", return_to=raw)
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    assert q["return_to"] == "/"
+
+
+def test_google_new_user_stash_bounce_keeps_dashboard_nonce(client, google_env,
+                                                            respx_mock):
+    """start -> callback for an email nobody has signed up with: the stash
+    bounce echoes the return_to (and so the nonce) the dashboard sent."""
+    import respx, uuid, urllib.parse
+    sfx = uuid.uuid4().hex[:8]
+    id_token = _sign_google_id_token(google_env, sub=f"g-stashrt-{sfx}",
+                                     email=f"stashrt-{sfx}@example.com",
+                                     name="Stash Nonce")
+    respx_mock.get("https://www.googleapis.com/oauth2/v3/certs").mock(
+        return_value=respx.MockResponse(200, json=google_env["jwks"])
+    )
+    respx_mock.post("https://oauth2.googleapis.com/token").mock(
+        return_value=respx.MockResponse(200, json={"id_token": id_token})
+    )
+    from social_auth import _clear_jwks_cache
+    _clear_jwks_cache()
+
+    rt = "/?sa_nonce=0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    r = client.get("/auth/google/start",
+                   params={"intent": "signup", "return_to": rt},
+                   follow_redirects=False)
+    cookie = r.cookies["auth_csrf"]
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    r = client.get("/auth/google/callback",
+                   params={"code": "any", "state": state},
+                   cookies={"auth_csrf": cookie},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    loc = urllib.parse.urlparse(r.headers["location"])
+    assert loc.path == "/auth-bounce"
+    q = dict(urllib.parse.parse_qsl(loc.query))
+    assert q["complete_signup"]
+    assert "token" not in q
+    assert q["return_to"] == rt
 
 
 # ── Apple flow ────────────────────────────────────────────────────────
@@ -580,6 +816,64 @@ def test_apple_start_redirects_with_state_cookie(client, apple_env):
     assert loc.startswith("https://appleid.apple.com/auth/authorize?")
     assert "client_id=com.test.khanshoof" in loc
     assert "response_mode=form_post" in loc
+
+
+def test_apple_state_cookie_is_sent_on_apples_cross_site_post(client, apple_env,
+                                                              monkeypatch):
+    """Apple returns with a cross-site POST from appleid.apple.com
+    (response_mode=form_post). Browsers withhold SameSite=Lax cookies from
+    that, so every callback would fail its CSRF check: the Apple state
+    cookie is SameSite=None, which browsers only accept with Secure. Apple
+    redirect URIs are always https, so Secure holds even when API_BASE_URL
+    is a plain-http dev URL."""
+    monkeypatch.setenv("API_BASE_URL", "http://localhost:8000")
+    r = client.get("/auth/apple/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    assert r.status_code == 302, r.text
+    set_cookie = r.headers["set-cookie"].lower()
+    assert set_cookie.startswith("auth_csrf=")
+    assert "samesite=none" in set_cookie
+    assert "secure" in set_cookie
+    assert "httponly" in set_cookie
+
+
+def test_apple_callback_still_requires_matching_state_cookie(client, apple_env):
+    """SameSite=None lets the cookie travel; the check itself is unchanged:
+    a callback whose cookie is missing or differs from state is refused."""
+    import urllib.parse
+    r = client.get("/auth/apple/start",
+                   params={"intent": "signin", "return_to": "/"},
+                   follow_redirects=False)
+    state = dict(urllib.parse.parse_qsl(
+        urllib.parse.urlparse(r.headers["location"]).query
+    ))["state"]
+    client.cookies.clear()
+    form = {"code": "any", "state": state, "id_token": "unused"}
+    r = client.post("/auth/apple/callback", data=form, follow_redirects=False)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "invalid_state"
+    r = client.post("/auth/apple/callback", data=form,
+                    cookies={"auth_csrf": "someone-elses-state"},
+                    follow_redirects=False)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "invalid_state"
+
+
+def test_verify_apple_id_token_accepts_rs256(apple_env, respx_mock):
+    """Apple signs ID tokens with RS256 (its JWKS holds RSA keys)."""
+    import asyncio
+    import respx
+    respx_mock.get("https://appleid.apple.com/auth/keys").mock(
+        return_value=respx.MockResponse(200, json=apple_env["jwks"])
+    )
+    id_token = _sign_apple_id_token(apple_env, sub="a-rs256",
+                                    email="rs256@privaterelay.appleid.com")
+    assert jwt.get_unverified_header(id_token)["alg"] == "RS256"
+    from social_auth import verify_apple_id_token, _clear_jwks_cache
+    _clear_jwks_cache()
+    payload = asyncio.run(verify_apple_id_token(id_token, "com.test.khanshoof"))
+    assert payload["sub"] == "a-rs256"
 
 
 def test_apple_callback_post_form_new_user(client, apple_env, respx_mock):
@@ -622,6 +916,8 @@ def test_apple_callback_post_form_new_user(client, apple_env, respx_mock):
     assert "/auth-bounce" in loc
     assert "complete_signup=" in loc
     assert "Apple+Tester" in loc or "Apple%20Tester" in loc
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(loc).query))
+    assert q["return_to"] == "/"
 
 
 def test_apple_callback_subsequent_signin_without_user_field(client, apple_env,

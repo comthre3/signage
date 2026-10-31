@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import math
+import mimetypes
 import os
 import random
 import re
@@ -22,12 +23,15 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPExcepti
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from starlette.datastructures import Headers
+from starlette.responses import FileResponse, StreamingResponse
+import anyio
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from billing import create_knet_request
 import ratelimit
-from db import advisory_lock, init_db, execute, query_all, query_one, utc_now_iso
+from db import advisory_lock, init_db, execute, query_all, query_one, transaction, utc_now_iso
 import menu_render
 import menus as menus_domain
 from hibp import check_hibp_breach
@@ -100,6 +104,17 @@ SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "86400"))
 PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "300"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 
+def _origin_of(url: str) -> str:
+    match = re.match(r"^(https?://[^/?#\s]+)", (url or "").strip())
+    return match.group(1) if match else ""
+
+
+# Who may frame a file from /uploads: this origin, the dashboard and the
+# player (it shows PDF playlist items in an iframe). See add_security_headers.
+_UPLOAD_FRAME_ANCESTORS = " ".join(["'self'"] + [
+    origin for origin in (_origin_of(os.getenv("APP_URL", "")),
+                          _origin_of(os.getenv("PLAYER_BASE_URL", ""))) if origin])
+
 RENDERER_URL   = os.getenv("RENDERER_URL", "").rstrip("/")
 RENDERER_TOKEN = os.getenv("RENDERER_TOKEN", "")
 
@@ -118,22 +133,15 @@ app = FastAPI(
 _RATE_LIMITS_ENABLED = os.getenv("RATE_LIMITS_ENABLED", "1").lower() in ("1", "true", "yes")
 
 # Counters live in Redis so every uvicorn worker shares one budget; without it
-# an advertised "10/minute" would be 10 per worker. storage_uri() returns None
-# when Redis is unreachable, which leaves slowapi on per-process memory -- the
-# pre-Redis behavior, rather than an outage or no limit at all.
-# The key is ratelimit.client_ip, NOT get_remote_address: behind the tunnel
-# every request shares one TCP peer, so get_remote_address made these limits a
-# single global bucket instead of per-caller.
-_limiter_storage = ratelimit.storage_uri() if _RATE_LIMITS_ENABLED else None
-limiter = Limiter(
-    key_func=ratelimit.client_ip,
-    enabled=_RATE_LIMITS_ENABLED,
-    storage_uri=_limiter_storage,
-)
-if _RATE_LIMITS_ENABLED and _limiter_storage is None:
-    logger.warning("rate_limiter_using_in_process_storage redis_unavailable=1")
+# an advertised "10/minute" would be 10 per worker. How the limiter keys and
+# degrades when Redis is unreachable is in ratelimit.build_limiter.
+limiter = ratelimit.build_limiter(_RATE_LIMITS_ENABLED)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Threads are Postgres connections here; see the budget in db.py.
+from db import bound_threadpool
+app.add_event_handler("startup", bound_threadpool)
 
 from social_auth import attach_social_auth
 attach_social_auth(app)
@@ -147,6 +155,28 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: https:; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self' https://api.khanshoof.com"
+    # Uploads are served from this origin, beside the OAuth consent pages and
+    # their cookie. An SVG (or anything that is not plain media) opened here
+    # directly could run script, so it gets a sandbox with no script at all.
+    # Raster images, videos and PDFs keep the normal policy: the dashboard
+    # opens them directly and the player frames PDFs, which a sandbox breaks.
+    # Decided from the file's extension, not the response: a 304 carries no
+    # Content-Type, and the browser stores the 304's headers.
+    if request.url.path.startswith("/uploads/"):
+        guessed = mimetypes.guess_type(request.url.path)[0] or ""
+        if guessed == "image/svg+xml" or not guessed.startswith(("image/", "video/", "application/pdf")):
+            csp = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        else:
+            csp = response.headers["Content-Security-Policy"]
+        # Framed by our own dashboard and player only (the player shows PDFs
+        # in an iframe), which X-Frame-Options cannot express: its DENY
+        # blocked every PDF playlist item outright.
+        del response.headers["X-Frame-Options"]
+        response.headers["Content-Security-Policy"] = f"{csp}; frame-ancestors {_UPLOAD_FRAME_ANCESTORS}"
+        # Public files: the player's service worker fetches them with CORS to
+        # cache them, from whatever origin a deployment serves the player on.
+        if "access-control-allow-origin" not in response.headers:
+            response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     return response
 
@@ -165,8 +195,60 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+class RangedStaticFiles(StaticFiles):
+    """StaticFiles that also answers a single byte range with 206.
+
+    Starlette 0.37 ignores Range and always sends the whole file with a 200.
+    Video elements seek with Range requests -- a wall cell seeking to the
+    shared timeline position of an uncached video jumped back to the start --
+    and iOS Safari will not play video at all from a server that cannot
+    answer them. Path resolution (and so traversal protection) stays
+    StaticFiles' own: only a FileResponse it already decided to send is
+    narrowed. Multiple or malformed ranges get the whole file, as RFC 9110
+    permits.
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code != 200 or not isinstance(response, FileResponse):
+            return response
+        response.headers["Accept-Ranges"] = "bytes"
+        match = _RANGE_RE.match(Headers(scope=scope).get("range", "").strip())
+        if scope["method"] != "GET" or not match or match.groups() == ("", ""):
+            return response
+        size = os.stat(response.path).st_size
+        first, last = match.groups()
+        if first:
+            start, end = int(first), min(int(last), size - 1) if last else size - 1
+        else:
+            start, end = max(size - int(last), 0), size - 1
+        if start >= size or start > end:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        headers = {k: v for k, v in response.headers.items()
+                   if k.lower() in ("etag", "last-modified", "accept-ranges")}
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        headers["Content-Length"] = str(end - start + 1)
+        return StreamingResponse(_file_slice(response.path, start, end - start + 1),
+                                 status_code=206, headers=headers,
+                                 media_type=response.media_type)
+
+
+async def _file_slice(path: str, start: int, length: int, chunk: int = 256 * 1024):
+    async with await anyio.open_file(path, "rb") as f:
+        await f.seek(start)
+        while length > 0:
+            data = await f.read(min(chunk, length))
+            if not data:
+                break
+            length -= len(data)
+            yield data
+
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.mount("/uploads", RangedStaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 attach_walls(app)
 app.include_router(oauth_router)
@@ -181,7 +263,9 @@ def slugify(value: str) -> str:
 
 
 def generate_pair_code() -> str:
-    return f"{random.randint(100000, 999999)}"
+    # secrets, not random: a Mersenne Twister's next outputs can be recovered
+    # from earlier ones, and this code alone hands out the screen's token.
+    return f"{100000 + secrets.randbelow(900000)}"
 
 
 def generate_unique_pair_code() -> str:
@@ -576,15 +660,22 @@ def is_online(last_seen: Optional[str]) -> bool:
     return (datetime.now(timezone.utc) - last_seen_dt).total_seconds() < 90
 
 
+# last_used is rewritten at most this often rather than on every request,
+# which would make each authenticated call a write. The idle clock can thus
+# run up to this far ahead of the true last use.
+_SESSION_TOUCH_SECONDS = 60
+
+
 def _session_lookup(token: str) -> Optional[dict]:
     """Look up an active session by bearer token. Returns user dict or None.
 
-    Idle TTL eviction + last_used update preserved from the original
-    get_current_user body.
+    A session idle longer than SESSION_TTL_SECONDS is deleted and refused
+    here, on the request; cleanup_sessions() only sweeps at startup and login.
     """
     session = query_one(
         """
-        SELECT sessions.token, sessions.user_id, users.username, users.is_admin,
+        SELECT sessions.token, sessions.user_id, sessions.created_at,
+               sessions.last_used, users.username, users.is_admin,
                users.role, users.organization_id
         FROM sessions
         JOIN users ON users.id = sessions.user_id
@@ -594,6 +685,7 @@ def _session_lookup(token: str) -> Optional[dict]:
     )
     if not session:
         return None
+    idle = None
     last_used = session.get("last_used") or session.get("created_at")
     if last_used:
         try:
@@ -601,13 +693,17 @@ def _session_lookup(token: str) -> Optional[dict]:
         except ValueError:
             last_used_dt = None
         if last_used_dt:
-            if (datetime.now(timezone.utc) - last_used_dt).total_seconds() > SESSION_TTL_SECONDS:
+            if last_used_dt.tzinfo is None:
+                last_used_dt = last_used_dt.replace(tzinfo=timezone.utc)
+            idle = (datetime.now(timezone.utc) - last_used_dt).total_seconds()
+            if idle > SESSION_TTL_SECONDS:
                 execute("DELETE FROM sessions WHERE token = ?", (token,))
                 return None
-    execute(
-        "UPDATE sessions SET last_used = ? WHERE token = ?",
-        (utc_now_iso(), token),
-    )
+    if idle is None or idle > min(_SESSION_TOUCH_SECONDS, SESSION_TTL_SECONDS / 2):
+        execute(
+            "UPDATE sessions SET last_used = ? WHERE token = ?",
+            (utc_now_iso(), token),
+        )
     return {
         "id": session["user_id"],
         "username": session["username"],
@@ -631,7 +727,11 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
 
 
 class AuthedPrincipal:
-    """Carries whichever identity authenticated the request."""
+    """Carries whichever identity authenticated the request.
+
+    user is set for a session and for an OAuth access token (the user who
+    granted it); it is None only for an API key, which acts for the org.
+    """
 
     def __init__(
         self,
@@ -667,7 +767,10 @@ def get_api_authed(authorization: Optional[str] = Header(None)) -> AuthedPrincip
     from oauth import lookup_oauth_access_token
     oauth_row = lookup_oauth_access_token(token)
     if oauth_row:
+        # Acts as the user who granted it, so require_api_scope applies that
+        # user's current role exactly as it would to their own session.
         return AuthedPrincipal(
+            user=oauth_row["user"],
             organization_id=oauth_row["organization_id"],
             scope=oauth_row["scope"],
         )
@@ -690,8 +793,11 @@ def require_api_scope(
     session_roles: tuple = _ALL_SESSION_ROLES,
 ):
     """Gate an endpoint:
-      - API-keyed: scope must be in allowed_api_scopes, then tier rate limit applied
-      - Session-authed: user's role must be in session_roles (not rate-limited here)
+      - API key / OAuth token: scope must be in allowed_api_scopes
+      - Session / OAuth token: the user's current role must be in session_roles
+        (an OAuth token is checked against the user who granted it, so it can
+        never do more than that user's own session could)
+      - API key: tier rate limit applied (sessions/OAuth not rate-limited here)
     """
     def dep(principal: AuthedPrincipal = Depends(get_api_authed)) -> AuthedPrincipal:
         if principal.scope != "session":
@@ -705,8 +811,8 @@ def require_api_scope(
                         "scope":   principal.scope,
                     },
                 )
-        else:
-            role = (principal.user or {}).get("role", "viewer")
+        if principal.user is not None:
+            role = principal.user.get("role", "viewer")
             if role not in session_roles:
                 raise HTTPException(
                     status_code=403,
@@ -794,6 +900,33 @@ def can_access_screen(user: dict, screen_id: int) -> bool:
 def require_screen_access(screen_id: int, user: dict) -> None:
     if not can_access_screen(user, screen_id):
         raise HTTPException(status_code=403, detail="Screen access denied")
+
+
+_ORG_SCOPED_KINDS = {
+    "playlists": "playlist", "sites": "site", "users": "user",
+    "media": "media", "schedules": "schedule",
+}
+
+
+def require_org_rows(table: str, ids, oid: int) -> None:
+    """404 unless every id names a row of `table` belonging to organization oid.
+
+    For ids a write is about to STORE as a reference -- a screen's playlist, a
+    zone item's media, a wall's playlist. Fetching by id is org-scoped
+    everywhere, but a stored reference is followed later without an org filter
+    (build_screen_payload, get_screen_zones), so an unchecked one hands one
+    organization's content to another. None entries mean "no reference".
+    """
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return
+    found = query_all(
+        f"SELECT id FROM {table} WHERE organization_id = ? AND id = ANY(?)",
+        (oid, list(wanted)),
+    )
+    if len(found) != len(wanted):
+        kind = _ORG_SCOPED_KINDS[table]
+        raise http_error(404, f"{kind}.not_found", f"{kind.capitalize()} not found")
 
 def sanitize_screen(screen: dict, include_token: bool = False) -> dict:
     sanitized = dict(screen)
@@ -999,12 +1132,14 @@ class ChangePasswordRequest(BaseModel):
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=8)
+    password: str  # policy enforced by validate_password(), see UserUpdate
     role: str = "viewer"
 
 
 class UserUpdate(BaseModel):
-    password: Optional[str] = Field(default=None, min_length=8)
+    # Length is validate_password()'s job: a Field minimum here answers first,
+    # with raw English the dashboard cannot localize, quoting the wrong number.
+    password: Optional[str] = None
     role: Optional[str] = None
 
 
@@ -1018,8 +1153,6 @@ def startup() -> None:
     init_db()
     cleanup_sessions()
     cleanup_preview_tokens()
-    execute("UPDATE screens SET password_hash = NULL WHERE password_hash IS NOT NULL")
-    execute("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NOT NULL")
     _bootstrap_default_admin()
     _ensure_setup_token()
 
@@ -1083,7 +1216,14 @@ def _ensure_setup_token() -> None:
 
 
 def _bootstrap_default_admin() -> None:
-    """Seed the first admin on an empty database.
+    """Seed the first admin on an empty database, if ADMIN_PASSWORD asks to.
+
+    Optional. With ADMIN_PASSWORD unset -- the default since redeploy.sh
+    stopped writing one -- nothing is seeded and the first administrator is
+    created in the browser with the one-time setup token. A value the password
+    policy refuses is logged and skipped the same way rather than raised:
+    raising here aborts startup, so uvicorn exits before the setup page can
+    ever be served and the backend crash-loops on a brand-new deployment.
 
     Runs under the migration advisory lock because every uvicorn worker
     executes startup(): without it, all workers would observe an empty users
@@ -1091,12 +1231,21 @@ def _bootstrap_default_admin() -> None:
     would crash on the UNIQUE constraint. The check is re-read inside the lock
     so only the first worker through does any work.
     """
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    if not admin_password:
+        return
     with advisory_lock():
-        existing = query_one("SELECT id FROM users LIMIT 1")
-        if not existing:
+        if needs_setup():
             admin_username = os.getenv("ADMIN_USERNAME", "admin")
-            admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
-            validate_password(admin_password)
+            try:
+                validate_password(admin_password)
+            except HTTPException as exc:
+                reason = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
+                logger.error(
+                    "ADMIN_PASSWORD not used (%s); no admin seeded. Create the "
+                    "first administrator in the browser with the setup token.",
+                    reason)
+                return
             org_row = query_one("SELECT id FROM organizations WHERE slug = ?", ("default",))
             if org_row:
                 default_org_id = org_row["id"]
@@ -1587,6 +1736,8 @@ def change_password(
         (hash_password(payload.new_password), user["id"]),
     )
     execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+    from oauth import revoke_user_grants
+    revoke_user_grants(user["id"])
     audit(request, action="auth.password_change", actor=user)
     return {"status": "password_changed"}
 
@@ -1607,6 +1758,7 @@ def me(user: dict = Depends(get_current_user)) -> dict:
             "screen_limit": org["screen_limit"],
             "subscription_status": org["subscription_status"],
             "trial_ends_at": org["trial_ends_at"],
+            "paid_through_at": org["paid_through_at"],
             "locale": org["locale"],
         },
     }
@@ -1801,6 +1953,17 @@ def get_audit_log(
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
 
+    def _bound(name: str, value: str) -> datetime:
+        # Parsed here rather than passed to Postgres as text, where a value it
+        # cannot read as a timestamp failed the whole query with a 500. A bare
+        # date or a time without an offset is taken as UTC.
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            raise http_error(422, "audit_log.date_invalid",
+                             f"{name} is not an ISO 8601 date or time: {value}")
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
     where = ["organization_id = ?"]
     params: list = [org_id(user)]
     if action:
@@ -1811,10 +1974,10 @@ def get_audit_log(
         params.append(actor_id)
     if since:
         where.append("created_at >= ?")
-        params.append(since)
+        params.append(_bound("since", since))
     if until:
         where.append("created_at <= ?")
-        params.append(until)
+        params.append(_bound("until", until))
     where_sql = " AND ".join(where)
 
     total_row = query_one(
@@ -2016,12 +2179,19 @@ def update_user(request: Request, user_id: int, payload: UserUpdate, user: dict 
     )
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if payload.password:
+    if payload.password is not None:
         validate_password(payload.password)
         execute(
             "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
             (hash_password(payload.password), user_id),
         )
+        # A reset is how an admin locks out a compromised account, so like
+        # /auth/change-password it ends the user's sessions and OAuth grants --
+        # sparing only the session making this request, when it resets itself.
+        execute("DELETE FROM sessions WHERE user_id = ? AND token <> ?",
+                (user_id, user.get("token") or ""))
+        from oauth import revoke_user_grants
+        revoke_user_grants(user_id)
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
             raise http_error(400, "invalid_role", "Invalid role")
@@ -2055,6 +2225,8 @@ def delete_user(request: Request, user_id: int, user: dict = Depends(require_rol
     )
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    from oauth import revoke_user_grants
+    revoke_user_grants(user_id)    # first: oauth_tokens.user_id is ON DELETE SET NULL
     execute("DELETE FROM users WHERE id = ?", (user_id,))
     execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     audit(request, action="user.delete", actor=user,
@@ -2117,7 +2289,9 @@ def update_site(
     if payload.timezone is not None:
         try:
             ZoneInfo(payload.timezone)
-        except ZoneInfoNotFoundError:
+        # ValueError: a key that is not a zone name at all ("/etc/x", "../x",
+        # "Asia/", a non-TZif file such as "zone.tab").
+        except (ZoneInfoNotFoundError, ValueError):
             raise http_error(422, "site.timezone_invalid",
                              f"Unknown timezone: {payload.timezone}")
 
@@ -2150,7 +2324,9 @@ def list_screens(
 ) -> list[dict]:
     oid = principal.organization_id
     user = principal.user or {}
-    if user.get("is_admin") or principal.scope != "session":
+    # Per-user visibility applies to anything acting as a user -- a session
+    # or an OAuth token -- and org-wide reads only to API keys (no user).
+    if user.get("is_admin") or principal.user is None:
         rows = query_all(
             """
             SELECT screens.*, sites.name AS site_name, playlists.name AS playlist_name
@@ -2185,6 +2361,8 @@ def list_screens(
 def create_screen(payload: ScreenCreate, user: dict = Depends(require_roles("admin", "editor")),
                   _sub: dict = Depends(require_active_subscription)) -> dict:
     oid = org_id(user)
+    require_org_rows("sites", [payload.site_id], oid)
+    require_org_rows("users", [payload.owner_user_id], oid)
     org = query_one(
         "SELECT screen_limit FROM organizations WHERE id = ?", (oid,)
     )
@@ -2243,44 +2421,30 @@ def update_screen(
     )
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
+    user = principal.user or {}
+    if principal.user is not None and not user.get("is_admin"):
+        require_screen_access(screen_id, user)
 
-    # Validate schedule ownership; use model_fields_set so explicit None
-    # (detach) is distinguished from "field not provided".
-    if "schedule_id" in payload.model_fields_set:
-        if payload.schedule_id is not None:
-            owned = query_one(
-                "SELECT id FROM schedules WHERE id = ? AND organization_id = ?",
-                (payload.schedule_id, oid),
-            )
-            if not owned:
-                raise http_error(404, "schedule.not_found", "Schedule not found")
+    # Only what the request names is written, so a concurrent change to any
+    # other column is not overwritten from this request's earlier read. The
+    # references are nullable: model_fields_set separates an explicit null
+    # ("No playlist", "Unassigned" -- clear it) from a field left out (keep
+    # it), and each is checked against the caller's org first.
+    changes = {}
+    if payload.name:
+        changes["name"] = payload.name
+    for column in ("location", "resolution", "orientation"):
+        if getattr(payload, column) is not None:
+            changes[column] = getattr(payload, column)
+    for column, table in (("site_id", "sites"), ("playlist_id", "playlists"),
+                          ("owner_user_id", "users"), ("schedule_id", "schedules")):
+        if column in payload.model_fields_set:
+            changes[column] = getattr(payload, column)
+            require_org_rows(table, [changes[column]], oid)
 
-    execute(
-        """
-        UPDATE screens
-        SET name = ?, location = ?, resolution = ?, orientation = ?,
-            site_id = ?, playlist_id = ?, password_hash = ?, owner_user_id = ?
-        WHERE id = ?
-        """,
-        (
-            payload.name or screen["name"],
-            payload.location if payload.location is not None else screen["location"],
-            payload.resolution if payload.resolution is not None else screen["resolution"],
-            payload.orientation if payload.orientation is not None else screen["orientation"],
-            payload.site_id if payload.site_id is not None else screen["site_id"],
-            payload.playlist_id if payload.playlist_id is not None else screen["playlist_id"],
-            None,
-            payload.owner_user_id if payload.owner_user_id is not None else screen["owner_user_id"],
-            screen_id,
-        ),
-    )
-
-    # Handle schedule_id separately (nullable detach requires model_fields_set)
-    if "schedule_id" in payload.model_fields_set:
-        execute(
-            "UPDATE screens SET schedule_id = ? WHERE id = ?",
-            (payload.schedule_id, screen_id),
-        )
+    if changes:
+        sets = ", ".join(f"{column} = ?" for column in changes)
+        execute(f"UPDATE screens SET {sets} WHERE id = ?", (*changes.values(), screen_id))
 
     return sanitize_screen(query_one("SELECT * FROM screens WHERE id = ?", (screen_id,)))
 
@@ -2313,7 +2477,7 @@ def list_screen_zones(
     if not screen:
         raise HTTPException(status_code=404, detail="Screen not found")
     user = principal.user or {}
-    if not user.get("is_admin") and principal.scope == "session":
+    if principal.user is not None and not user.get("is_admin"):
         require_screen_access(screen_id, user)
     zones = get_screen_zones(screen_id)
     return {"zones": zones}
@@ -2334,39 +2498,43 @@ def update_screen_zones(
         raise HTTPException(status_code=404, detail="Screen not found")
     if not user.get("is_admin"):
         require_screen_access(screen_id, user)
-    execute(
-        "DELETE FROM screen_zone_items WHERE zone_id IN (SELECT id FROM screen_zones WHERE screen_id = ?)",
-        (screen_id,),
-    )
-    execute("DELETE FROM screen_zones WHERE screen_id = ?", (screen_id,))
+    require_org_rows("media", [i.media_id for z in payload.zones for i in z.items], org_id(user))
 
-    for index, zone in enumerate(payload.zones):
-        zone_id = execute(
-            """
-            INSERT INTO screen_zones (screen_id, name, x, y, width, height, sort_order, transition_ms, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                screen_id,
-                zone.name,
-                zone.x,
-                zone.y,
-                zone.width,
-                zone.height,
-                zone.sort_order if zone.sort_order is not None else index,
-                zone.transition_ms,
-                utc_now_iso(),
-            ),
+    # Replace-style write: the old layout must survive any failure below.
+    with transaction():
+        execute(
+            "DELETE FROM screen_zone_items WHERE zone_id IN (SELECT id FROM screen_zones WHERE screen_id = ?)",
+            (screen_id,),
         )
-        for item_index, item in enumerate(zone.items):
-            execute(
+        execute("DELETE FROM screen_zones WHERE screen_id = ?", (screen_id,))
+
+        for index, zone in enumerate(payload.zones):
+            zone_id = execute(
                 """
-                INSERT INTO screen_zone_items
-                (zone_id, media_id, duration_seconds, position, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO screen_zones (screen_id, name, x, y, width, height, sort_order, transition_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (zone_id, item.media_id, item.duration_seconds, item_index, utc_now_iso()),
+                (
+                    screen_id,
+                    zone.name,
+                    zone.x,
+                    zone.y,
+                    zone.width,
+                    zone.height,
+                    zone.sort_order if zone.sort_order is not None else index,
+                    zone.transition_ms,
+                    utc_now_iso(),
+                ),
             )
+            for item_index, item in enumerate(zone.items):
+                execute(
+                    """
+                    INSERT INTO screen_zone_items
+                    (zone_id, media_id, duration_seconds, position, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (zone_id, item.media_id, item.duration_seconds, item_index, utc_now_iso()),
+                )
     return {"zones": get_screen_zones(screen_id)}
 
 
@@ -2425,6 +2593,8 @@ def create_zone_template(
     payload: ZoneTemplateCreate, user: dict = Depends(require_roles("admin", "editor")),
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
+    require_org_rows("sites", [payload.site_id], org_id(user))
+    require_org_rows("media", [i.media_id for z in payload.zones for i in z.items], org_id(user))
     layout_json = json.dumps([zone.dict() for zone in payload.zones])
     template_id = execute(
         """
@@ -2979,35 +3149,47 @@ def _time_in_window(now: _time_type, start: _time_type, end: _time_type) -> bool
     return now >= start or now < end
 
 
-def _time_windows_overlap(s1, e1, s2, e2) -> bool:
-    """True iff the two TIME windows overlap. Both may wrap midnight."""
-    def expand(s, e):
-        if s <= e:
-            return [(s, e)]
-        return [(s, _time_type(23, 59, 59, 999999)), (_time_type(0, 0), e)]
-    for a_s, a_e in expand(s1, e1):
-        for b_s, b_e in expand(s2, e2):
-            if a_s < b_e and b_s < a_e:
+def _next_days(days: int) -> int:
+    """The day after each day in a Mon=bit0..Sun=bit6 mask (Sunday -> Monday)."""
+    return ((days << 1) | (days >> 6)) & 0x7F
+
+
+def _rule_pieces(rule: dict) -> list:
+    """A rule as (days_of_week, start, end) pieces, none wrapping midnight.
+
+    A rule that wraps midnight belongs to the day it STARTS on: Friday
+    22:00-02:00 is Friday night, so its after-midnight piece runs on Saturday.
+    This is how resolve_active_playlist plays it.
+    """
+    s, e, days = rule["start_time"], rule["end_time"], rule["days_of_week"]
+    if s <= e:
+        return [(days, s, e)]
+    return [(days, s, _time_type(23, 59, 59, 999999)),
+            (_next_days(days), _time_type(0, 0), e)]
+
+
+def _rules_overlap(a: dict, b: dict) -> bool:
+    """True iff rules a and b are ever active on the same day at the same time."""
+    for a_days, a_s, a_e in _rule_pieces(a):
+        for b_days, b_s, b_e in _rule_pieces(b):
+            if a_days & b_days and a_s < b_e and b_s < a_e:
                 return True
     return False
 
 
-def _rules_overlap(a: dict, b: dict) -> bool:
-    """True iff rules a and b share at least one day AND time windows overlap."""
-    if not (a["days_of_week"] & b["days_of_week"]):
-        return False
-    return _time_windows_overlap(
-        a["start_time"], a["end_time"],
-        b["start_time"], b["end_time"],
-    )
-
-
 def _parse_time(s: str) -> _time_type:
-    """Parse HH:MM or HH:MM:SS into datetime.time."""
+    """Parse HH:MM or HH:MM:SS into datetime.time.
+
+    ScheduleRuleIn's pattern checks only the shape, so "25:99" gets here;
+    an out-of-range field is the caller's error (422), not ours (500).
+    """
     parts = s.split(":")
     h = int(parts[0]); m = int(parts[1])
     sec = int(parts[2]) if len(parts) > 2 else 0
-    return _time_type(h, m, sec)
+    try:
+        return _time_type(h, m, sec)
+    except ValueError:
+        raise http_error(422, "schedule.time_invalid", f"Invalid time: {s}")
 
 
 def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
@@ -3019,7 +3201,7 @@ def _site_timezone(site_id: Optional[int]) -> ZoneInfo:
         return _KUWAIT_TZ
     try:
         return ZoneInfo(row["timezone"])
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ValueError):     # ValueError: malformed key
         logger.warning("invalid_site_timezone site_id=%s tz=%s", site_id, row["timezone"])
         return _KUWAIT_TZ
 
@@ -3037,6 +3219,7 @@ def resolve_active_playlist(screen: dict) -> Optional[int]:
     site_tz = _site_timezone(screen.get("site_id"))
     now_local = datetime.now(site_tz)
     weekday_bit = 1 << now_local.weekday()      # Mon=0..Sun=6
+    yesterday_bit = 1 << ((now_local.weekday() - 1) % 7)
     now_t = now_local.time()
 
     rules = query_all(
@@ -3045,9 +3228,14 @@ def resolve_active_playlist(screen: dict) -> Optional[int]:
         (screen["schedule_id"],),
     )
     for rule in rules:
-        if not (rule["days_of_week"] & weekday_bit):
+        start, end = rule["start_time"], rule["end_time"]
+        # Past midnight, a wrapping rule is still the night it started on:
+        # at Saturday 01:00, Friday 22:00-02:00 needs Friday's bit, not
+        # Saturday's (see _rule_pieces, which the overlap check uses).
+        day_bit = yesterday_bit if start > end and now_t < start else weekday_bit
+        if not (rule["days_of_week"] & day_bit):
             continue
-        if _time_in_window(now_t, rule["start_time"], rule["end_time"]):
+        if _time_in_window(now_t, start, end):
             return rule["playlist_id"]
 
     return screen.get("playlist_id")            # fallback to default
@@ -3178,6 +3366,15 @@ def poll_pair_code(request: Request, code: str) -> dict:
         return {"status": "pending"}
 
     if row["status"] == "paired":
+        # Anyone holding the code gets the screen's token, so hand it out only
+        # while the TV that showed the code can still be polling for it (every
+        # few seconds). Later, a code read off the screen unlocks nothing.
+        try:
+            claimed_dt = datetime.fromisoformat(row["claimed_at"])
+        except (TypeError, ValueError):
+            claimed_dt = None
+        if claimed_dt is None or now > claimed_dt + timedelta(seconds=PAIR_CODE_TTL_SECONDS):
+            return {"status": "expired"}
         screen = query_one("SELECT * FROM screens WHERE id = ?", (row["screen_id"],))
         if not screen:
             return {"status": "expired"}
@@ -3244,6 +3441,7 @@ def claim_pair_code(
 
 
 @app.post("/screens/pair")
+@limiter.limit("10/minute")
 def pair_screen(request: Request, payload: PairRequest) -> dict:
     screen = query_one("SELECT * FROM screens WHERE pair_code = ?", (payload.pair_code,))
     if not screen:
@@ -3306,6 +3504,10 @@ def _validate_spanned_fields(payload: WallCreate) -> None:
 def create_wall(request: Request, payload: WallCreate,
                 user: dict = Depends(require_roles("admin", "editor")),
                 _sub: dict = Depends(require_active_subscription)) -> dict:
+    # Only the current mode's fields are stored. A spanned wall used to keep
+    # whatever mirrored_* it was sent, unchecked, and switching it to mirrored
+    # later played that playlist -- another organization's, if so named.
+    mirrored_mode = mirrored_playlist_id = spanned_playlist_id = None
     if payload.mode == "spanned":
         _validate_spanned_fields(payload)
     elif payload.mode == "mirrored":
@@ -3315,17 +3517,13 @@ def create_wall(request: Request, payload: WallCreate,
         if payload.mirrored_mode == "same_playlist" and not payload.mirrored_playlist_id:
             raise http_error(422, "wall.mirrored_playlist_required",
                              "Same-playlist mirrored walls need a playlist.")
-        if payload.mirrored_playlist_id is not None:
-            own = query_one("SELECT id FROM playlists WHERE id = ? AND organization_id = ?",
-                            (payload.mirrored_playlist_id, org_id(user)))
-            if not own:
-                raise http_error(404, "playlist.not_found", "Playlist not found")
+        require_org_rows("playlists", [payload.mirrored_playlist_id], org_id(user))
+        mirrored_mode, mirrored_playlist_id = payload.mirrored_mode, payload.mirrored_playlist_id
 
     now = utc_now_iso()
 
     # For spanned walls, auto-create the wall_canvas playlist BEFORE the wall row,
     # so we can FK the wall to it atomically.
-    spanned_playlist_id = payload.spanned_playlist_id
     if payload.mode == "spanned":
         spanned_playlist_id = execute(
             "INSERT INTO playlists (organization_id, name, kind, created_at) "
@@ -3346,7 +3544,7 @@ def create_wall(request: Request, payload: WallCreate,
         (org_id(user), payload.name, payload.mode, payload.rows, payload.cols,
          payload.canvas_width_px, payload.canvas_height_px, bezel_enabled,
          payload.bezel_h_pct, payload.bezel_v_pct,
-         spanned_playlist_id, payload.mirrored_mode, payload.mirrored_playlist_id,
+         spanned_playlist_id, mirrored_mode, mirrored_playlist_id,
          now, now),
     )
     for r in range(payload.rows):
@@ -3396,21 +3594,40 @@ def patch_wall(wall_id: int, payload: WallUpdate,
         raise http_error(404, "wall.not_found", "Wall not found")
 
     fields = payload.model_dump(exclude_unset=True)
+    require_org_rows("playlists", [fields.get("mirrored_playlist_id")], org_id(user))
 
-    # Mode change side effects: delete outgoing playlist, create incoming.
-    # Pairings (wall_cells.screen_id) are preserved.
-    if "mode" in fields and fields["mode"] != wall["mode"]:
-        new_mode = fields["mode"]
-        if wall["mode"] == "mirrored" and wall.get("mirrored_playlist_id"):
-            execute("DELETE FROM playlists WHERE id = ?",
-                    (wall["mirrored_playlist_id"],))
-            fields["mirrored_playlist_id"] = None
-            fields["mirrored_mode"] = None
-        elif wall["mode"] == "spanned" and wall.get("spanned_playlist_id"):
-            execute("DELETE FROM playlists WHERE id = ?",
-                    (wall["spanned_playlist_id"],))
+    # Mode change side effects: drop the outgoing mode's playlist reference,
+    # create the incoming one. Pairings (wall_cells.screen_id) are preserved.
+    # Only a spanned wall's canvas playlist belongs to the wall (create_wall
+    # made it); a mirrored wall plays a playlist the user picked, which other
+    # screens and schedules may also use, so it is detached, never deleted.
+    mode_change = "mode" in fields and fields["mode"] != wall["mode"]
+    if mode_change and wall["mode"] == "mirrored":
+        fields["mirrored_playlist_id"] = None
+        fields["mirrored_mode"] = None
+    elif mode_change:
+        # Entering mirrored: its settings come from this request alone, never
+        # from values left on the row while it was spanned.
+        fields.setdefault("mirrored_mode", None)
+        fields.setdefault("mirrored_playlist_id", None)
+    after = {**wall, **fields}
+    # Checked only when this request touches the mirrored setup: the playlist
+    # is ON DELETE SET NULL, and a wall whose playlist was deleted must still
+    # accept a rename or a bezel change.
+    if after["mode"] == "mirrored" and {"mode", "mirrored_mode", "mirrored_playlist_id"} & set(fields):
+        if not after.get("mirrored_mode"):
+            raise http_error(422, "wall.mirrored_mode_required",
+                             "Mirrored walls need a sub-mode (same_playlist or synced_rotation).")
+        if after["mirrored_mode"] == "same_playlist" and not after.get("mirrored_playlist_id"):
+            raise http_error(422, "wall.mirrored_playlist_required",
+                             "Same-playlist mirrored walls need a playlist.")
+
+    if mode_change:
+        if wall["mode"] == "spanned" and wall.get("spanned_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ? AND organization_id = ? AND kind = 'wall_canvas'",
+                    (wall["spanned_playlist_id"], org_id(user)))
             fields["spanned_playlist_id"] = None
-        if new_mode == "spanned":
+        if fields["mode"] == "spanned":
             new_pl = execute(
                 "INSERT INTO playlists (organization_id, name, kind, created_at) "
                 "VALUES (?, ?, 'wall_canvas', ?)",
@@ -3465,7 +3682,32 @@ def delete_wall(request: Request, wall_id: int,
                      (wall_id, org_id(user)))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall not found")
-    execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+    # Its cell screens were created by redeem for those cells alone, and its
+    # canvas playlist by create_wall for this wall alone (unpair_wall_cell has
+    # the same reasoning). Left behind, the screens count toward the plan with
+    # no device, and the playlist lingers in the Playlists list.
+    paired = query_all(
+        "SELECT row_index, col_index, id, screen_id FROM wall_cells "
+        "WHERE wall_id = ? AND screen_id IS NOT NULL",
+        (wall_id,),
+    )
+    with transaction():
+        execute(
+            "DELETE FROM screens WHERE organization_id = ? AND wall_cell_id IN "
+            "(SELECT id FROM wall_cells WHERE wall_id = ?)",
+            (wall["organization_id"], wall_id),
+        )
+        execute("DELETE FROM walls WHERE id = ?", (wall_id,))
+        if wall.get("spanned_playlist_id"):
+            execute("DELETE FROM playlists WHERE id = ? AND organization_id = ? AND kind = 'wall_canvas'",
+                    (wall["spanned_playlist_id"], wall["organization_id"]))
+    for cell in paired:
+        try:
+            from walls import broadcast_bye  # type: ignore
+            broadcast_bye(wall_id, cell["row_index"], cell["col_index"], "wall_deleted")
+        except Exception:
+            logger.exception("wall_bye_failed wall_id=%s cell=%s,%s",
+                             wall_id, cell["row_index"], cell["col_index"])
     audit(request, action="wall.delete", actor=user,
           target_type="wall", target_id=wall_id,
           details={"name": (wall or {}).get("name")})
@@ -3513,6 +3755,22 @@ def pair_wall_cell(wall_id: int, row: int, col: int,
 @app.post("/walls/cells/redeem")
 @limiter.limit("30/minute")
 def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
+    """Bind the TV that typed ``code`` to its wall cell.
+
+    A cell's screen is a screens row like any other, so a new one is subject to
+    the plan's screen_limit exactly as in create_screen. Re-pairing a cell
+    reuses its screen and rotates the token -- which unplugs the TV that held
+    it -- instead of adding a second screen that would keep claiming the cell
+    and counting toward the limit.
+
+    Everything after the cheap checks is one transaction: the code is claimed
+    with a conditional UPDATE so two concurrent redeems of it cannot both win,
+    and the organization row is locked so concurrent redeems of different codes
+    cannot together overshoot the limit. A refusal rolls the claim back, so the
+    code still works after an upgrade.
+    """
+    from db import connect as _db_connect
+
     row = query_one("SELECT * FROM wall_pairing_codes WHERE code = ?", (payload.code,))
     if not row:
         raise http_error(404, "wall.pair_code_unknown", "Code not recognized")
@@ -3530,25 +3788,67 @@ def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
     wall = query_one("SELECT * FROM walls WHERE id = ?", (row["wall_id"],))
     if not wall:
         raise http_error(404, "wall.not_found", "Wall is gone")
+    oid = wall["organization_id"]
 
-    name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
-    pair_code = generate_unique_pair_code()
-    screen_token = generate_unique_token()
-    screen_id = execute(
-        """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (wall["organization_id"], name, pair_code, screen_token, now.isoformat()),
-    )
-    cell = query_one(
-        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
-        (row["wall_id"], row["row_index"], row["col_index"]),
-    )
-    execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
-    execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
-    execute(
-        "UPDATE wall_pairing_codes SET status = 'claimed', claimed_at = ? WHERE id = ?",
-        (now.isoformat(), row["id"]),
-    )
+    with _db_connect().transaction():
+        claimed = execute(
+            "UPDATE wall_pairing_codes SET status = 'claimed', claimed_at = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (now.isoformat(), row["id"]),
+        )
+        if not claimed:
+            raise http_error(409, "wall.pair_code_used", "This code was already used")
+        org = query_one(
+            "SELECT id, screen_limit FROM organizations WHERE id = ? FOR UPDATE", (oid,)
+        )
+        cell = query_one(
+            "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ? "
+            "FOR UPDATE",
+            (row["wall_id"], row["row_index"], row["col_index"]),
+        )
+        if not cell:
+            raise http_error(404, "wall.cell_not_found", "Cell not found")
+        reuse = None
+        if cell["screen_id"]:
+            reuse = query_one(
+                "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+                (cell["screen_id"], oid),
+            )
+        # Screens an earlier re-pair left claiming this cell: their TVs lost
+        # the cell long ago, and they still count toward the limit.
+        execute(
+            "DELETE FROM screens WHERE wall_cell_id = ? AND id <> ?",
+            (cell["id"], reuse["id"] if reuse else 0),
+        )
+        pair_code = generate_unique_pair_code()
+        screen_token = generate_unique_token()
+        if reuse:
+            screen_id = reuse["id"]
+            execute(
+                "UPDATE screens SET token = ?, pair_code = ?, wall_cell_id = ? WHERE id = ?",
+                (screen_token, pair_code, cell["id"], screen_id),
+            )
+        else:
+            if org:
+                count_row = query_one(
+                    "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?", (oid,)
+                )
+                current = int(count_row["n"] if count_row else 0)
+                limit = int(org["screen_limit"])
+                if current >= limit:
+                    raise http_error(
+                        402,
+                        "plan_limit",
+                        f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+                    )
+            name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
+            screen_id = execute(
+                """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (oid, name, pair_code, screen_token, now.isoformat()),
+            )
+            execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
+        execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
     return {
         "status": "paired",
         "screen_token": screen_token,
@@ -3574,13 +3874,23 @@ def unpair_wall_cell(wall_id: int, row: int, col: int,
     if not cell:
         raise http_error(404, "wall.cell_not_found", "Cell not found")
     if cell["screen_id"]:
+        # The screen was created by redeem for this cell alone, and its TV is
+        # about to be told "bye" (it forgets the token and shows a pairing
+        # code). Kept, the row would have no device yet still count toward the
+        # plan's screen limit, so each unpair/re-pair leaked a screen.
+        execute(
+            "DELETE FROM screens WHERE id = ? AND organization_id = ? AND wall_cell_id = ?",
+            (cell["screen_id"], wall["organization_id"], cell["id"]),
+        )
         execute("UPDATE screens SET wall_cell_id = NULL WHERE id = ?", (cell["screen_id"],))
     execute("UPDATE wall_cells SET screen_id = NULL WHERE id = ?", (cell["id"],))
+    # Reaches the TV directly when its socket is on this worker; otherwise the
+    # wall's tick loop on the worker holding it notices within seconds.
     try:
         from walls import broadcast_bye  # type: ignore
         broadcast_bye(wall_id, row, col, "cell_unpaired")
     except Exception:
-        pass
+        logger.exception("wall_bye_failed wall_id=%s cell=%s,%s", wall_id, row, col)
     return None
 
 
@@ -4231,6 +4541,40 @@ def list_media(
     return media
 
 
+import mimetypes
+
+# What /media/upload accepts: extension -> the type it is served as. /uploads
+# is served from the API origin, so an uploaded .html or script would run there
+# (stored XSS); the player only renders images, videos and PDFs anyway.
+# StaticFiles picks Content-Type from the extension, which is why the extension
+# itself must be on this list, not just the client's Content-Type claim.
+UPLOAD_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
+    ".bmp": "image/bmp", ".svg": "image/svg+xml",
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+    ".webm": "video/webm", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
+    # Containers browsers cannot play but ffmpeg reads: transcode_video turns
+    # every video upload into an H.264 .opt.mp4, which is what the player gets.
+    ".3gp": "video/3gpp", ".wmv": "video/x-ms-wmv", ".flv": "video/x-flv",
+    ".mpg": "video/mpeg", ".mpeg": "video/mpeg", ".ts": "video/mp2t",
+    ".mts": "video/mp2t", ".m2ts": "video/mp2t", ".ogv": "video/ogg",
+    ".pdf": "application/pdf",
+}
+# The image's mimetypes table lacks some of these (.webp, .m4v, .mkv); without
+# them StaticFiles serves text/plain, which nosniff makes the player refuse.
+for _ext, _mime in UPLOAD_TYPES.items():
+    mimetypes.add_type(_mime, _ext)
+
+
+def _media_class(mime: str) -> str | None:
+    mime = mime.split(";")[0].strip().lower()
+    if mime == "application/pdf":
+        return "pdf"
+    major = mime.split("/")[0]
+    return major if major in ("image", "video") else None
+
+
 @app.post("/media/upload")
 async def upload_media(
     background_tasks: BackgroundTasks,
@@ -4246,13 +4590,22 @@ async def upload_media(
     max_bytes = max(MAX_UPLOAD_MB, 1) * 1024 * 1024
     if len(contents) > max_bytes:
         raise HTTPException(status_code=413, detail="File too large")
-    ext = os.path.splitext(file.filename or "")[1]
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    content_type = file.content_type or "application/octet-stream"
+    # A generic type is no claim at all (curl -F sends it for .mp4): take the
+    # extension's own. Otherwise the claim and the extension must agree, so a
+    # row never says "image" for a file served as something else.
+    if content_type.split(";")[0].strip().lower() == "application/octet-stream":
+        content_type = UPLOAD_TYPES.get(ext, content_type)
+    ext_class = _media_class(UPLOAD_TYPES.get(ext, ""))
+    if ext_class is None or _media_class(content_type) != ext_class:
+        raise http_error(415, "media.unsupported_type",
+                         "Only images, videos and PDFs can be uploaded.")
     filename = f"{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as f:
         f.write(contents)
 
-    content_type = file.content_type or "application/octet-stream"
     media_id = execute(
         """
         INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
@@ -4439,6 +4792,9 @@ def billing_checkout(
 
 
 class BillingCallbackBody(BaseModel):
+    # A JSON callback may carry the ids as numbers; store them as text.
+    model_config = {"coerce_numbers_to_str": True}
+
     result: str | None = None
     trackid: str | None = None
     paymentID: str | None = None
@@ -4452,10 +4808,20 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
     raw_body = await request.body()
     if not _verify_billing_callback(raw_body, request.headers, s):
         raise HTTPException(status_code=404)
-    try:
-        body_dict = json.loads(raw_body) if raw_body else {}
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    # NiuPay's request endpoint accepts only form-encoding (see billing.py), so
+    # its callback may arrive as a form too: a form body and a JSON one get the
+    # same handling. Verification above is on the raw bytes either way.
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
+        form = await request.form()
+        body_dict = {k: v for k, v in form.items() if isinstance(v, str)}
+    else:
+        try:
+            body_dict = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        if not isinstance(body_dict, dict):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
     body = BillingCallbackBody(**body_dict)
 
     if body.trackid and body.trackid != trackid:
@@ -4471,34 +4837,56 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
     captured = (body.result or "").upper() == "CAPTURED"
     if captured:
         term = int(row["term_months"])
-        execute(
-            """
-            UPDATE payments
-               SET status='captured',
-                   niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
-                   updated_at=now()
-             WHERE trackid=?
-            """,
-            (body.result, body.tranid, body.ref, body.paymentID, trackid),
-        )
-        old_plan_row = query_one("SELECT plan FROM organizations WHERE id = ?", (row["organization_id"],))
-        old_plan = old_plan_row["plan"] if old_plan_row else None
-        execute(
-            """
-            UPDATE organizations
-               SET plan               = ?,
-                   plan_term_months   = ?,
-                   screen_limit       = ?,
-                   subscription_status= 'active',
-                   paid_through_at    = now() + make_interval(days => ?)
-             WHERE id = ?
-            """,
-            (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], term * TERM_DAYS, row["organization_id"]),
-        )
-        audit(request, action="billing.plan_change",
-              actor=None, organization_id=row["organization_id"],
-              target_type="organization", target_id=row["organization_id"],
-              details={"from_plan": old_plan, "to_plan": row["tier"], "term_months": term})
+        # The status check above is only a fast path: two deliveries of one
+        # callback can both pass it. Only the one whose UPDATE moves the row out
+        # of pending extends the org, in the same transaction -- extending
+        # paid_through_at is not idempotent.
+        with transaction():
+            claimed = execute(
+                """
+                UPDATE payments
+                   SET status='captured',
+                       niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
+                       updated_at=now()
+                 WHERE trackid=? AND status NOT IN ('captured', 'failed')
+                """,
+                (body.result, body.tranid, body.ref, body.paymentID, trackid),
+            )
+            if claimed:
+                old_plan_row = query_one("SELECT plan FROM organizations WHERE id = ? FOR UPDATE",
+                                         (row["organization_id"],))
+                old_plan = old_plan_row["plan"] if old_plan_row else None
+                # Paid time still left is credit, not forfeited (renewing early is
+                # what the renewal_7day email asks for). It carries over as-is on
+                # the same tier and is converted at the two tiers' monthly prices
+                # on a change of tier -- so an upgrade cannot buy the rest of a
+                # year at the dearer tier for one month's price. An 'active' org
+                # with no paid_through_at has no expiry (first-run org, admin
+                # override) and keeps none.
+                old_price = PLAN_PRICING_KWD.get(old_plan)
+                credit_ratio = float(old_price / PLAN_PRICING_KWD[row["tier"]]) if old_price else 1.0
+                execute(
+                    """
+                    UPDATE organizations
+                       SET plan               = ?,
+                           plan_term_months   = ?,
+                           screen_limit       = ?,
+                           subscription_status= 'active',
+                           paid_through_at    = CASE
+                               WHEN subscription_status = 'active' AND paid_through_at IS NULL THEN NULL
+                               ELSE now() + GREATEST(paid_through_at - now(), interval '0') * ?
+                                          + make_interval(days => ?)
+                           END
+                     WHERE id = ?
+                    """,
+                    (row["tier"], term, PLAN_SCREEN_LIMITS[row["tier"]], credit_ratio,
+                     term * TERM_DAYS, row["organization_id"]),
+                )
+        if claimed:
+            audit(request, action="billing.plan_change",
+                  actor=None, organization_id=row["organization_id"],
+                  target_type="organization", target_id=row["organization_id"],
+                  details={"from_plan": old_plan, "to_plan": row["tier"], "term_months": term})
     else:
         execute(
             """
@@ -4506,7 +4894,7 @@ async def billing_callback(request: Request, trackid: str, s: str = ""):
                SET status='failed',
                    niupay_result=?, niupay_tranid=?, niupay_ref=?, niupay_payment_id=?,
                    updated_at=now()
-             WHERE trackid=?
+             WHERE trackid=? AND status NOT IN ('captured', 'failed')
             """,
             (body.result, body.tranid, body.ref, body.paymentID, trackid),
         )

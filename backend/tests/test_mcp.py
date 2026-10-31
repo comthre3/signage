@@ -36,24 +36,83 @@ def _jsonrpc_call(client, method: str, params: dict | None = None,
     return r.json()
 
 
-def test_mcp_initialize_handshake(mcp_client):
+def _raw_post(client, method: str, bearer: str | None = None,
+              params: dict | None = None):
+    """POST a JSON-RPC request to /mcp/ and return the raw HTTP response."""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    body = {"jsonrpc": "2.0", "id": 1, "method": method}
+    if params is not None:
+        body["params"] = params
+    return client.post("/mcp/", json=body, headers=headers)
+
+
+_INIT_PARAMS = {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {"name": "pytest", "version": "0"},
+}
+
+
+@pytest.fixture(scope="module")
+def mcp_bearer(mcp_client) -> str:
+    """One OAuth access token for the tests that only need to be signed in."""
+    access_token, _ = _get_oauth_access_token(mcp_client)
+    return access_token
+
+
+def test_mcp_initialize_handshake(mcp_client, mcp_bearer):
     """The mcp_server mounts at /mcp/ and responds to `initialize`."""
-    body = _jsonrpc_call(mcp_client, "initialize", params={
-        "protocolVersion": "2024-11-05",
-        "capabilities": {},
-        "clientInfo": {"name": "pytest", "version": "0"},
-    })
+    body = _jsonrpc_call(mcp_client, "initialize", params=_INIT_PARAMS,
+                         bearer=mcp_bearer)
     assert "result" in body, body
     assert body["result"]["serverInfo"]["name"] == "khanshoof"
 
 
-def test_mcp_tools_list_returns_array(mcp_client):
+def test_mcp_tools_list_returns_array(mcp_client, mcp_bearer):
     """tools/list must return a valid tools array."""
-    body = _jsonrpc_call(mcp_client, "tools/list")
-    if "error" in body:
-        assert body["error"]["code"] in (-32600, -32002), body
+    body = _jsonrpc_call(mcp_client, "tools/list", bearer=mcp_bearer)
+    assert isinstance(body["result"]["tools"], list), body
+
+
+def _assert_401_with_resource_metadata(r, error: str | None) -> None:
+    """MCP authorization spec: HTTP 401 + WWW-Authenticate naming the
+    protected-resource metadata, which is what makes a client start OAuth."""
+    assert r.status_code == 401, f"HTTP {r.status_code}: {r.text}"
+    www = r.headers.get("www-authenticate", "")
+    assert www.startswith("Bearer "), www
+    assert ('resource_metadata="https://api.khanshoof.com'
+            '/.well-known/oauth-protected-resource"') in www, www
+    if error:
+        assert f'error="{error}"' in www, www
     else:
-        assert isinstance(body["result"]["tools"], list)
+        assert "error=" not in www, www
+
+
+@pytest.mark.parametrize("method,params", [
+    ("initialize", _INIT_PARAMS),
+    ("tools/list", None),
+    ("tools/call", {"name": "khanshoof_get_organization", "arguments": {}}),
+])
+def test_unauthenticated_mcp_request_gets_401(mcp_client, method, params):
+    r = _raw_post(mcp_client, method, params=params)
+    _assert_401_with_resource_metadata(r, error=None)
+
+
+def test_invalid_bearer_gets_401_invalid_token(mcp_client):
+    r = _raw_post(mcp_client, "initialize", bearer="garbage_not_a_real_token",
+                  params=_INIT_PARAMS)
+    _assert_401_with_resource_metadata(r, error="invalid_token")
+
+
+def test_resource_metadata_url_resolves(mcp_client):
+    r = mcp_client.get("/.well-known/oauth-protected-resource")
+    assert r.status_code == 200
+    assert r.json()["authorization_servers"]
 
 
 # ── Helpers shared with later tests ────────────────────────────────────
@@ -90,15 +149,8 @@ def _get_oauth_access_token(client, scope: str = "api:rw") -> tuple[str, str]:
 # ── Task 2: dispatch helper + canary tool ──────────────────────────────
 
 
-def test_tools_list_shows_get_organization(mcp_client):
-    body = _jsonrpc_call(mcp_client, "tools/list")
-    if "error" in body:
-        _jsonrpc_call(mcp_client, "initialize", params={
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "0"},
-        })
-        body = _jsonrpc_call(mcp_client, "tools/list")
+def test_tools_list_shows_get_organization(mcp_client, mcp_bearer):
+    body = _jsonrpc_call(mcp_client, "tools/list", bearer=mcp_bearer)
     names = [t["name"] for t in body["result"]["tools"]]
     assert "khanshoof_get_organization" in names
 
@@ -113,41 +165,6 @@ def test_get_organization_with_valid_oauth_token(mcp_client):
         assert result.get("isError") is False
     elif "id" in result:
         pass
-
-
-def _assert_mcp_auth_error(body: dict) -> None:
-    """Assert an auth error in either JSON-RPC error or MCP isError content form.
-
-    MCP SDK >= 1.9 wraps McpError inside result.content[].isError rather than
-    surfacing it as a top-level JSON-RPC error field.
-
-    Accepts any auth-related keyword in the error text.
-    """
-    _AUTH_KEYWORDS = ("authentication", "token", "bearer", "expired", "unauthorized")
-    if "error" in body:
-        # Traditional JSON-RPC error surface
-        assert body["error"]["code"] == -32600, body
-        msg = body["error"]["message"].lower()
-        assert any(kw in msg for kw in _AUTH_KEYWORDS), body
-    else:
-        # MCP SDK isError content surface
-        result = body.get("result", {})
-        assert result.get("isError") is True, body
-        texts = " ".join(
-            c["text"] for c in result.get("content", []) if c.get("type") == "text"
-        ).lower()
-        assert any(kw in texts for kw in _AUTH_KEYWORDS), body
-
-
-def test_get_organization_without_bearer_returns_invalid_request(mcp_client):
-    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization", bearer=None)
-    _assert_mcp_auth_error(body)
-
-
-def test_get_organization_with_invalid_bearer_returns_invalid_request(mcp_client):
-    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
-                          bearer="garbage_not_a_real_token_xyz")
-    _assert_mcp_auth_error(body)
 
 
 import json
@@ -183,16 +200,9 @@ def _result_data(body: dict) -> Any:
 # ── Task 3: 14 read tools ──────────────────────────────────────────────
 
 
-def test_tools_list_has_12_reads_after_task3(mcp_client):
+def test_tools_list_has_12_reads_after_task3(mcp_client, mcp_bearer):
     """After Task 3, tools/list should have at least 12 read tools registered."""
-    body = _jsonrpc_call(mcp_client, "tools/list")
-    if "error" in body:
-        _jsonrpc_call(mcp_client, "initialize", params={
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "0"},
-        })
-        body = _jsonrpc_call(mcp_client, "tools/list")
+    body = _jsonrpc_call(mcp_client, "tools/list", bearer=mcp_bearer)
     names = {t["name"] for t in body["result"]["tools"]}
     expected_reads = {
         "khanshoof_get_organization",
@@ -259,16 +269,9 @@ def test_list_media(mcp_client):
 # ── Task 4: 11 write tools (23 tools total) ────────────────────────────
 
 
-def test_tools_list_has_23_total(mcp_client):
+def test_tools_list_has_23_total(mcp_client, mcp_bearer):
     """After Task 4, tools/list should have exactly 23 khanshoof_ tools."""
-    body = _jsonrpc_call(mcp_client, "tools/list")
-    if "error" in body:
-        _jsonrpc_call(mcp_client, "initialize", params={
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "0"},
-        })
-        body = _jsonrpc_call(mcp_client, "tools/list")
+    body = _jsonrpc_call(mcp_client, "tools/list", bearer=mcp_bearer)
     names = [t["name"] for t in body["result"]["tools"]
              if t["name"].startswith("khanshoof_")]
     assert len(names) == 23, sorted(names)
@@ -474,7 +477,7 @@ def test_unknown_playlist_id_maps_to_app_error(mcp_client):
 
 
 def test_revoked_oauth_token_rejected(mcp_client):
-    """After revocation, the token must fail with -32600."""
+    """After revocation, the token must get HTTP 401."""
     access_token, oauth_client_id = _get_oauth_access_token(mcp_client)
     # Confirm it works first
     body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
@@ -485,15 +488,10 @@ def test_revoked_oauth_token_rejected(mcp_client):
         "token": access_token, "client_id": oauth_client_id,
     })
     assert r.status_code == 200
-    # Now it should fail
-    body = _mcp_call_tool(mcp_client, "khanshoof_get_organization",
-                          bearer=access_token)
-    code, _ = _err_code_and_data(body)
-    if code is not None:
-        assert code == -32600, body
-    else:
-        r = body.get("result") or {}
-        assert r.get("isError") is True, body
+    # Now it should fail -- at the HTTP layer, so the client re-authorizes
+    r = _raw_post(mcp_client, "tools/call", bearer=access_token,
+                  params={"name": "khanshoof_get_organization", "arguments": {}})
+    _assert_401_with_resource_metadata(r, error="invalid_token")
 
 
 def test_cross_org_isolation(mcp_client):
@@ -516,16 +514,9 @@ def test_cross_org_isolation(mcp_client):
         assert r.get("isError") is True, body
 
 
-def test_all_tool_descriptions_are_nonempty(mcp_client):
+def test_all_tool_descriptions_are_nonempty(mcp_client, mcp_bearer):
     """Sanity: every tool has a description, none > 1000 chars."""
-    body = _jsonrpc_call(mcp_client, "tools/list")
-    if "error" in body:
-        _jsonrpc_call(mcp_client, "initialize", params={
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "0"},
-        })
-        body = _jsonrpc_call(mcp_client, "tools/list")
+    body = _jsonrpc_call(mcp_client, "tools/list", bearer=mcp_bearer)
     tools = body["result"]["tools"]
     for t in tools:
         if not t["name"].startswith("khanshoof_"):
@@ -535,16 +526,9 @@ def test_all_tool_descriptions_are_nonempty(mcp_client):
         assert len(desc) <= 1000, f"{t['name']} description is {len(desc)} chars"
 
 
-def test_tool_descriptions_mention_scope_for_writes(mcp_client):
+def test_tool_descriptions_mention_scope_for_writes(mcp_client, mcp_bearer):
     """Write tools mention 'api:rw' so the LLM knows the scope requirement."""
-    body = _jsonrpc_call(mcp_client, "tools/list")
-    if "error" in body:
-        _jsonrpc_call(mcp_client, "initialize", params={
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "0"},
-        })
-        body = _jsonrpc_call(mcp_client, "tools/list")
+    body = _jsonrpc_call(mcp_client, "tools/list", bearer=mcp_bearer)
     write_tool_names = {
         "khanshoof_create_playlist", "khanshoof_update_playlist",
         "khanshoof_delete_playlist", "khanshoof_add_playlist_item",
@@ -634,3 +618,55 @@ def test_full_e2e_oauth_then_mcp_tool_call(mcp_client):
                           bearer=access_token)
     playlists = _result_data(body)
     assert any(p["id"] == created["id"] for p in playlists)
+
+
+# ── khanshoof_get_screen ──────────────────────────────────────────────
+
+
+def test_get_screen_returns_the_screen(mcp_client):
+    """There is no GET /screens/{id}; the tool used to call it and 404/405
+    on every screen."""
+    flow = _full_authorize_flow(mcp_client)
+    r = mcp_client.post("/oauth/token", data={
+        "grant_type": "authorization_code", "code": flow["code"],
+        "redirect_uri": flow["redirect_uri"], "client_id": flow["client_id"],
+        "code_verifier": flow["verifier"],
+    })
+    access = r.json()["access_token"]
+    r = mcp_client.post("/screens", json={"name": "Lobby TV"},
+                        headers={"Authorization": f"Bearer {flow['session_token']}"})
+    assert r.status_code == 200, r.text
+    screen_id = r.json()["id"]
+
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_screen",
+                          args={"screen_id": screen_id}, bearer=access)
+    screen = _result_data(body)
+    assert screen["id"] == screen_id
+    assert screen["name"] == "Lobby TV"
+    assert "playlist_id" in screen
+    assert "token" not in screen          # same sanitizing as list_screens
+
+
+def test_get_screen_unknown_id_is_not_found(mcp_client, mcp_bearer):
+    body = _mcp_call_tool(mcp_client, "khanshoof_get_screen",
+                          args={"screen_id": 987654321}, bearer=mcp_bearer)
+    r = body.get("result") or {}
+    assert r.get("isError") is True or "error" in body, body
+    text = json.dumps(body).lower()
+    assert "not found" in text, body
+
+
+def test_mcp_without_trailing_slash_is_served_not_redirected(mcp_client, mcp_bearer):
+    """AGENTS.md tells clients https://api.khanshoof.com/mcp. Starlette answered
+    that with a 307 to /mcp/, built from the scheme the backend sees -- http,
+    behind the tunnel -- so clients were bounced to plain http (and a POST can
+    be turned into a GET by the http->https hop that follows)."""
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": _INIT_PARAMS}
+    r = mcp_client.post("/mcp", json=body, headers=headers, follow_redirects=False)
+    _assert_401_with_resource_metadata(r, error=None)
+    r = mcp_client.post("/mcp", json=body, follow_redirects=False,
+                        headers={**headers, "Authorization": f"Bearer {mcp_bearer}"})
+    assert r.status_code == 200, r.text
+    assert r.json()["result"]["serverInfo"]["name"] == "khanshoof"

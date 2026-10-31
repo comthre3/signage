@@ -1,22 +1,69 @@
-const urlOverrides = new URLSearchParams(window.location.search);
+/* ── Where the API and the player live ───────────────────────────
+   config.js, written at container start from the deployment's own
+   API_BASE_URL / PLAYER_BASE_URL, is the source of truth; the CSP's
+   connect-src is generated from the same value.
+
+   There is deliberately no ?api_base= / ?player_base= override: any link
+   could set one, and sign-in navigates top-level to the API base carrying
+   the one-time sign-in nonce -- so https://app…/?api_base=https://evil
+   handed the visitor and the nonce to that host, which bounced them back
+   signed in to the attacker's organization.
+
+   The "Connection" panel (saved in this browser) may still move API calls,
+   but only within the configured API origin, which is all the CSP lets the
+   page reach anyway. Only with nothing configured (local development) does
+   it accept any http(s) URL. The navigations that carry secrets ignore it:
+   social sign-in always goes to DEPLOYED_API_BASE, and the player link and
+   preview always use the configured player when there is one. */
 const CONNECTION_STORAGE_KEY = "signage_connection_mode";
 const CONNECTION_API_KEY     = "signage_connection_api";
 const CONNECTION_PLAYER_KEY  = "signage_connection_player";
 
-const savedMode       = localStorage.getItem(CONNECTION_STORAGE_KEY) || "local";
-const savedApiBase    = localStorage.getItem(CONNECTION_API_KEY)    || "";
-const savedPlayerBase = localStorage.getItem(CONNECTION_PLAYER_KEY) || "";
+const CONFIGURED_API_BASE    = String(window.API_BASE_URL || "").trim();
+const CONFIGURED_PLAYER_BASE = String(window.PLAYER_BASE_URL || "").trim();
 
-const API_BASE =
-  urlOverrides.get("api_base") ||
-  (savedMode === "external" ? savedApiBase : "") ||
-  (window.API_BASE_URL || "").trim() ||
+/** The API this deployment is configured for (local development falls back
+ *  to port 8000 of this host). Never influenced by anything the visitor or
+ *  a link can set. */
+const DEPLOYED_API_BASE = CONFIGURED_API_BASE ||
   `${window.location.protocol}//${window.location.hostname}:8000`;
 
-const PLAYER_BASE =
-  urlOverrides.get("player_base") ||
-  (savedMode === "external" ? savedPlayerBase : "") ||
-  (window.PLAYER_BASE_URL || "").trim() ||
+function httpOrigin(raw) {
+  try {
+    const url = new URL(raw);
+    return /^https?:$/.test(url.protocol) ? url.origin : null;
+  } catch (_) { return null; }
+}
+
+/** A saved Connection override, if this deployment allows it: an http(s)
+ *  URL on the configured origin, or any http(s) URL when nothing is
+ *  configured. Anything else is ignored (""). */
+function acceptedConnectionOverride(raw, configured) {
+  const value = String(raw || "").trim();
+  const origin = value ? httpOrigin(value) : null;
+  if (!origin) return "";
+  if (configured && origin !== httpOrigin(configured)) return "";
+  return value.replace(/\/+$/, "");
+}
+
+function readSetting(key) {
+  try { return localStorage.getItem(key) || ""; } catch (_) { return ""; }
+}
+
+const savedMode       = readSetting(CONNECTION_STORAGE_KEY) || "local";
+const savedApiBase    = readSetting(CONNECTION_API_KEY);
+const savedPlayerBase = readSetting(CONNECTION_PLAYER_KEY);
+
+/** Base URL for API calls (fetch). */
+const API_BASE =
+  (savedMode === "external" && acceptedConnectionOverride(savedApiBase, CONFIGURED_API_BASE)) ||
+  DEPLOYED_API_BASE;
+
+/** Base URL of the player, for the "Player URL" link and the preview frame.
+ *  The configured value always wins; a saved override only applies when no
+ *  player is configured (local development). */
+const PLAYER_BASE = CONFIGURED_PLAYER_BASE ||
+  (savedMode === "external" && acceptedConnectionOverride(savedPlayerBase, "")) ||
   `${window.location.protocol}//${window.location.hostname}:3001`;
 
 const AUTH_STORAGE_KEY = "signage_auth_token";
@@ -48,6 +95,12 @@ function populateTimezoneSelect(selectEl, currentValue) {
 function toast(message, type = "info", duration = 3500) {
   const container = document.getElementById("toast-container");
   if (!container) return;
+  // The same message already on screen (e.g. a call site and the global
+  // handler both reporting one failure) would only be noise.
+  for (const existing of container.children) {
+    if (existing.textContent === message && existing.classList.contains(`toast-${type}`)
+        && !existing.classList.contains("toast-exit")) return;
+  }
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = message;
@@ -75,7 +128,7 @@ window.confirmDialog = function ({ title, message, confirmLabel, danger = false 
       <div class="modal-card confirm-dialog-card">
         <div class="confirm-dialog-header">
           <h3>${title || ""}</h3>
-          <button class="confirm-dialog-close btn-ghost" aria-label="Close">✕</button>
+          <button class="confirm-dialog-close btn-ghost" aria-label="${escAttr(Khan.t("common.close", "Close"))}">✕</button>
         </div>
         <div class="confirm-dialog-body">
           <p>${(message || "").replace(/</g, "&lt;")}</p>
@@ -98,9 +151,16 @@ window.confirmDialog = function ({ title, message, confirmLabel, danger = false 
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       resolve(value);
     }
+    // Escape cancels. Enter is deliberately NOT mapped to "confirm": it
+    // activates whichever button has focus (native <button> behaviour), and
+    // Cancel is focused on open -- so Enter on a delete prompt cancels
+    // instead of deleting.
     function onKeyDown(e) {
-      if (e.key === "Escape") settle(false);
-      else if (e.key === "Enter") settle(true);
+      if (e.key === "Escape") { e.preventDefault(); settle(false); return; }
+      if (e.key === "Enter") {
+        const focused = document.activeElement;
+        if (!(focused && overlay.contains(focused) && focused.tagName === "BUTTON")) e.preventDefault();
+      }
     }
 
     overlay.addEventListener("click", (e) => { if (e.target === overlay) settle(false); });
@@ -176,7 +236,9 @@ function showSection(id) {
   document.getElementById("pair-view")?.classList.add("hidden");
   document.getElementById("dashboard")?.classList.remove("hidden");
   if (location.pathname === "/billing") history.replaceState({}, "", "/");
-  document.querySelectorAll("#dashboard > section.panel, #dashboard > div").forEach((el) => {
+  // The plan card sits above whichever section is showing; it is not a
+  // section itself (hiding it here is why it never appeared).
+  document.querySelectorAll("#dashboard > section.panel:not(#plan-card), #dashboard > div").forEach((el) => {
     el.classList.toggle("hidden", el.id !== id);
   });
   navButtons.forEach((btn) => {
@@ -196,11 +258,13 @@ function buildPlayerUrl(base, params) {
 }
 
 function getPlayerBaseWithOverrides() {
-  const base = PLAYER_BASE || `${window.location.protocol}//${window.location.hostname}:3001`;
-  if (savedMode === "external" && savedApiBase && !savedPlayerBase) {
-    return buildPlayerUrl(base, { api_base: savedApiBase });
+  // Local development that points the dashboard at another API hands the
+  // player the same one. A configured deployment never does: its player has
+  // its own config.js, and a link must not carry a browser-local setting.
+  if (!CONFIGURED_API_BASE && API_BASE !== DEPLOYED_API_BASE) {
+    return buildPlayerUrl(PLAYER_BASE, { api_base: API_BASE });
   }
-  return base;
+  return PLAYER_BASE;
 }
 
 function getScreenResolutionInput() {
@@ -221,42 +285,138 @@ function updateResolutionCustomVisibility() {
 }
 
 /* ── API ─────────────────────────────────────────────────────── */
-function localizeError(detail, fallback) {
-  if (typeof detail === "string") return detail;
-  if (detail && typeof detail === "object" && detail.code) {
-    return Khan.t(`error.${detail.code}`, detail.message);
-  }
-  return fallback || "Something went wrong";
+// Statuses whose generic meaning is clearer to a user than whatever English
+// text the server (or a proxy in front of it) attached.
+const STATUS_ERROR_TEXT = {
+  401: ["error.session_expired", "Your session has ended. Please sign in again."],
+  403: ["error.forbidden", "Your account doesn't have permission to do that."],
+  413: ["error.too_large", "That file is too large to upload."],
+  415: ["error.unsupported_type", "Only images, videos and PDF files can be uploaded."],
+  429: ["error.rate_limited", "Too many requests. Wait a moment and try again."],
+};
+
+function statusErrorText(status) {
+  if (STATUS_ERROR_TEXT[status]) return Khan.t(...STATUS_ERROR_TEXT[status]);
+  if (status >= 500) return Khan.t("error.server", "The server ran into a problem. Try again in a moment.");
+  return null;
 }
 
-async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await fetch(`${API_BASE}${path}`, { headers, ...options });
-  if (!res.ok) {
-    if (res.status === 401) handleAuthFailure();
-    const text = await res.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    const msg = data && data.detail
-      ? localizeError(data.detail, text)
-      : (text || "Request failed");
-    const err = new Error(msg);
-    err.status = res.status;
-    err.data   = data;
-    if (data?.detail?.code?.startsWith("subscription.")) {
-      // Refresh org state so banner re-renders correctly
-      try {
-        const fresh = await fetch(`${API_BASE}/organization`, { headers });
-        if (fresh.ok) {
-          state.org = await fresh.json();
-          SubscriptionBanner.update(state.org);
-        }
-      } catch (_) { /* swallow */ }
-    }
+// What a status means, for an error whose own text is the server's English:
+// a plain-string detail ("Playlist not found"), a code with no translation,
+// Pydantic's messages. In English the server's text is kept -- it is more
+// specific -- and these are only the fallback; in Arabic they replace it.
+const STATUS_FALLBACK_TEXT = {
+  400: ["error.bad_request", "The server couldn't accept that. Check what you entered and try again."],
+  404: ["error.not_found", "That item no longer exists. It may have been deleted; refresh the page and try again."],
+  409: ["error.conflict", "That clashes with something that already exists. Refresh the page and try again."],
+  422: ["error.validation", "Some values aren't valid."],
+};
+
+// Plain-string details the dashboard can run into whose meaning a status
+// alone would lose (both are 400s).
+const DETAIL_TEXT = {
+  "Empty file": ["error.empty_file", "That file is empty."],
+  "URL must start with http:// or https://": ["error.url_scheme", "The address must start with http:// or https://."],
+};
+
+function serverTextReadable() { return Khan.currentLocale() !== "ar"; }
+
+/** The server's English `serverText` where the reader reads English, else
+ *  what `status` means in the reader's language. */
+function serverOrStatusText(status, serverText) {
+  const fallback = STATUS_FALLBACK_TEXT[status] ? Khan.t(...STATUS_FALLBACK_TEXT[status]) : null;
+  const generic = Khan.t("error.generic", "Something went wrong. Please try again.");
+  return serverTextReadable() ? (serverText || fallback || generic) : (fallback || generic);
+}
+
+// FastAPI/Pydantic 422: [{loc: ["body", "rules", 0, "days_of_week"], msg}, ...]
+// The field paths and messages are English, so Arabic gets the summary only.
+function formatValidationErrors(list) {
+  const summary = Khan.t("error.validation", "Some values aren't valid.");
+  if (!serverTextReadable()) return summary;
+  const parts = list.map((e) => {
+    const loc = (Array.isArray(e && e.loc) ? e.loc : [])
+      .filter((p) => !["body", "query", "path"].includes(p));
+    const msg = (e && e.msg) || "";
+    return loc.length ? `${loc.join(" › ")}: ${msg}` : msg;
+  }).filter(Boolean);
+  return [summary, ...parts.slice(0, 3)].join(" ");
+}
+
+/** Localized, human-readable text for a failed response. Backend errors are
+ *  {detail: {code, message}}, {detail: "string"} or a Pydantic 422 list;
+ *  none of them is ever shown to the user as raw JSON, nor as English to
+ *  someone using the dashboard in Arabic. */
+function describeApiError(status, data, text) {
+  const detail = data ? data.detail : undefined;
+  if (Array.isArray(detail)) return formatValidationErrors(detail);
+  if (detail && typeof detail === "object") {
+    if (detail.code && Khan.has(`error.${detail.code}`)) return Khan.t(`error.${detail.code}`);
+    return statusErrorText(status) || serverOrStatusText(status, detail.message);
+  }
+  if (typeof detail === "string" && detail) {
+    if (DETAIL_TEXT[detail]) return Khan.t(...DETAIL_TEXT[detail]);
+    return statusErrorText(status) || serverOrStatusText(status, detail);
+  }
+  const plain = typeof text === "string" && text.length < 200 && !/^\s*[<{[]/.test(text) ? text.trim() : "";
+  return statusErrorText(status) || serverOrStatusText(status, plain);
+}
+
+function apiError(status, data, text) {
+  const err = new Error(describeApiError(status, data, text));
+  err.status = status;
+  err.data = data;
+  err.isApiError = true;
+  return err;
+}
+
+// fetch() only rejects when the request never got an answer.
+async function apiFetch(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (cause) {
+    const err = new Error(Khan.t("error.network", "Can't reach the server. Check your connection and try again."));
+    err.status = 0;
+    err.network = true;
+    err.isApiError = true;
+    err.cause = cause;
     throw err;
   }
-  return res.json();
+}
+
+async function failedResponse(res, text, headers, { anonymous = false } = {}) {
+  // An anonymous request's 401 says nothing about the session this tab holds.
+  if (res.status === 401 && !anonymous) handleAuthFailure();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+  const err = apiError(res.status, data, text);
+  if (data?.detail?.code?.startsWith?.("subscription.")) {
+    // Refresh org state so banner re-renders correctly
+    try {
+      const fresh = await fetch(`${API_BASE}/organization`, { headers });
+      if (fresh.ok) {
+        state.org = await fresh.json();
+        SubscriptionBanner.update(state.org);
+      }
+    } catch (_) { /* swallow */ }
+  }
+  return err;
+}
+
+/** JSON API call. Resolves to the parsed body, or null for an empty one
+ *  (204 No Content: DELETE /schedules/{id}, /api-keys/{id}, /menus/{id}...).
+ *  Rejects with an Error whose message is ready to show to the user.
+ *  `anonymous: true` sends no session token even when one is held. */
+async function api(path, options = {}) {
+  const { anonymous = false, ...init } = options;
+  const isForm = typeof FormData !== "undefined" && init.body instanceof FormData;
+  const headers = { ...(isForm ? {} : { "Content-Type": "application/json" }), ...(init.headers || {}) };
+  if (authToken && !anonymous) headers.Authorization = `Bearer ${authToken}`;
+  const res = await apiFetch(`${API_BASE}${path}`, { ...init, headers });
+  const text = await res.text();
+  if (!res.ok) throw await failedResponse(res, text, headers, { anonymous });
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) { return text; }
 }
 
 /** Same auth, 401 handling and error shape as api(), but returns the raw body.
@@ -265,33 +425,112 @@ async function api(path, options = {}) {
 async function apiText(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
-  const res = await fetch(`${API_BASE}${path}`, { headers, ...options });
-  if (!res.ok) {
-    if (res.status === 401) handleAuthFailure();
-    const text = await res.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    const err = new Error(data && data.detail ? localizeError(data.detail, text)
-                                             : (text || "Request failed"));
-    err.status = res.status;
-    err.data   = data;
-    throw err;
-  }
-  return res.text();
+  const res = await apiFetch(`${API_BASE}${path}`, { ...options, headers });
+  const text = await res.text();
+  if (!res.ok) throw await failedResponse(res, text, headers);
+  return text;
 }
+
+/* ── Global error reporting ──────────────────────────────────── */
+// Most handlers are `async (e) => { await withLoading(btn, ...) }` with no
+// catch of their own. Their failures used to vanish into the console; now
+// anything nobody handled ends up here and is shown once. Call sites that
+// catch their own errors never reach this, so nothing is reported twice.
+function reportError(err) {
+  if (!err || err.cancelled) return;
+  const text = err.isApiError && err.message
+    ? err.message
+    : Khan.t("error.generic", "Something went wrong. Please try again.");
+  toast(text, "error", 6000);
+}
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  event.preventDefault();
+  if (reason && reason.cancelled) return;   // MediaPicker closed: not an error
+  console.error(reason);
+  reportError(reason);
+});
 
 /* ── Auth ────────────────────────────────────────────────────── */
 function setAuth(token, user) {
+  const hadSession = Boolean(authToken || currentUser);
   authToken   = token;
   currentUser = user;
   token ? localStorage.setItem(AUTH_STORAGE_KEY, token)
         : localStorage.removeItem(AUTH_STORAGE_KEY);
+  if (!token && hadSession) resetOrgState();
   updateAuthUI();
 }
 
 function handleAuthFailure() {
   setAuth(null, null);
   showAuthPanel();
+}
+
+/* Everything below belongs to one organization. Signing out (or a dead
+   session) must drop all of it, or the next account to sign in in this tab
+   briefly works against the previous org's playlists, users and schedules. */
+function resetOrgState() {
+  Object.assign(state, {
+    sites: [], screens: [], playlists: [], schedules: [], media: [], users: [], groups: [],
+    org: null, capabilities: { menus: false, menu_import: false },
+  });
+  const safely = (fn) => { try { fn(); } catch (err) { console.warn("resetOrgState", err); } };
+  safely(() => { renderSites(); renderSiteOptions(); });
+  safely(() => { renderPlaylists(); renderPlaylistSelect(); });
+  safely(() => { renderMedia(); renderScreens(); renderUsers(); renderGroups(); });
+  safely(() => {
+    ["zones-editor", "screen-access-panel", "preview-panel", "plan-card", "nav-menus-btn"]
+      .forEach((id) => document.getElementById(id)?.classList.add("hidden"));
+    const frame = document.getElementById("preview-frame");
+    if (frame) frame.removeAttribute("src");
+  });
+  safely(() => Walls.reset());
+  safely(() => Schedules.reset());
+  safely(() => AuditLog.reset());
+  safely(() => Menus.reset());
+  safely(() => ApiKeys.reset());
+  safely(() => SubscriptionBanner.update(null));
+  safely(() => stopBillingPoll());
+  safely(() => {
+    document.getElementById("billing-current-body").textContent = "—";
+    document.getElementById("billing-history-body").innerHTML = "";
+    clearBillingBanner();
+  });
+}
+
+/* ── Roles ───────────────────────────────────────────────────── */
+// Mirrors the backend's require_roles / session_roles: viewers read only;
+// editors manage content (sites, screens, media, playlists, schedules,
+// walls, menus, pairing); deleting sites, screens and schedules, plus
+// users, groups, screen access, API keys, audit log and billing, is admin.
+function currentRole() {
+  if (!currentUser) return null;
+  return currentUser.role || (currentUser.is_admin ? "admin" : "viewer");
+}
+function isAdmin() { return currentRole() === "admin"; }
+function canEditContent() { return currentRole() === "admin" || currentRole() === "editor"; }
+
+function roleLabel(role) {
+  // Also called (from setAuth) before the locale has loaded; fall back
+  // quietly then -- boot() renders the header again once strings arrive.
+  const key = `users.role_${role}`;
+  return Khan.has(key) ? Khan.t(key) : (role || "");
+}
+
+// Static controls that only make sense for someone who can write. Gated with
+// an inline display so it never fights the .hidden class other code toggles.
+const EDITOR_ONLY_IDS = [
+  "site-form", "screen-form", "media-url-form", "media-form", "playlist-form",
+  "playlist-add-item", "walls-create-btn", "schedule-new-btn", "menu-new-btn",
+];
+function applyRoleGating() {
+  const edit = canEditContent();
+  EDITOR_ONLY_IDS.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = edit ? "" : "none";
+  });
 }
 
 function updateAuthUI() {
@@ -301,13 +540,14 @@ function updateAuthUI() {
   const usersBtn    = document.querySelector('button[data-section="users"]');
   const auditBtn    = document.querySelector('button[data-section="audit-log"]');
   const apiKeysBtn  = document.querySelector('button[data-section="api-keys"]');
+  applyRoleGating();
   if (currentUser) {
-    authUser.textContent = `${currentUser.username} · ${currentUser.role}`;
+    authUser.textContent = `${currentUser.username} · ${roleLabel(currentRole())}`;
     logoutBtn.classList.remove("hidden");
     nav.classList.remove("hidden");
-    if (usersBtn) usersBtn.classList.toggle("hidden", currentUser.role !== "admin");
-    if (auditBtn) auditBtn.classList.toggle("hidden", currentUser.role !== "admin");
-    if (apiKeysBtn) apiKeysBtn.classList.toggle("hidden", currentUser.role !== "admin");
+    if (usersBtn) usersBtn.classList.toggle("hidden", !isAdmin());
+    if (auditBtn) auditBtn.classList.toggle("hidden", !isAdmin());
+    if (apiKeysBtn) apiKeysBtn.classList.toggle("hidden", !isAdmin());
   } else {
     authUser.textContent = "";
     logoutBtn.classList.add("hidden");
@@ -321,6 +561,11 @@ function updateAuthUI() {
 function showAuthPanel() {
   document.getElementById("auth-panel").classList.remove("hidden");
   document.getElementById("dashboard").classList.add("hidden");
+  // Billing and pairing are full-page views outside #dashboard; left visible
+  // they sit underneath the sign-in form after a logout.
+  document.getElementById("billing-view")?.classList.add("hidden");
+  document.getElementById("pair-view")?.classList.add("hidden");
+  document.getElementById("subscription-banner")?.classList.add("hidden");
 }
 
 function showDashboard() {
@@ -345,6 +590,7 @@ async function loadPlaylists() {
   renderPlaylists();
   renderPlaylistOptions();
   renderPlaylistSelect();
+  renderScreens();   // each screen card has a playlist picker built from state.playlists
 }
 
 async function loadSchedules() {
@@ -356,13 +602,22 @@ async function loadSchedules() {
   }
 }
 
+/** After a schedule is created, renamed or deleted: the screen cards'
+ *  schedule pickers are built from state.schedules. */
+async function refreshScheduleOptions() {
+  await loadSchedules();
+  renderScreens();
+}
+
 async function loadMedia() {
   state.media = await api("/media");
   renderMedia();
+  // An open zones editor lists the library in its "Add media…" pickers.
+  if (!document.getElementById("zones-editor")?.classList.contains("hidden")) renderZonesList();
 }
 
 async function loadUsers() {
-  if (currentUser?.role !== "admin") {
+  if (!isAdmin()) {
     state.users  = [];
     state.groups = [];
     renderUsers();
@@ -381,21 +636,23 @@ function renderSites() {
   state.sites.forEach((site) => {
     const card = document.createElement("div");
     card.className = "card";
+    // Deleting a site is admin-only on the backend.
     card.innerHTML = `
       <h3>${escHtml(site.name)}</h3>
-      <div>Slug: <span style="font-family:var(--mono)">${escHtml(site.slug)}</span></div>
-      <div class="card-actions">
-        <button class="delete-btn" data-id="${site.id}">Delete</button>
-      </div>
+      <div>${escHtml(Khan.t("sites.slug_label", "Slug:"))} <span style="font-family:var(--mono)" dir="ltr">${escHtml(site.slug)}</span></div>
+      ${isAdmin() ? `<div class="card-actions">
+        <button class="delete-btn" data-id="${site.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
+      </div>` : ""}
     `;
-    card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+    card.querySelector(".delete-btn")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_site_title", "Delete site"),
         message: Khan.t("confirm.delete_site_body", "Delete site \"{name}\"? Screens in this site become unassigned.").replace("{name}", site.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/sites/${site.id}`, { method: "DELETE" });
         toast(Khan.t("toast.site_deleted"), "success");
         await loadSites();
@@ -408,7 +665,7 @@ function renderSites() {
 
 function renderSiteOptions() {
   const select = document.getElementById("screen-site");
-  select.innerHTML = `<option value="">Site</option>`;
+  select.innerHTML = `<option value="">${escHtml(Khan.t("screens.site_label", "Site"))}</option>`;
   state.sites.forEach((site) => {
     const option = document.createElement("option");
     option.value = site.id;
@@ -429,18 +686,19 @@ function renderPlaylists() {
     card.className = "card";
     card.innerHTML = `
       <h3>${escHtml(playlist.name)}</h3>
-      <div class="card-actions">
-        <button class="delete-btn" data-id="${playlist.id}">Delete</button>
-      </div>
+      ${canEditContent() ? `<div class="card-actions">
+        <button class="delete-btn" data-id="${playlist.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
+      </div>` : ""}
     `;
-    card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+    card.querySelector(".delete-btn")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_playlist_title", "Delete playlist"),
         message: Khan.t("confirm.delete_playlist_body", "Delete playlist \"{name}\"?").replace("{name}", playlist.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/playlists/${playlist.id}`, { method: "DELETE" });
         toast(Khan.t("toast.playlist_deleted"), "success");
         await loadPlaylists();
@@ -453,7 +711,7 @@ function renderPlaylists() {
 
 function renderPlaylistSelect() {
   const select = document.getElementById("playlist-select");
-  select.innerHTML = `<option value="">Select playlist</option>`;
+  select.innerHTML = `<option value="">${escHtml(Khan.t("playlists.select_playlist", "Select playlist"))}</option>`;
   state.playlists.forEach((playlist) => {
     const option = document.createElement("option");
     option.value = playlist.id;
@@ -471,26 +729,27 @@ function renderMedia() {
     card.className = "card";
     const isUrl = item.mime_type === "text/url";
     const url   = isUrl ? item.url : `${API_BASE}${item.url}`;
-    const typeLabel = isUrl ? "Website URL" : item.mime_type;
+    const typeLabel = isUrl ? Khan.t("media.type_website", "Website URL") : item.mime_type;
     card.innerHTML = `
       <h3>${escHtml(item.name)}</h3>
       <div class="card-meta">
         <span>${escHtml(typeLabel)}</span>
         ${!isUrl && item.size ? `<span>${formatBytes(item.size)}</span>` : ""}
       </div>
-      <div><a href="${escAttr(url)}" target="_blank" rel="noreferrer">Open ↗</a></div>
-      <div class="card-actions">
-        <button class="delete-btn" data-id="${item.id}">Delete</button>
-      </div>
+      <div><a href="${escAttr(url)}" target="_blank" rel="noreferrer">${escHtml(Khan.t("media.open", "Open ↗"))}</a></div>
+      ${canEditContent() ? `<div class="card-actions">
+        <button class="delete-btn" data-id="${item.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
+      </div>` : ""}
     `;
-    card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+    card.querySelector(".delete-btn")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_media_title", "Delete media"),
         message: Khan.t("confirm.delete_media_body", "Delete \"{name}\"?").replace("{name}", item.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/media/${item.id}`, { method: "DELETE" });
         toast(Khan.t("toast.media_deleted"), "success");
         await loadMedia();
@@ -503,7 +762,7 @@ function renderMedia() {
 function renderUsers() {
   const container = document.getElementById("users-list");
   container.innerHTML = "";
-  if (currentUser?.role !== "admin") {
+  if (!isAdmin()) {
     container.innerHTML = `<div class='card'>${Khan.t("users.admin_required", "Admin access required to manage users.")}</div>`;
     return;
   }
@@ -512,38 +771,40 @@ function renderUsers() {
     card.className = "card";
     card.innerHTML = `
       <h3>${escHtml(user.username)}</h3>
-      <div class="card-meta"><span>Role: ${escHtml(user.role)}</span></div>
+      <div class="card-meta"><span>${escHtml(Khan.t("users.role_label", "Role: {role}").replace("{role}", roleLabel(user.role)))}</span></div>
       <div class="card-actions">
-        <input type="password" placeholder="New password" data-user-pass="${user.id}" style="min-width:140px" />
-        <button class="save-btn"   data-user-reset="${user.id}">Reset Password</button>
+        <input type="password" placeholder="${escAttr(Khan.t("users.new_password_placeholder", "New password"))}" data-user-pass="${user.id}" style="min-width:140px" autocomplete="new-password" />
+        <button class="save-btn"   data-user-reset="${user.id}">${escHtml(Khan.t("users.reset_password", "Reset Password"))}</button>
         <select data-user-role="${user.id}">
-          <option value="viewer">Viewer</option>
-          <option value="editor">Editor</option>
-          <option value="admin">Admin</option>
+          <option value="viewer">${escHtml(roleLabel("viewer"))}</option>
+          <option value="editor">${escHtml(roleLabel("editor"))}</option>
+          <option value="admin">${escHtml(roleLabel("admin"))}</option>
         </select>
-        <button class="save-btn"   data-user-role-save="${user.id}">Update Role</button>
-        <button class="delete-btn" data-user-delete="${user.id}">Delete</button>
+        <button class="save-btn"   data-user-role-save="${user.id}">${escHtml(Khan.t("users.update_role", "Update Role"))}</button>
+        <button class="delete-btn" data-user-delete="${user.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
       </div>
       <div class="card-actions" data-user-groups="${user.id}"></div>
     `;
     card.querySelector(`[data-user-reset="${user.id}"]`).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       const input    = card.querySelector(`[data-user-pass="${user.id}"]`);
       const password = input.value.trim();
       if (!password) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ password }) });
         input.value = "";
         toast(Khan.t("toast.password_updated"), "success");
       });
     });
     card.querySelector(`[data-user-delete="${user.id}"]`).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_user_title", "Delete user"),
         message: Khan.t("confirm.delete_user_body", "Delete user \"{name}\"?").replace("{name}", user.username),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/users/${user.id}`, { method: "DELETE" });
         toast(Khan.t("toast.user_deleted"), "success");
         await loadUsers();
@@ -552,7 +813,8 @@ function renderUsers() {
     const roleSelect = card.querySelector(`[data-user-role="${user.id}"]`);
     roleSelect.value = user.role;
     card.querySelector(`[data-user-role-save="${user.id}"]`).addEventListener("click", async (e) => {
-      await withLoading(e.currentTarget, async () => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
+      await withLoading(btn, async () => {
         await api(`/users/${user.id}`, { method: "PUT", body: JSON.stringify({ role: roleSelect.value }) });
         toast(Khan.t("toast.role_updated"), "success");
         await loadUsers();
@@ -587,7 +849,7 @@ function renderUsers() {
 function renderGroups() {
   const container = document.getElementById("groups-list");
   container.innerHTML = "";
-  if (currentUser?.role !== "admin") return;
+  if (!isAdmin()) return;
   if (state.groups.length) {
     const heading = document.createElement("h3");
     heading.textContent = Khan.t("users.groups_heading", "Groups");
@@ -600,17 +862,18 @@ function renderGroups() {
     card.innerHTML = `
       <h3>${escHtml(group.name)}</h3>
       <div class="card-actions">
-        <button class="delete-btn" data-group-delete="${group.id}">Delete</button>
+        <button class="delete-btn" data-group-delete="${group.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>
       </div>
     `;
     card.querySelector(`[data-group-delete="${group.id}"]`).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_group_title", "Delete group"),
         message: Khan.t("confirm.delete_group_body", "Delete group \"{name}\"?").replace("{name}", group.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/groups/${group.id}`, { method: "DELETE" });
         toast(Khan.t("toast.group_deleted"), "success");
         await loadUsers();
@@ -629,10 +892,10 @@ function renderScreens() {
     const base      = getPlayerBaseWithOverrides();
     const playerUrl = base.includes("?") ? `${base}&code=${screen.pair_code}` : `${base}/?code=${screen.pair_code}`;
     const statusHtml = screen.is_online
-      ? `<span class="status-online">Online</span>`
-      : `<span class="status-offline">Offline</span>`;
+      ? `<span class="status-online">${escHtml(Khan.t("screens.status_online", "Online"))}</span>`
+      : `<span class="status-offline">${escHtml(Khan.t("screens.status_offline", "Offline"))}</span>`;
     const playlistOptions = [
-      `<option value="">No playlist</option>`,
+      `<option value="">${escHtml(Khan.t("screens.no_playlist", "No playlist"))}</option>`,
       ...state.playlists.map((p) => `<option value="${p.id}">${escHtml(p.name)}</option>`),
     ].join("");
 
@@ -641,25 +904,31 @@ function renderScreens() {
       ...(state.schedules || []).map((s) => `<option value="${s.id}">${escHtml(s.name)}</option>`),
     ].join("");
 
+    // Saving, zones and preview need editor; access (GET/PUT
+    // /screens/{id}/groups) and delete are admin-only on the backend.
+    const edit  = canEditContent();
+    const admin = isAdmin();
+    const orientationLabel = screen.orientation
+      ? Khan.t(`screens.orientation_${screen.orientation}`, screen.orientation) : "";
     card.innerHTML = `
       <h3>${escHtml(screen.name)}</h3>
       <div class="card-meta">
-        <span>Site: ${escHtml(screen.site_name || Khan.t("screens.site_unassigned_label", "Unassigned"))}</span>
+        <span>${escHtml(Khan.t("screens.site_prefix", "Site:"))} ${escHtml(screen.site_name || Khan.t("screens.site_unassigned_label", "Unassigned"))}</span>
         ${screen.location ? `<span>${escHtml(screen.location)}</span>` : ""}
-        ${screen.resolution ? `<span>${escHtml(screen.resolution)}</span>` : ""}
-        ${screen.orientation ? `<span>${escHtml(screen.orientation)}</span>` : ""}
-        <span>Status: ${statusHtml}</span>
+        ${screen.resolution ? `<span dir="ltr">${escHtml(screen.resolution)}</span>` : ""}
+        ${orientationLabel ? `<span>${escHtml(orientationLabel)}</span>` : ""}
+        <span>${escHtml(Khan.t("screens.status_label", "Status:"))} ${statusHtml}</span>
       </div>
-      <div>Pair code: <strong class="pair-code">${escHtml(screen.pair_code)}</strong></div>
-      <div><a href="${escAttr(playerUrl)}" target="_blank" rel="noreferrer">Player URL ↗</a></div>
+      <div>${escHtml(Khan.t("screens.pair_code_label", "Pair code:"))} <strong class="pair-code" dir="ltr">${escHtml(screen.pair_code)}</strong></div>
+      <div><a href="${escAttr(playerUrl)}" target="_blank" rel="noreferrer">${escHtml(Khan.t("screens.player_url", "Player URL ↗"))}</a></div>
       <div class="card-actions">
-        <select data-playlist-select="${screen.id}">${playlistOptions}</select>
-        <select data-schedule-select="${screen.id}">${scheduleOptions}</select>
-        <button class="save-btn"    data-save-screen="${screen.id}">Save</button>
-        <button class="save-btn"    data-zones-screen="${screen.id}">Zones</button>
-        <button class="access-btn"  data-access-screen="${screen.id}">Access</button>
-        <button class="preview-btn" data-preview-screen="${screen.id}">Preview</button>
-        <button class="delete-btn"  data-delete-screen="${screen.id}">Delete</button>
+        <select data-playlist-select="${screen.id}" ${edit ? "" : "disabled"} aria-label="${escAttr(Khan.t("schedules.editor.playlist", "Playlist"))}">${playlistOptions}</select>
+        <select data-schedule-select="${screen.id}" ${edit ? "" : "disabled"} aria-label="${escAttr(Khan.t("screen.field.schedule", "Schedule"))}">${scheduleOptions}</select>
+        ${edit ? `<button class="save-btn"    data-save-screen="${screen.id}">${escHtml(Khan.t("screens.save_btn", "Save"))}</button>
+        <button class="save-btn"    data-zones-screen="${screen.id}">${escHtml(Khan.t("screens.zones_btn", "Zones"))}</button>` : ""}
+        ${admin ? `<button class="access-btn"  data-access-screen="${screen.id}">${escHtml(Khan.t("screens.access_btn", "Access"))}</button>` : ""}
+        ${edit ? `<button class="preview-btn" data-preview-screen="${screen.id}">${escHtml(Khan.t("screens.preview_btn", "Preview"))}</button>` : ""}
+        ${admin ? `<button class="delete-btn"  data-delete-screen="${screen.id}">${escHtml(Khan.t("confirm.delete_label", "Delete"))}</button>` : ""}
       </div>
     `;
 
@@ -669,8 +938,9 @@ function renderScreens() {
     const scheduleSel = card.querySelector(`[data-schedule-select="${screen.id}"]`);
     if (scheduleSel) scheduleSel.value = screen.schedule_id || "";
 
-    card.querySelector(`[data-save-screen="${screen.id}"]`).addEventListener("click", async (e) => {
-      await withLoading(e.currentTarget, async () => {
+    card.querySelector(`[data-save-screen="${screen.id}"]`)?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
+      await withLoading(btn, async () => {
         const playlistId = select.value ? Number(select.value) : null;
         const scheduleId = scheduleSel?.value ? Number(scheduleSel.value) : null;
         await api(`/screens/${screen.id}`, {
@@ -682,16 +952,17 @@ function renderScreens() {
       });
     });
 
-    card.querySelector(`[data-zones-screen="${screen.id}"]`).addEventListener("click", async () => {
+    card.querySelector(`[data-zones-screen="${screen.id}"]`)?.addEventListener("click", async () => {
       await openZonesEditor(screen.id);
     });
 
-    card.querySelector(`[data-access-screen="${screen.id}"]`).addEventListener("click", async () => {
+    card.querySelector(`[data-access-screen="${screen.id}"]`)?.addEventListener("click", async () => {
       await openScreenAccessEditor(screen.id);
     });
 
-    card.querySelector(`[data-preview-screen="${screen.id}"]`).addEventListener("click", async (e) => {
-      await withLoading(e.currentTarget, async () => {
+    card.querySelector(`[data-preview-screen="${screen.id}"]`)?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
+      await withLoading(btn, async () => {
         const preview = await api(`/screens/${screen.id}/preview-token`, { method: "POST" });
         const base    = getPlayerBaseWithOverrides();
         const url     = base.includes("?") ? `${base}&preview_token=${preview.token}` : `${base}/?preview_token=${preview.token}`;
@@ -699,17 +970,19 @@ function renderScreens() {
       });
     });
 
-    card.querySelector(`[data-delete-screen="${screen.id}"]`).addEventListener("click", async (e) => {
+    card.querySelector(`[data-delete-screen="${screen.id}"]`)?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;   // null once the event finishes dispatching
       if (!(await confirmDialog({
         title:   Khan.t("confirm.delete_screen_title", "Delete screen"),
         message: Khan.t("confirm.delete_screen_body", "Delete screen \"{name}\"?").replace("{name}", screen.name),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/screens/${screen.id}`, { method: "DELETE" });
         toast(Khan.t("toast.screen_deleted"), "success");
         await loadScreens();
+        loadOrganization();   // plan card: "n / limit screens"
       });
     });
 
@@ -738,7 +1011,7 @@ function snapValue(value) {
 function setZones(zones) {
   zonesState.zones = zones.map((zone, index) => ({
     id: zone.id || `local-${index}`,
-    name: zone.name || `Zone ${index + 1}`,
+    name: zone.name || zoneDefaultName(index + 1),
     x: zone.x, y: zone.y, width: zone.width, height: zone.height,
     sort_order: zone.sort_order ?? index,
     transition_ms: zone.transition_ms ?? 600,
@@ -796,11 +1069,11 @@ function renderZonesList() {
     card.className = "card";
     const itemsHtml = zone.items?.map((item, itemIndex) => `
       <div class="zone-item">
-        <span>${escHtml(item.name || "Media")}</span>
+        <span>${escHtml(item.name || Khan.t("zones.media_fallback", "Media"))}</span>
         <input type="number" min="0" max="3600" value="${item.duration_seconds ?? 10}" data-zone-item-duration="${zoneIndex}:${itemIndex}" />
         <button class="delete-btn" data-zone-item-remove="${zoneIndex}:${itemIndex}">✕</button>
       </div>
-    `).join("") || "<div class='helper-text'>No media yet.</div>";
+    `).join("") || `<div class='helper-text'>${escHtml(Khan.t("zones.no_media", "No media yet."))}</div>`;
 
     const mediaOptions = state.media.map((m) => `<option value="${m.id}">${escHtml(m.name)}</option>`).join("");
 
@@ -810,16 +1083,16 @@ function renderZonesList() {
         <span>${Math.round(zone.width * 100)}% × ${Math.round(zone.height * 100)}%</span>
       </div>
       <div class="zone-transition">
-        <label>Fade (ms)</label>
+        <label>${escHtml(Khan.t("zones.fade_ms", "Fade (ms)"))}</label>
         <input type="number" min="0" max="5000" value="${zone.transition_ms ?? 600}" data-zone-transition="${zoneIndex}" />
       </div>
       <div class="zone-actions">
-        <button class="delete-btn" data-zone-remove="${zoneIndex}">Delete Zone</button>
+        <button class="delete-btn" data-zone-remove="${zoneIndex}">${escHtml(Khan.t("zones.delete_zone", "Delete Zone"))}</button>
       </div>
       <div class="zone-add">
-        <select data-zone-media="${zoneIndex}"><option value="">Add media…</option>${mediaOptions}</select>
+        <select data-zone-media="${zoneIndex}"><option value="">${escHtml(Khan.t("zones.add_media_option", "Add media…"))}</option>${mediaOptions}</select>
         <input type="number" min="0" max="3600" value="10" data-zone-duration="${zoneIndex}" style="width:70px" />
-        <button class="save-btn" data-zone-add="${zoneIndex}">Add</button>
+        <button class="save-btn" data-zone-add="${zoneIndex}">${escHtml(Khan.t("zones.add_btn", "Add"))}</button>
       </div>
       <div class="zone-items">${itemsHtml}</div>
     `;
@@ -863,17 +1136,24 @@ function normalizeDuration(value, fallback = 10) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function zoneDefaultName(n) {
+  return Khan.t("zones.default_name_n", "Zone {n}").replace("{n}", n);
+}
+
 function presetZones(type) {
-  if (type === "single")     setZones([{ name: "Full",   x: 0,    y: 0, width: 1,    height: 1,   items: [] }]);
-  if (type === "columns-2")  setZones([{ name: "Left",   x: 0,    y: 0, width: 0.5,  height: 1,   items: [] },
-                                        { name: "Right",  x: 0.5,  y: 0, width: 0.5,  height: 1,   items: [] }]);
-  if (type === "columns-3")  setZones([{ name: "Left",   x: 0,    y: 0, width: 0.33, height: 1,   items: [] },
-                                        { name: "Center", x: 0.33, y: 0, width: 0.34, height: 1,   items: [] },
-                                        { name: "Right",  x: 0.67, y: 0, width: 0.33, height: 1,   items: [] }]);
-  if (type === "rows-2")     setZones([{ name: "Top",    x: 0,    y: 0, width: 1,    height: 0.5, items: [] },
-                                        { name: "Bottom", x: 0,    y: 0.5, width: 1,  height: 0.5, items: [] }]);
-  if (type === "hero-side")  setZones([{ name: "Hero",   x: 0,    y: 0, width: 0.7,  height: 1,   items: [] },
-                                        { name: "Side",   x: 0.7,  y: 0, width: 0.3,  height: 1,   items: [] }]);
+  // Zone names are saved with the layout, so they are created in the
+  // language the person is working in.
+  const z = (key, fallback) => Khan.t(`zones.preset.${key}`, fallback);
+  if (type === "single")     setZones([{ name: z("full", "Full"),     x: 0,    y: 0, width: 1,    height: 1,   items: [] }]);
+  if (type === "columns-2")  setZones([{ name: z("left", "Left"),     x: 0,    y: 0, width: 0.5,  height: 1,   items: [] },
+                                        { name: z("right", "Right"),   x: 0.5,  y: 0, width: 0.5,  height: 1,   items: [] }]);
+  if (type === "columns-3")  setZones([{ name: z("left", "Left"),     x: 0,    y: 0, width: 0.33, height: 1,   items: [] },
+                                        { name: z("center", "Center"), x: 0.33, y: 0, width: 0.34, height: 1,   items: [] },
+                                        { name: z("right", "Right"),   x: 0.67, y: 0, width: 0.33, height: 1,   items: [] }]);
+  if (type === "rows-2")     setZones([{ name: z("top", "Top"),       x: 0,    y: 0, width: 1,    height: 0.5, items: [] },
+                                        { name: z("bottom", "Bottom"), x: 0,    y: 0.5, width: 1,  height: 0.5, items: [] }]);
+  if (type === "hero-side")  setZones([{ name: z("hero", "Hero"),     x: 0,    y: 0, width: 0.7,  height: 1,   items: [] },
+                                        { name: z("side", "Side"),     x: 0.7,  y: 0, width: 0.3,  height: 1,   items: [] }]);
 }
 
 async function openZonesEditor(screenId) {
@@ -927,7 +1207,8 @@ async function openScreenAccessEditor(screenId) {
   });
 
   document.getElementById("screen-access-save").onclick = async (e) => {
-    await withLoading(e.currentTarget, async () => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
+    await withLoading(btn, async () => {
       const ownerId = ownerSelect.value ? Number(ownerSelect.value) : null;
       await api(`/screens/${screenId}`, { method: "PUT", body: JSON.stringify({ owner_user_id: ownerId }) });
       const selected = Array.from(groupsList.querySelectorAll("[data-screen-group]:checked"))
@@ -945,7 +1226,7 @@ async function openScreenAccessEditor(screenId) {
 async function loadZoneTemplates() {
   const select = document.getElementById("zone-template-select");
   if (!select) return;
-  select.innerHTML = `<option value="">Apply template…</option>`;
+  select.innerHTML = `<option value="">${escHtml(Khan.t("screens.template_apply_label", "Apply template…"))}</option>`;
   const templates = await api("/zone-templates");
   templates.forEach((t) => {
     const option = document.createElement("option");
@@ -958,7 +1239,7 @@ async function loadZoneTemplates() {
 function bindZoneEditorEvents() {
   document.getElementById("zone-add")?.addEventListener("click", () => {
     const index = zonesState.zones.length + 1;
-    zonesState.zones.push({ id: `local-${Date.now()}`, name: `Zone ${index}`, x: 0.1, y: 0.1, width: 0.3, height: 0.3, sort_order: index, transition_ms: 600, items: [] });
+    zonesState.zones.push({ id: `local-${Date.now()}`, name: zoneDefaultName(index), x: 0.1, y: 0.1, width: 0.3, height: 0.3, sort_order: index, transition_ms: 600, items: [] });
     renderZonesCanvas();
     renderZonesList();
   });
@@ -971,9 +1252,10 @@ function bindZoneEditorEvents() {
     renderZonesCanvas();
   });
   document.getElementById("zone-template-save")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
     const name = document.getElementById("zone-template-name").value.trim();
     if (!name) return;
-    await withLoading(e.currentTarget, async () => {
+    await withLoading(btn, async () => {
       await api("/zone-templates", {
         method: "POST",
         body: JSON.stringify({
@@ -992,9 +1274,10 @@ function bindZoneEditorEvents() {
     });
   });
   document.getElementById("zone-template-apply")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
     const templateId = Number(document.getElementById("zone-template-select").value || 0);
     if (!templateId || !zonesState.screenId) return;
-    await withLoading(e.currentTarget, async () => {
+    await withLoading(btn, async () => {
       await api(`/screens/${zonesState.screenId}/zone-templates/apply`, { method: "POST", body: JSON.stringify({ template_id: templateId }) });
       const data = await api(`/screens/${zonesState.screenId}/zones`);
       setZones(data.zones || []);
@@ -1005,8 +1288,9 @@ function bindZoneEditorEvents() {
     btn.addEventListener("click", () => presetZones(btn.dataset.zonePreset));
   });
   document.getElementById("zones-save")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;   // null once the event finishes dispatching
     if (!zonesState.screenId) return;
-    await withLoading(e.currentTarget, async () => {
+    await withLoading(btn, async () => {
       await api(`/screens/${zonesState.screenId}/zones`, {
         method: "PUT",
         body: JSON.stringify({
@@ -1023,8 +1307,18 @@ function bindZoneEditorEvents() {
   });
   document.getElementById("zones-cancel")?.addEventListener("click", closeZonesEditor);
 
+  // Pointer events rather than mouse events, so a finger can draw, move and
+  // resize zones too (touch never produces a mousemove while dragging). The
+  // canvas captures the pointer -- re-rendering replaces the zone elements
+  // under the finger, and capture keeps the moves coming anyway -- and has
+  // touch-action: none in the CSS so the drag does not scroll the page.
   const canvas = document.getElementById("zones-canvas");
-  canvas?.addEventListener("mousedown", (event) => {
+  canvas?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
     const handle  = event.target.closest(".zone-handle");
     const zoneEl  = event.target.closest(".zone-block");
     if (!zoneEl) return;
@@ -1034,15 +1328,16 @@ function bindZoneEditorEvents() {
     const original   = { ...zonesState.zones[zoneIndex] };
     zonesState.dragging = { zoneIndex, handle: handle ? handle.dataset.handle : "move", startX: event.clientX, startY: event.clientY, original, canvasRect };
   });
-  canvas?.addEventListener("mousedown", (event) => {
+  canvas?.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
     if (event.target.closest(".zone-block")) return;
     const canvasRect = canvas.getBoundingClientRect();
     const startX = clamp((event.clientX - canvasRect.left) / canvasRect.width, 0, 1);
     const startY = clamp((event.clientY - canvasRect.top)  / canvasRect.height, 0, 1);
     zonesState.drawing = { startX, startY, canvasRect };
   });
-  window.addEventListener("mousemove", (event) => {
-    if (!zonesState.dragging) return;
+  window.addEventListener("pointermove", (event) => {
+    if (!event.isPrimary || !zonesState.dragging) return;
     const { zoneIndex, handle, startX, startY, original, canvasRect } = zonesState.dragging;
     const deltaX = (event.clientX - startX) / canvasRect.width;
     const deltaY = (event.clientY - startY) / canvasRect.height;
@@ -1076,8 +1371,8 @@ function bindZoneEditorEvents() {
     }
     renderZonesCanvas();
   });
-  window.addEventListener("mousemove", (event) => {
-    if (!zonesState.drawing) return;
+  window.addEventListener("pointermove", (event) => {
+    if (!event.isPrimary || !zonesState.drawing) return;
     const { startX, startY, canvasRect } = zonesState.drawing;
     const currentX = clamp((event.clientX - canvasRect.left) / canvasRect.width, 0, 1);
     const currentY = clamp((event.clientY - canvasRect.top)  / canvasRect.height, 0, 1);
@@ -1088,15 +1383,23 @@ function bindZoneEditorEvents() {
     };
     renderZonesCanvas();
   });
-  window.addEventListener("mouseup", () => {
-    if (zonesState.drawing?.preview) {
+  const endZoneDrag = (event) => {
+    if (!event.isPrimary) return;
+    const drawn = event.type === "pointerup" && zonesState.drawing?.preview;
+    if (drawn) {
       const index = zonesState.zones.length + 1;
-      zonesState.zones.push({ id: `local-${Date.now()}`, name: `Zone ${index}`, ...zonesState.drawing.preview, sort_order: index, transition_ms: 600, items: [] });
+      zonesState.zones.push({ id: `local-${Date.now()}`, name: zoneDefaultName(index), ...zonesState.drawing.preview, sort_order: index, transition_ms: 600, items: [] });
       renderZonesList();
     }
+    const hadPreview = !!zonesState.drawing?.preview;
     zonesState.dragging = null;
     zonesState.drawing  = null;
-  });
+    // Swap the dashed preview for the real zone (or drop it on cancel); left
+    // in place it was a dead element that could not be moved or resized.
+    if (hadPreview) renderZonesCanvas();
+  };
+  window.addEventListener("pointerup", endZoneDrag);
+  window.addEventListener("pointercancel", endZoneDrag);
 }
 
 /* ── Playlist items ─────────────────────────────────────────── */
@@ -1110,23 +1413,24 @@ async function loadPlaylistItems(playlistId) {
   const itemsHtml = data.items.map((item) => `
     <div class="card" style="margin-bottom:6px">
       <div>${escHtml(item.name)}</div>
-      <div class="card-meta"><span>${item.duration_seconds}s</span></div>
-      <div class="card-actions">
-        <button class="delete-btn" data-item-id="${item.id}">Remove</button>
-      </div>
+      <div class="card-meta"><span>${escHtml(Khan.t("playlists.item_seconds", "{n}s").replace("{n}", item.duration_seconds))}</span></div>
+      ${canEditContent() ? `<div class="card-actions">
+        <button class="delete-btn" data-item-id="${item.id}">${escHtml(Khan.t("playlists.remove_item", "Remove"))}</button>
+      </div>` : ""}
     </div>
   `).join("");
-  card.innerHTML = `<h3>${escHtml(data.playlist.name)} Items</h3>${itemsHtml || "<div class='helper-text'>No items yet.</div>"}`;
+  card.innerHTML = `<h3>${escHtml(Khan.t("playlists.items_heading", "{name} — items").replace("{name}", data.playlist.name))}</h3>${
+    itemsHtml || `<div class='helper-text'>${escHtml(Khan.t("playlists.no_items", "No items yet."))}</div>`}`;
   container.appendChild(card);
   card.querySelectorAll("[data-item-id]").forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
+    btn.addEventListener("click", async () => {
       if (!(await confirmDialog({
         title:   Khan.t("confirm.remove_item_title", "Remove item"),
         message: Khan.t("confirm.remove_item_body", "Remove this item from the playlist?"),
         confirmLabel: Khan.t("confirm.delete_label", "Delete"),
         danger:  true,
       }))) return;
-      await withLoading(e.currentTarget, async () => {
+      await withLoading(btn, async () => {
         await api(`/playlists/${playlistId}/items/${btn.dataset.itemId}`, { method: "DELETE" });
         await loadPlaylistItems(playlistId);
       });
@@ -1172,8 +1476,9 @@ document.getElementById("screen-form").addEventListener("submit", async (e) => {
       updateResolutionCustomVisibility();
       toast(Khan.t("toast.screen_created"), "success");
       await loadScreens();
+      loadOrganization();   // plan card: "n / limit screens"
     } catch (err) {
-      toast(err.message || "Failed to add screen.", "error");
+      toast(err.message || Khan.t("screens.add_failed", "Failed to add screen."), "error");
     }
   });
 });
@@ -1185,19 +1490,29 @@ document.getElementById("media-form").addEventListener("submit", async (e) => {
   if (!file) return;
   const btn = e.target.querySelector("button[type=submit]");
   await withLoading(btn, async () => {
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch(`${API_BASE}/media/upload`, {
-      method:  "POST",
-      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-      body:    formData,
-    });
-    if (!res.ok) { const text = await res.text(); throw new Error(text || "Upload failed"); }
+    await uploadMediaFile(file);
     input.value = "";
+    document.getElementById("media-file-name").textContent = "";
     toast(Khan.t("toast.media_uploaded"), "success");
     await loadMedia();
   });
 });
+
+// The backend only accepts these (anything else is a 415); the file input's
+// accept= filters the picker, but drag-and-drop bypasses it.
+const UPLOADABLE_TYPE_RE = /^(image\/|video\/|application\/pdf$)/;
+
+async function uploadMediaFile(file) {
+  if (file.type && !UPLOADABLE_TYPE_RE.test(file.type)) {
+    const err = new Error(statusErrorText(415));
+    err.isApiError = true;
+    err.status = 415;
+    throw err;
+  }
+  const formData = new FormData();
+  formData.append("file", file);
+  return api("/media/upload", { method: "POST", body: formData });
+}
 
 document.getElementById("media-url-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1214,6 +1529,11 @@ document.getElementById("media-url-form").addEventListener("submit", async (e) =
 });
 
 const mediaForm = document.getElementById("media-form");
+// The file input is invisible, so echo the picked file's name -- on a phone
+// there is otherwise no sign the pick registered before tapping Upload.
+document.getElementById("media-file")?.addEventListener("change", (e) => {
+  document.getElementById("media-file-name").textContent = e.target.files[0]?.name || "";
+});
 mediaForm?.addEventListener("dragover", (e) => { e.preventDefault(); mediaForm.classList.add("dropzone-active"); });
 mediaForm?.addEventListener("dragleave", ()  => mediaForm.classList.remove("dropzone-active"));
 mediaForm?.addEventListener("drop", async (e) => {
@@ -1222,18 +1542,23 @@ mediaForm?.addEventListener("drop", async (e) => {
   const files = Array.from(e.dataTransfer?.files || []);
   if (files.length === 0) return;
   let uploaded = 0;
+  const failures = [];
   for (const file of files) {
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch(`${API_BASE}/media/upload`, {
-      method: "POST",
-      headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
-      body: formData,
-    });
-    if (res.ok) uploaded++;
+    try {
+      await uploadMediaFile(file);
+      uploaded++;
+    } catch (err) {
+      failures.push(`${file.name}: ${err.isApiError ? err.message : Khan.t("error.generic", "Something went wrong. Please try again.")}`);
+    }
   }
-  toast(Khan.t("toast.files_uploaded_n", "{n} file(s) uploaded.").replace("{n}", uploaded), "success");
-  await loadMedia();
+  if (uploaded) {
+    toast(Khan.t("toast.files_uploaded_n", "{n} file(s) uploaded.").replace("{n}", uploaded), "success");
+  }
+  if (failures.length) {
+    toast(Khan.t("toast.files_failed_n", "{n} file(s) couldn't be uploaded. {reason}")
+      .replace("{n}", failures.length).replace("{reason}", failures[0]), "error", 8000);
+  }
+  if (uploaded) await loadMedia();
 });
 
 document.getElementById("playlist-form").addEventListener("submit", async (e) => {
@@ -1253,6 +1578,7 @@ document.getElementById("playlist-select").addEventListener("change", async (e) 
 });
 
 document.getElementById("playlist-add-item").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;   // null once the event finishes dispatching
   const playlistId = document.getElementById("playlist-select").value;
   if (!playlistId) return;
   let picks;
@@ -1263,7 +1589,7 @@ document.getElementById("playlist-add-item").addEventListener("click", async (e)
     throw err;
   }
   if (!picks.length) return;
-  await withLoading(e.currentTarget, async () => {
+  await withLoading(btn, async () => {
     for (const p of picks) {
       const body = { media_id: p.media_id };
       if (p.duration_seconds != null) body.duration_seconds = p.duration_seconds;
@@ -1318,6 +1644,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
           if (resume && resume.path === "/pair") {
             history.replaceState({}, "", `/pair${resume.code ? `?code=${encodeURIComponent(resume.code)}` : ""}`);
             await showPairView(resume.code || "");
+            bootDataInBackground();
             return;
           }
         } catch (_) { /* fall through */ }
@@ -1362,12 +1689,85 @@ document.getElementById("auth-tab-login") .addEventListener("click", () => showA
 document.getElementById("auth-tab-signup").addEventListener("click", () => showAuthTab("signup"));
 
 /* ── Phase 2.5j: Social auth (Google + Apple) ───────────────── */
+// The backend hands the new session token back in the /auth-bounce URL. Any
+// page can link to /auth-bounce?token=..., so a token there is only trusted
+// when THIS tab started the sign-in: startSocialAuth stores a random nonce in
+// sessionStorage and threads it through return_to (which the backend signs
+// into the OAuth state and echoes back). A link built by someone else cannot
+// carry it, so it can neither sign the visitor into the attacker's account
+// nor redirect them off-site.
+const SOCIAL_PENDING_KEY    = "khan_social_auth_pending";
+const SOCIAL_PENDING_TTL_MS = 15 * 60 * 1000;
+const SOCIAL_NONCE_PARAM    = "sa_nonce";
+const SOCIAL_PROVIDERS      = ["google", "apple"];
+const FLASH_KEY             = "khan_flash";
+
+function randomNonce() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function startSocialAuth(provider) {
   const intent = document.getElementById("auth-tab-signup")
                    .classList.contains("active") ? "signup" : "signin";
-  const returnTo = window.location.pathname + window.location.search;
-  const params = new URLSearchParams({ intent, return_to: returnTo });
-  window.location = `${API_BASE}/auth/${provider}/start?${params}`;
+  const nonce = randomNonce();
+  try {
+    sessionStorage.setItem(SOCIAL_PENDING_KEY, JSON.stringify({ nonce, at: Date.now() }));
+  } catch (_) { /* storage unavailable: the bounce will refuse the token */ }
+  const here = new URL(window.location.href);
+  here.searchParams.set(SOCIAL_NONCE_PARAM, nonce);
+  const params = new URLSearchParams({ intent, return_to: here.pathname + here.search });
+  // DEPLOYED_API_BASE, never API_BASE: this navigation carries the nonce,
+  // so it may only ever go to the API the deployment is configured for.
+  window.location = `${DEPLOYED_API_BASE}/auth/${provider}/start?${params}`;
+}
+
+/** The sign-in this tab started, if any (consumed: one use only). */
+function takePendingSocialAuth() {
+  let pending = null;
+  try {
+    pending = JSON.parse(sessionStorage.getItem(SOCIAL_PENDING_KEY) || "null");
+    sessionStorage.removeItem(SOCIAL_PENDING_KEY);
+  } catch (_) { pending = null; }
+  if (!pending || typeof pending.nonce !== "string" || !pending.nonce) return null;
+  if (!(Date.now() - Number(pending.at) < SOCIAL_PENDING_TTL_MS)) return null;
+  return pending;
+}
+
+/** A same-origin URL for a relative path like "/billing?x=1", else null.
+ *  The same rules as the backend's _safe_return_to: no absolute or
+ *  protocol-relative URL ("https://…", "//…"), no backslash ("/\\host"),
+ *  no control character (browsers drop tabs and newlines, so "/\t/host" is
+ *  "//host"), and no dot-segment, raw or percent-encoded: "/.//host" and
+ *  "/%2e//host" both resolve to the path "//host", which is
+ *  protocol-relative the moment it is reused as a URL. */
+function safeReturnUrl(raw) {
+  if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")
+      || raw.includes("\\") || /[\u0000-\u001f\u007f]/.test(raw)) return null;
+  const path = raw.split("?", 1)[0].split("#", 1)[0];
+  let decoded;
+  try { decoded = decodeURIComponent(path); } catch (_) { return null; }
+  if (decoded.split("/").some((segment) => segment === "." || segment === "..")) return null;
+  let url;
+  try { url = new URL(raw, window.location.origin); } catch (_) { return null; }
+  if (url.origin !== window.location.origin || url.pathname.startsWith("//")
+      || url.pathname === "/auth-bounce") return null;
+  return url;
+}
+
+/** A toast to show after the next page load (this one is about to navigate). */
+function setFlash(key, fallback, type = "error") {
+  try { sessionStorage.setItem(FLASH_KEY, JSON.stringify({ key, fallback, type })); } catch (_) {}
+}
+
+function showFlash() {
+  let flash = null;
+  try {
+    flash = JSON.parse(sessionStorage.getItem(FLASH_KEY) || "null");
+    sessionStorage.removeItem(FLASH_KEY);
+  } catch (_) { flash = null; }
+  if (flash && flash.key) toast(Khan.t(flash.key, flash.fallback), flash.type || "info", 7000);
 }
 const googleBtn = document.getElementById("btn-social-google");
 const appleBtn  = document.getElementById("btn-social-apple");
@@ -1406,7 +1806,7 @@ document.getElementById("setup-form")?.addEventListener("submit", async (e) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const code = data?.detail?.code || "";
-      err.textContent = Khan.t(`error.${code}`, data?.detail?.message || "Setup failed.");
+      err.textContent = Khan.t(`error.${code}`, data?.detail?.message || Khan.t("setup.failed", "Setup failed."));
       err.classList.remove("hidden");
       return;
     }
@@ -1440,30 +1840,57 @@ function _escapeHtml(s) {
   ));
 }
 
+/** Runs on /auth-bounce. Returns true when it is navigating away (signed in,
+ *  refused or failed): boot() must then stop, or it carries on in the
+ *  outgoing page -- showing, and so consuming, the flash meant for the next
+ *  one, and calling /auth/me with whatever token was there before. */
 function handleAuthBounce() {
   const params = new URLSearchParams(window.location.search);
   const token   = params.get("token");
   const stash   = params.get("complete_signup");
   const error   = params.get("error");
-  const returnTo      = params.get("return_to") || "/";
   const suggestedName = params.get("suggested_name") || "";
+  const pending = takePendingSocialAuth();
+  const refuse = () => {
+    setFlash("auth.social.link_refused",
+             "That sign-in link didn't start in this browser, so it was ignored. Please sign in again.");
+    window.location.replace("/");
+    return true;
+  };
 
   if (error) {
-    alert("Sign-in cancelled or failed: " + error);
-    window.location = "/";
-    return;
+    setFlash("auth.social.failed", "Sign-in was cancelled or didn't complete. Please try again.");
+    window.location.replace("/");
+    return true;
   }
+  // Both legs -- the session token and the "finish creating your account"
+  // stash -- must echo the nonce this tab put in return_to. A stash from
+  // someone else's sign-in would otherwise tie a new org to their identity.
+  const target = safeReturnUrl(params.get("return_to") || "/");
+  const echoed = target ? target.searchParams.get(SOCIAL_NONCE_PARAM) : null;
+  const startedHere = Boolean(pending && echoed && echoed === pending.nonce);
   if (token) {
+    if (!startedHere) return refuse();
+    target.searchParams.delete(SOCIAL_NONCE_PARAM);
     localStorage.setItem(AUTH_STORAGE_KEY, token);
-    window.location = returnTo;
-    return;
+    // replace(): the token-bearing URL must not stay in the history. The
+    // absolute href, never a path rebuilt from its parts: a pathname such as
+    // "//host/x" would be read as protocol-relative, i.e. off-site.
+    window.location.replace(target.href);
+    return true;
   }
   if (stash) {
+    if (!startedHere) return refuse();
+    // The payload is read unverified (only the backend can check the
+    // signature), so it may only pick between the two known providers --
+    // never put arbitrary text into the request path.
     let provider = "google";
     try {
-      const payload = JSON.parse(atob(stash.split(".")[1]));
-      provider = payload.provider || "google";
+      const b64 = stash.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
+      if (payload && SOCIAL_PROVIDERS.includes(payload.provider)) provider = payload.provider;
     } catch (e) { /* fall through with default */ }
+    history.replaceState({}, "", "/auth-bounce");   // keep the stash out of history
 
     const html = `
       <div class="modal-overlay" id="complete-signup-overlay">
@@ -1489,28 +1916,30 @@ function handleAuthBounce() {
       e.preventDefault();
       const businessName = e.target.business_name.value.trim();
       if (!businessName) return;
-      const r = await fetch(`${API_BASE}/auth/${provider}/complete-signup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stash_token: stash,
-                               business_name: businessName }),
-      });
-      const body = await r.json();
-      if (r.ok) {
-        localStorage.setItem(AUTH_STORAGE_KEY, body.token);
-        window.location = "/";
-      } else {
-        const msg = (body.detail && body.detail.message)
-                    || "Failed to complete signup";
-        alert(msg);
+      const submit = e.target.querySelector("button[type=submit]");
+      try {
+        await withLoading(submit, async () => {
+          // anonymous: this creates a brand-new account, so whoever may be
+          // signed in elsewhere in this browser has no business riding along.
+          const body = await api(`/auth/${provider}/complete-signup`, {
+            method: "POST",
+            anonymous: true,
+            body: JSON.stringify({ stash_token: stash, business_name: businessName }),
+          });
+          localStorage.setItem(AUTH_STORAGE_KEY, body.token);
+          window.location.replace("/");
+        });
+      } catch (err) {
+        toast(err.isApiError ? err.message
+                             : Khan.t("auth.social.complete_signup.failed", "Couldn't finish creating your account."),
+              "error", 6000);
       }
     });
   }
+  return false;   // staying: the finish-signup form is on this page
 }
 
-if (window.location.pathname === "/auth-bounce") {
-  handleAuthBounce();
-}
+const leavingAuthBounce = window.location.pathname === "/auth-bounce" && handleAuthBounce();
 
 /* ── Signup (3-step OTP wizard) ──────────────────────────────── */
 const signupState = { email: "", business_name: "", verification_token: "" };
@@ -1536,7 +1965,7 @@ function signupResetDevOtpHint(otp) {
   const el = document.getElementById("signup-dev-otp");
   if (!el) return;
   if (otp) {
-    el.textContent = `Dev mode: your code is ${otp}`;
+    el.textContent = Khan.t("auth.dev_otp", "Dev mode: your code is {otp}").replace("{otp}", otp);
     el.classList.remove("hidden");
   } else {
     el.textContent = "";
@@ -1584,7 +2013,7 @@ document.getElementById("signup-verify-form").addEventListener("submit", async (
       signupShowStep("password");
     });
   } catch (err) {
-    toast(err.message || "Verification failed.", "error");
+    toast(err.message || Khan.t("error.verify_failed", "Verification failed."), "error");
   }
 });
 
@@ -1604,7 +2033,7 @@ document.getElementById("signup-resend").addEventListener("click", async (e) => 
     }
     toast(Khan.t("toast.new_code_sent"), "success");
   } catch (err) {
-    toast(err.message || "Couldn't resend code.", "error");
+    toast(err.message || Khan.t("error.code_resend_failed", "Couldn't resend code."), "error");
   }
 });
 
@@ -1646,7 +2075,7 @@ document.getElementById("signup-password-form").addEventListener("submit", async
       signupState.verification_token = "";
     });
   } catch (err) {
-    toast(err.message || "Sign-up failed.", "error");
+    toast(err.message || Khan.t("error.signup_failed", "Sign-up failed."), "error");
   }
 });
 
@@ -1654,6 +2083,8 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   if (authToken) await api("/auth/logout", { method: "POST" }).catch(() => {});
   setAuth(null, null);
   showAuthPanel();
+  // Don't leave /billing or /pair in the address bar under the sign-in form.
+  if (location.pathname !== "/") history.replaceState({}, "", "/");
 });
 
 document.getElementById("user-form").addEventListener("submit", async (e) => {
@@ -1698,6 +2129,22 @@ const connectionReset  = document.getElementById("connection-reset");
 
 connectionToggle?.addEventListener("click", () => connectionPanel.classList.toggle("hidden"));
 
+/** Why a Connection field can't be saved, or null: not an http(s) URL, or
+ *  off the origin this deployment is configured for. */
+function connectionFieldProblem(raw, configured) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  if (!httpOrigin(value)) {
+    return Khan.t("toast.connection_bad_url", "Enter a full address that starts with http:// or https://.");
+  }
+  if (!acceptedConnectionOverride(value, configured)) {
+    return Khan.t("toast.connection_locked",
+      "This deployment only connects to {origin}; another address can't be used here.")
+      .replace("{origin}", httpOrigin(configured) || configured);
+  }
+  return null;
+}
+
 if (connectionMode && connectionApi && connectionPlayer) {
   connectionMode.value   = savedMode;
   connectionApi.value    = savedApiBase;
@@ -1706,6 +2153,12 @@ if (connectionMode && connectionApi && connectionPlayer) {
 
 connectionForm?.addEventListener("submit", (e) => {
   e.preventDefault();
+  // Say so now rather than silently ignoring the value on the next load.
+  if (connectionMode.value === "external") {
+    const problem = connectionFieldProblem(connectionApi.value, CONFIGURED_API_BASE)
+                 || connectionFieldProblem(connectionPlayer.value, CONFIGURED_PLAYER_BASE);
+    if (problem) { toast(problem, "error", 6000); return; }
+  }
   localStorage.setItem(CONNECTION_STORAGE_KEY, connectionMode.value);
   localStorage.setItem(CONNECTION_API_KEY,     connectionApi.value.trim());
   localStorage.setItem(CONNECTION_PLAYER_KEY,  connectionPlayer.value.trim());
@@ -1721,7 +2174,11 @@ connectionReset?.addEventListener("click", () => {
 });
 
 /* ── Boot ────────────────────────────────────────────────────── */
-async function bootData() {
+/** Load everything the dashboard sections need. `section` is the section to
+ *  open afterwards, or null to load without navigating -- used when the page
+ *  opens on a full-page view (/billing after KNET, /pair from a TV's QR code)
+ *  so that leaving it lands on a populated dashboard, not empty lists. */
+async function bootData({ section = "sites" } = {}) {
   populateTimezoneSelect(document.getElementById("site-timezone-select"), "Asia/Kuwait");
   await Promise.all([loadOrganization(), loadSites(), loadPlaylists(), loadSchedules(), loadMedia(), loadUsers()]);
   await loadScreens();
@@ -1731,7 +2188,14 @@ async function bootData() {
     document.getElementById("nav-menus-btn")?.classList.toggle("hidden", !caps.menus);
     document.getElementById("menu-import-btn")?.classList.toggle("hidden", !caps.menu_import);
   } catch (_) { state.capabilities = { menus: false, menu_import: false }; }
-  showSection("sites");
+  if (section) showSection(section);
+}
+
+function bootDataInBackground() {
+  bootData({ section: null }).catch((err) => {
+    console.error(err);
+    toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
+  });
 }
 
 async function loadOrganization() {
@@ -1753,6 +2217,8 @@ function renderPlanCard(org) {
   const status  = document.getElementById("plan-card-status");
   const trial   = document.getElementById("plan-card-trial");
 
+  // Plan names are product names and stay as they are in both languages
+  // (the landing page does the same).
   const planLabels = {
     starter: "Starter", growth: "Growth", business: "Business",
     pro: "Pro", enterprise: "Enterprise",
@@ -1761,19 +2227,24 @@ function renderPlanCard(org) {
   const used       = Number.isFinite(org.screens_used)  ? org.screens_used  : 0;
   const limit      = Number.isFinite(org.screen_limit) ? org.screen_limit : 0;
 
-  biz.textContent   = org.name || "Your organization";
-  tier.textContent  = `${tierLabel} plan`;
-  usage.textContent = `${used} / ${limit} screens`;
+  biz.textContent   = org.name || Khan.t("plan.org_fallback", "Your organization");
+  tier.textContent  = Khan.t("plan.tier_label", "{plan} plan").replace("{plan}", tierLabel);
+  usage.textContent = Khan.t("plan.usage", "{used} / {limit} screens")
+    .replace("{used}", used).replace("{limit}", limit);
 
-  status.textContent = org.subscription_status || "—";
-  status.className   = `plan-status plan-status-${(org.subscription_status || "unknown").toLowerCase()}`;
+  const subStatus = org.subscription_status || "";
+  status.textContent = subStatus ? Khan.t(`plan.status_${subStatus}`, subStatus) : "—";
+  status.className   = `plan-status plan-status-${(subStatus || "unknown").toLowerCase()}`;
 
   if (org.subscription_status === "trialing" && org.trial_ends_at) {
     const endsAt  = new Date(org.trial_ends_at);
     const daysLeft = Math.max(0, Math.ceil((endsAt.getTime() - Date.now()) / 86400000));
+    const date = formatDay(org.trial_ends_at);
     trial.textContent = daysLeft > 0
-      ? `Trial ends in ${daysLeft} day${daysLeft === 1 ? "" : "s"} (${endsAt.toLocaleDateString()}).`
-      : `Trial ended on ${endsAt.toLocaleDateString()}. Upgrade to keep your screens live.`;
+      ? Khan.t(daysLeft === 1 ? "plan.trial_ends_one" : "plan.trial_ends_other",
+               daysLeft === 1 ? "Trial ends in 1 day ({date})." : "Trial ends in {n} days ({date}).")
+          .replace("{n}", daysLeft).replace("{date}", date)
+      : Khan.t("plan.trial_ended", "Trial ended on {date}. Upgrade to keep your screens live.").replace("{date}", date);
     trial.classList.remove("hidden");
   } else {
     trial.classList.add("hidden");
@@ -1846,7 +2317,7 @@ async function showPairView(initialCode) {
   codeInput.value    = normalizePairCode(initialCode);
   newNameInput.value = "";
   newNameInput.classList.add("hidden");
-  existingSel.innerHTML = '<option value="">— Pick a screen —</option>';
+  existingSel.innerHTML = `<option value="">${escHtml(Khan.t("pair.pick_screen", "— Pick a screen —"))}</option>`;
 
   let screens = [];
   try {
@@ -1860,20 +2331,24 @@ async function showPairView(initialCode) {
   for (const s of screens) {
     const opt = document.createElement("option");
     opt.value = String(s.id);
-    opt.textContent = s.name || `Screen #${s.id}`;
+    opt.textContent = s.name || Khan.t("pair.screen_n", "Screen #{id}").replace("{id}", s.id);
     existingSel.appendChild(opt);
   }
 
+  // Both branches set BOTH inputs' visibility: "Pair another display" comes
+  // back here after the radio handler may have hidden the screen picker.
   if (screens.length === 0) {
     radioExist.disabled = true;
     existingSel.disabled = true;
     radioNew.checked = true;
     newNameInput.classList.remove("hidden");
+    existingSel.classList.add("hidden");
   } else {
     radioExist.disabled = false;
     existingSel.disabled = false;
     radioExist.checked = true;
     newNameInput.classList.add("hidden");
+    existingSel.classList.remove("hidden");
   }
 
   setPairState("form");
@@ -1886,11 +2361,16 @@ function bindLangToggle() {
   btn.dataset.bound = "1";
   btn.addEventListener("click", async () => {
     const next = Khan.currentLocale() === "en" ? "ar" : "en";
-    if (authToken && currentUser?.is_admin) {
+    // The choice is this person's (stored in the language cookie, which wins
+    // over the org default on the next load). An admin's choice also becomes
+    // the org default -- used for reminder emails and for users who never
+    // picked one -- but that is best effort: a 402 on an expired subscription
+    // or a 403 must not stop the switch itself.
+    if (authToken && currentUser?.role === "admin") {
       try {
         await api("/organizations/me", { method: "PATCH", body: JSON.stringify({ locale: next }) });
       } catch (err) {
-        console.error("PATCH /organizations/me failed", err);
+        console.warn("PATCH /organizations/me failed; switching language for this user only", err);
       }
     }
     Khan.setLocale(next);
@@ -1899,6 +2379,7 @@ function bindLangToggle() {
 }
 
 async function boot() {
+  if (leavingAuthBounce) return;   // the page is already on its way elsewhere
   let orgLocale;
   if (authToken) {
     try {
@@ -1912,6 +2393,8 @@ async function boot() {
   const locale = Khan.detectInitialLocale(orgLocale);
   await Khan.loadLocale(locale);
   Khan.applyTranslations(document);
+  updateAuthUI();   // the role label in the header was rendered before the strings loaded
+  showFlash();
 
   bindLangToggle();
 
@@ -1933,8 +2416,10 @@ async function boot() {
 
   if (isPairPath) {
     await showPairView(pairCodeParam);
+    bootDataInBackground();
   } else if (isBillingPath) {
     await showBilling();
+    bootDataInBackground();
   } else {
     showDashboard();
     await bootData();
@@ -1959,6 +2444,40 @@ function escHtml(str) {
 }
 function escAttr(str) {
   return String(str ?? "").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
+}
+/** The locale for dates and times: the UI's language (not the browser's),
+ *  and in Arabic as used in Kuwait but with Western digits -- plain "ar-KW"
+ *  writes Arabic-Indic digits, while every other number in the dashboard
+ *  (prices, counts, codes) is Western. */
+function uiDateLocale() {
+  return Khan.currentLocale() === "ar" ? "ar-KW-u-nu-latn" : "en-GB";
+}
+
+/** A calendar date in the UI's language. */
+function formatDay(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString(uiDateLocale(), { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** A date and time in the UI's language; `withSeconds` for logs. */
+function formatDateTime(iso, { withSeconds = false } = {}) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  // The month by name, as formatDay writes it: "15/10" vs "10/15" is
+  // ambiguous, "15 Oct" / "15 أكتوبر" is not.
+  return d.toLocaleString(uiDateLocale(), {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", ...(withSeconds ? { second: "2-digit" } : {}),
+  });
+}
+
+/** Absolute URL of an uploaded file. The API serves /uploads; relative to the
+ *  dashboard origin the same path is answered by index.html. */
+function uploadUrl(filename) {
+  return `${API_BASE}/uploads/${encodeURIComponent(filename || "")}`;
 }
 function formatBytes(bytes) {
   if (bytes < 1024)       return `${bytes} B`;
@@ -1999,33 +2518,58 @@ function showPairError(message) {
   el.classList.remove("hidden");
 }
 
+// POST /screens/claim answers with plain-string details, so the status code
+// picks the message and the text only separates cases sharing a status
+// (both 404s; the expired and already-bound 400s -- the backend's wording is
+// "already bound to another display").
 function mapPairErrorMessage(err) {
-  const detail = (err && err.data && typeof err.data.detail === "string")
-    ? err.data.detail
-    : (err?.message || "");
+  const detail = (err && err.data && typeof err.data.detail === "string") ? err.data.detail : "";
   const status = err?.status;
+  if (!status) {
+    return Khan.t("pair.error.network", "Can't reach the server. Please try again.");
+  }
   if (status === 404 && /pairing code/i.test(detail)) {
-    return "That code isn't recognised. Check the TV screen and try again.";
+    return Khan.t("pair.error.unknown_code", "That code isn't recognised. Check the TV screen and try again.");
+  }
+  if (status === 404) {
+    return Khan.t("pair.error.screen_missing", "That screen no longer exists. Pick another one.");
   }
   if (status === 400 && /expired/i.test(detail)) {
-    return "Code expired. Refresh the TV to get a new one.";
+    return Khan.t("pair.error.expired", "Code expired. Refresh the TV to get a new one.");
+  }
+  if (status === 400 && /already bound|another display|different screen/i.test(detail)) {
+    return Khan.t("pair.error.bound_elsewhere", "This code belongs to a different display. Refresh the TV to get a new one.");
   }
   if (status === 409) {
-    return "That code's been used. Refresh the TV to get a new one.";
-  }
-  if (status === 400 && /bound to a different screen/i.test(detail)) {
-    return "This code belongs to a different display. Refresh the TV to get a new one.";
+    return Khan.t("pair.error.used", "That code's been used. Refresh the TV to get a new one.");
   }
   if (status === 402) {
-    return "You've hit your plan's screen limit. Upgrade to add more.";
+    // plan_limit or an expired subscription: both arrive already localized.
+    return err.message;
   }
   if (status === 403) {
-    return "Your account doesn't have permission to pair displays.";
+    return Khan.t("pair.error.forbidden", "Your account doesn't have permission to pair displays.");
   }
-  if (!status) {
-    return "Can't reach server. Please try again.";
+  if (status === 422) {
+    return Khan.t("pair.error.bad_code", "Enter the full code shown on the TV.");
   }
-  return "Something went wrong — please try again.";
+  return (err.isApiError && err.message) || Khan.t("error.generic", "Something went wrong. Please try again.");
+}
+
+/** Ask the public endpoint the TV itself polls whether `code` can still be
+ *  claimed, so an expired or unknown code fails before a new screen is
+ *  created for it. Only a definite "no" counts; a rate limit or network
+ *  hiccup falls through to the claim, which has the final word. */
+async function pairCodeRejection(code) {
+  let res;
+  try { res = await fetch(`${API_BASE}/screens/poll/${encodeURIComponent(code)}`); }
+  catch (_) { return null; }
+  if (res.status === 404) return { status: 404, data: { detail: "Unknown pairing code" } };
+  if (!res.ok) return null;
+  const body = await res.json().catch(() => null);
+  if (body?.status === "expired") return { status: 400, data: { detail: "Pairing code expired." } };
+  if (body?.status === "paired") return { status: 400, data: { detail: "already bound to another display" } };
+  return null;
 }
 
 async function onPairSubmit(e) {
@@ -2036,22 +2580,27 @@ async function onPairSubmit(e) {
   const target = document.querySelector('input[name="pair-target"]:checked')?.value;
 
   await withLoading(btn, async () => {
+    let createdScreen = null;
     try {
       let screenId = null;
       let screenName = "";
 
       if (target === "new") {
+        const rejection = await pairCodeRejection(code);
+        if (rejection) throw Object.assign(new Error(""), rejection, { isApiError: true });
         const name = document.getElementById("pair-new-name").value.trim();
         const screen = await api("/screens", {
           method: "POST",
           body: JSON.stringify({ name }),
         });
+        createdScreen = screen;
         screenId = screen.id;
         screenName = screen.name || name;
       } else {
         const sel = document.getElementById("pair-existing-select");
         screenId = Number(sel.value);
-        screenName = sel.options[sel.selectedIndex]?.textContent || `Screen #${screenId}`;
+        screenName = sel.options[sel.selectedIndex]?.textContent
+          || Khan.t("pair.screen_n", "Screen #{id}").replace("{id}", screenId);
       }
 
       await api("/screens/claim", {
@@ -2061,9 +2610,33 @@ async function onPairSubmit(e) {
 
       document.getElementById("pair-success-name").textContent = screenName;
       setPairState("success");
+      if (createdScreen) loadOrganization();   // plan card usage
     } catch (err) {
       console.error(err);
-      showPairError(mapPairErrorMessage(err));
+      let message = mapPairErrorMessage(err);
+      // Only a 4xx is the server saying no. With no answer at all (status 0)
+      // or a 5xx, the claim may well have bound the TV to the new screen, and
+      // deleting it would unpair a display that just paired.
+      const rejected = err?.status >= 400 && err.status < 500;
+      if (createdScreen && !rejected) {
+        message += " " + Khan.t("pair.error.unconfirmed_kept",
+          "The screen \"{name}\" was kept in case pairing went through. Check Screens: if it isn't paired, an admin can delete it there.")
+          .replace("{name}", createdScreen.name || "");
+      } else if (createdScreen) {
+        // The claim was refused after we created a screen for it. Left in
+        // place it is an unpaired screen counting against the plan's limit.
+        try {
+          await api(`/screens/${createdScreen.id}`, { method: "DELETE" });
+        } catch (cleanupErr) {
+          // Deleting screens is admin-only; an editor can create one but not
+          // remove it, so say what was left behind.
+          console.warn("could not remove the screen created for a failed pairing", cleanupErr);
+          message += " " + Khan.t("pair.error.orphan_left",
+            "A screen named \"{name}\" was created but couldn't be removed; an admin can delete it under Screens.")
+            .replace("{name}", createdScreen.name || "");
+        }
+      }
+      showPairError(message);
     }
   });
 }
@@ -2077,7 +2650,8 @@ function onPairViewDashboard() {
   history.pushState({}, "", "/");
   document.getElementById("pair-view").classList.add("hidden");
   showDashboard();
-  bootData().catch((err) => {
+  // Reload rather than reuse: the pairing just changed the screens list.
+  bootData({ section: "screens" }).catch((err) => {
     console.error(err);
     toast(Khan.t("toast.dashboard_load_failed"), "error", 6000);
   });
@@ -2095,15 +2669,25 @@ const PLAN_TIERS = [
   { tier: "business", label: "Business", kwd: 8,  screens: 10 },
   { tier: "pro",      label: "Pro",      kwd: 15, screens: 25 },
 ];
+// saveKey: localized "save N months" badge for the longer terms.
 const BILLING_TERMS = [
-  { months: 1,  multiplier: 1,  saveLabel: "" },
-  { months: 6,  multiplier: 5,  saveLabel: "save 1 month" },
-  { months: 12, multiplier: 10, saveLabel: "save 2 months" },
+  { months: 1,  multiplier: 1,  saveKey: null,                  saveFallback: "" },
+  { months: 6,  multiplier: 5,  saveKey: "billing.save_1_month", saveFallback: "save 1 month" },
+  { months: 12, multiplier: 10, saveKey: "billing.save_2_months", saveFallback: "save 2 months" },
 ];
+const BILLING_TERM_LABEL_KEYS = { 1: "billing.term_monthly", 6: "billing.term_6mo", 12: "billing.term_12mo" };
 
 let billingCurrentTerm = 1;
 let billingPollTimer = null;
 let billingPollStartedAt = 0;
+// Bumped by stopBillingPoll: a status request already in flight when the
+// tab signs out must not re-arm the timer or write into the next session.
+let billingPollGen = 0;
+
+function stopBillingPoll() {
+  billingPollGen++;
+  if (billingPollTimer) { clearTimeout(billingPollTimer); billingPollTimer = null; }
+}
 
 function billingAmountsFor(tier, months) {
   const plan = PLAN_TIERS.find((p) => p.tier === tier);
@@ -2112,6 +2696,19 @@ function billingAmountsFor(tier, months) {
   const kwd = plan.kwd * term.multiplier;
   const usdApprox = (kwd * KWD_TO_USD).toFixed(2);
   return { kwd, usdApprox };
+}
+
+function billingSaveLabel(term) {
+  return term && term.saveKey ? Khan.t(term.saveKey, term.saveFallback) : "";
+}
+
+function billingTermLabel(months) {
+  const key = BILLING_TERM_LABEL_KEYS[months];
+  return key ? Khan.t(key) : String(months);
+}
+
+function upToScreensLabel(n) {
+  return Khan.t("billing.up_to_screens", "up to {n} screens").replace("{n}", n);
 }
 
 function showBillingPanel() {
@@ -2127,59 +2724,93 @@ function renderBillingCurrent(org) {
     body.textContent = "—";
     return;
   }
-  const plan = PLAN_TIERS.find((p) => p.tier === org.plan) || { label: org.plan, screens: org.screen_limit };
+  const plan = PLAN_TIERS.find((p) => p.tier === org.plan) || { label: org.plan || "—", screens: org.screen_limit };
+  const parts = [`<strong>${escHtml(plan.label)}</strong>`];
   if (org.subscription_status === "trialing" && org.trial_ends_at) {
     const daysLeft = Math.max(0, Math.ceil((new Date(org.trial_ends_at) - new Date()) / 86400000));
-    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · Trial · ${daysLeft} day${daysLeft === 1 ? "" : "s"} left · up to ${plan.screens} screens`;
+    parts.push(escHtml(Khan.t("billing.trial_label", "Trial")));
+    parts.push(escHtml(Khan.t(daysLeft === 1 ? "billing.days_left_one" : "billing.days_left_other",
+      daysLeft === 1 ? "1 day left" : "{n} days left").replace("{n}", daysLeft)));
   } else if (org.paid_through_at) {
-    const ends = new Date(org.paid_through_at).toLocaleDateString();
-    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · paid through ${escHtml(ends)} · up to ${plan.screens} screens`;
-  } else {
-    body.innerHTML = `<strong>${escHtml(plan.label)}</strong> · up to ${plan.screens} screens`;
+    parts.push(escHtml(Khan.t("billing.paid_through", "paid through {date}").replace("{date}", formatDay(org.paid_through_at))));
   }
+  if (plan.screens != null) parts.push(escHtml(upToScreensLabel(plan.screens)));
+  body.innerHTML = parts.join(" · ");
 }
 
 function renderBillingTiers() {
   const grid = document.getElementById("billing-tier-grid");
   const termInfo = BILLING_TERMS.find((t) => t.months === billingCurrentTerm);
+  const saveLabel = billingSaveLabel(termInfo);
+  // POST /billing/checkout is admin-only: others see the prices, not a
+  // button that can only fail.
+  const canPay = isAdmin();
   grid.innerHTML = "";
   for (const plan of PLAN_TIERS) {
     const amounts = billingAmountsFor(plan.tier, billingCurrentTerm);
-    const saveMarkup = termInfo.saveLabel
-      ? `<span class="billing-tier-save">${escHtml(termInfo.saveLabel)}</span>` : "";
+    const saveMarkup = saveLabel
+      ? `<span class="billing-tier-save">${escHtml(saveLabel)}</span>` : "";
     const card = document.createElement("div");
     card.className = "billing-tier";
     card.innerHTML = `
       <h3 class="billing-tier-name">${escHtml(plan.label)}</h3>
-      <div class="billing-tier-limit">up to ${plan.screens} screens</div>
-      <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " / month" : ""}</div>
-      <div class="billing-tier-usd">≈ $${amounts.usdApprox}</div>
+      <div class="billing-tier-limit">${escHtml(upToScreensLabel(plan.screens))}</div>
+      <div class="billing-tier-kwd">${amounts.kwd} KWD${billingCurrentTerm === 1 ? " " + escHtml(Khan.t("billing.per_month", "/ month")) : ""}</div>
+      <div class="billing-tier-usd"><bdi dir="ltr">≈ $${amounts.usdApprox}</bdi></div>
       ${saveMarkup}
-      <button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
-        Pay ${amounts.kwd} KWD${termInfo.saveLabel ? " · " + escHtml(termInfo.saveLabel) : ""}
-      </button>
+      ${canPay ? `<button type="button" class="billing-tier-btn" data-tier="${escAttr(plan.tier)}">
+        ${escHtml(Khan.t("billing.pay_btn", "Pay {amount} KWD").replace("{amount}", amounts.kwd))}${saveLabel ? " · " + escHtml(saveLabel) : ""}
+      </button>` : ""}
     `;
     grid.appendChild(card);
   }
+  if (!canPay && currentUser) {
+    const note = document.createElement("p");
+    note.className = "helper-text";
+    note.textContent = Khan.t("billing.admin_only", "Only an administrator can change the plan or see past payments.");
+    grid.appendChild(note);
+  }
+}
+
+function billingStatusLabel(status) {
+  return Khan.t(`billing.status_${status}`, status || "");
 }
 
 async function loadBillingHistory() {
   const body = document.getElementById("billing-history-body");
+  if (!isAdmin()) {            // GET /billing/history is admin-only
+    body.innerHTML = "";
+    return;
+  }
   try {
     const rows = await api("/billing/history");
     if (!rows.length) {
-      body.innerHTML = '<p class="billing-empty">No payments yet.</p>';
+      body.innerHTML = `<p class="billing-empty">${escHtml(Khan.t("billing.no_payments", "No payments yet."))}</p>`;
       return;
     }
     body.innerHTML = rows.map((r) => {
-      const when = new Date(r.updated_at || r.created_at).toLocaleDateString();
+      const plan = PLAN_TIERS.find((p) => p.tier === r.tier);
       return `<div class="billing-history-row ${r.status === 'failed' ? 'failed' : ''}">
-        <span>${escHtml(r.tier)} · ${r.term_months} month${r.term_months === 1 ? '' : 's'} · ${escHtml(when)}</span>
-        <span>${r.amount_kwd} KWD · ${escHtml(r.status)}</span>
+        <span>${escHtml(plan ? plan.label : r.tier)} · ${escHtml(billingTermLabel(r.term_months))} · ${escHtml(formatDay(r.updated_at || r.created_at))}</span>
+        <span>${escHtml(r.amount_kwd)} KWD · ${escHtml(billingStatusLabel(r.status))}</span>
       </div>`;
     }).join("");
   } catch (err) {
-    body.innerHTML = '<p class="billing-empty">Couldn\'t load history.</p>';
+    body.innerHTML = `<p class="billing-empty">${escHtml(Khan.t("billing.history_failed", "Couldn't load history."))}</p>`;
+  }
+}
+
+/** The org as the billing view needs it. GET /organization carries
+ *  paid_through_at today; /auth/me's organization is the fallback (and gains
+ *  the field too). */
+async function fetchBillingOrg() {
+  try {
+    const org = await api("/organization");
+    state.org = org;
+    return org;
+  } catch (_) {
+    const me = await api("/auth/me");
+    return me.organization;
   }
 }
 
@@ -2187,8 +2818,7 @@ async function showBilling() {
   showBillingPanel();
   renderBillingTiers();
   try {
-    const me = await api("/auth/me");
-    renderBillingCurrent(me.organization);
+    renderBillingCurrent(await fetchBillingOrg());
   } catch (err) { renderBillingCurrent(null); }
   loadBillingHistory();
   maybeResumeBillingStatus();
@@ -2218,7 +2848,7 @@ async function onBillingPay(tier) {
     window.location.href = data.payment_url;
   } catch (err) {
     buttons.forEach((b) => (b.disabled = false));
-    setBillingBanner("error", err?.data?.detail || err.message || "Payment failed to start.");
+    setBillingBanner("error", (err.isApiError && err.message) || Khan.t("billing.pay_failed", "Payment failed to start."));
   }
 }
 
@@ -2228,35 +2858,44 @@ function maybeResumeBillingStatus() {
   const trackid = params.get("trackid") || sessionStorage.getItem("billing_pending_trackid");
   if (!trackid || !status) return;
   sessionStorage.removeItem("billing_pending_trackid");
-  setBillingBanner("success", "Confirming payment…");
+  setBillingBanner("success", Khan.t("billing.confirming", "Confirming payment…"));
   billingPollStartedAt = Date.now();
-  pollBillingStatus(trackid);
+  stopBillingPoll();
+  pollBillingStatus(trackid, billingPollGen);
 }
 
-async function pollBillingStatus(trackid) {
+async function pollBillingStatus(trackid, gen) {
+  if (gen !== billingPollGen) return;
   try {
     const data = await api(`/billing/status/${encodeURIComponent(trackid)}`);
+    if (gen !== billingPollGen) return;
     if (data.status === "captured") {
-      setBillingBanner("success", `Plan upgraded · ${data.tier} · paid through ${new Date(data.paid_through_at).toLocaleDateString()}`);
-      const me = await api("/auth/me");
-      renderBillingCurrent(me.organization);
+      const plan = PLAN_TIERS.find((p) => p.tier === data.tier);
+      setBillingBanner("success", Khan.t("billing.upgraded", "Plan upgraded · {plan} · paid through {date}")
+        .replace("{plan}", plan ? plan.label : data.tier)
+        .replace("{date}", formatDay(data.paid_through_at)));
+      const org = await fetchBillingOrg();
+      if (gen !== billingPollGen) return;
+      renderBillingCurrent(org);
+      if (state.org) { renderPlanCard(state.org); SubscriptionBanner.update(state.org); }
       loadBillingHistory();
       history.replaceState({}, "", "/billing");
       return;
     }
     if (data.status === "failed") {
-      setBillingBanner("error", "Payment declined. You can try again.");
+      setBillingBanner("error", Khan.t("billing.declined", "Payment declined. You can try again."));
       history.replaceState({}, "", "/billing");
       return;
     }
     // still pending
     if (Date.now() - billingPollStartedAt > 15000) {
-      setBillingBanner("success", "Payment is still processing — check back in a minute.");
+      setBillingBanner("success", Khan.t("billing.still_processing", "Payment is still processing — check back in a minute."));
       return;
     }
-    billingPollTimer = setTimeout(() => pollBillingStatus(trackid), 2000);
+    billingPollTimer = setTimeout(() => pollBillingStatus(trackid, gen), 2000);
   } catch (err) {
-    setBillingBanner("error", "Couldn't confirm payment status.");
+    if (gen !== billingPollGen) return;
+    setBillingBanner("error", Khan.t("billing.status_unknown", "Couldn't confirm payment status."));
   }
 }
 
@@ -2355,7 +2994,7 @@ const MediaPicker = (() => {
           <h3>${Khan.t("media_picker.title", "Pick media")}</h3>
           <input class="media-picker-search" type="search"
                  placeholder="${Khan.t("media_picker.search_placeholder", "Search by name…")}" />
-          <button class="media-picker-close btn-ghost" aria-label="Close">✕</button>
+          <button class="media-picker-close btn-ghost" aria-label="${escAttr(Khan.t("common.close", "Close"))}">✕</button>
         </div>
         <div class="media-picker-chips"></div>
         <div class="media-picker-grid" aria-live="polite"></div>
@@ -2418,7 +3057,7 @@ const MediaPicker = (() => {
       grid.innerHTML = `
         <div class="media-picker-empty">
           <p>${Khan.t("media_picker.fetch_failed", "Couldn't load media.")}</p>
-          <button class="btn media-picker-retry">Retry</button>
+          <button class="btn media-picker-retry">${escHtml(Khan.t("media_picker.retry", "Retry"))}</button>
         </div>
       `;
       grid.querySelector(".media-picker-retry").addEventListener("click", loadMedia);
@@ -2497,12 +3136,14 @@ const MediaPicker = (() => {
     const idx = state.selection.indexOf(m.id);
     const checked = idx !== -1;
     const badge = checked ? `${idx + 1}` : "";
-    const pill = cls === "url" ? "URL" : cls.toUpperCase();
+    const pill = Khan.t(`media_picker.type_${cls}`, cls === "url" ? "URL" : cls.toUpperCase());
     let thumb = "";
+    // Same URL renderMedia uses: uploads live on the API origin.
+    const fileUrl = m.url ? `${API_BASE}${m.url}` : uploadUrl(m.filename);
     if (cls === "image") {
-      thumb = `<img src="/uploads/${attrEscape(m.filename)}" loading="lazy" alt="" />`;
+      thumb = `<img src="${attrEscape(fileUrl)}" loading="lazy" alt="" />`;
     } else if (cls === "video") {
-      thumb = `<video src="/uploads/${attrEscape(m.filename)}" preload="metadata" muted></video>`;
+      thumb = `<video src="${attrEscape(fileUrl)}" preload="metadata" muted></video>`;
     } else if (cls === "pdf") {
       thumb = `<div class="picker-thumb-pdf">PDF</div>`;
     } else if (cls === "url") {
@@ -2560,7 +3201,7 @@ const MediaPicker = (() => {
         <div class="media-picker-advanced-row" data-media-id="${mid}">
           <span class="media-picker-advanced-idx">${i + 1}</span>
           <span class="media-picker-advanced-name">${safeName}</span>
-          <input type="number" min="1" max="3600" placeholder="default"
+          <input type="number" min="1" max="3600" placeholder="${escAttr(Khan.t("media_picker.duration_default", "default"))}"
                  value="${dur ?? ""}" class="media-picker-advanced-duration" />
         </div>
       `;
@@ -2591,22 +3232,8 @@ const MediaPicker = (() => {
 // ====== Walls ======
 const Walls = (() => {
   const state = { walls: [], editing: null, pairing: null };
-
-  async function api(path, opts = {}) {
-    const headers = { "Content-Type": "application/json" };
-    const token = localStorage.getItem(AUTH_STORAGE_KEY);
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(`${API_BASE}${path}`,
-      { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
-    if (!res.ok && res.status !== 204) {
-      if (res.status === 401) handleAuthFailure();
-      let body = {};
-      try { body = await res.json(); } catch (_) {}
-      const code = body?.detail?.code || `http_${res.status}`;
-      throw Object.assign(new Error(body?.detail?.message || res.statusText), { code });
-    }
-    return res.status === 204 ? null : res.json();
-  }
+  // Requests go through the shared api(): same auth, empty-body handling and
+  // localized error messages as the rest of the dashboard.
 
   async function loadList() {
     state.walls = await api("/walls");
@@ -2626,7 +3253,7 @@ const Walls = (() => {
         <div class="walls-meta">
           ${w.mode === "mirrored" ? Khan.t("walls.mode_mirrored", "Mirrored")
                                    : Khan.t("walls.mode_spanned", "Spanned")}
-          · ${w.rows}×${w.cols}
+          · <bdi dir="ltr">${w.rows}×${w.cols}</bdi>
         </div>
         <div class="walls-mosaic" style="grid-template-columns: repeat(${w.cols}, 1fr);">
           ${(w.cells || []).map(c => `
@@ -2634,21 +3261,25 @@ const Walls = (() => {
               ${c.screen_id ? "●" : ""}
             </div>`).join("")}
         </div>
-        <div class="walls-actions">
+        ${canEditContent() ? `<div class="walls-actions">
           <button class="btn btn-ghost" data-action="edit">${Khan.t("walls.edit", "Edit")}</button>
           <button class="btn btn-danger" data-action="delete">${Khan.t("walls.delete", "Delete")}</button>
-        </div>
+        </div>` : ""}
       </article>
     `).join("");
     root.querySelectorAll("[data-wall-id]").forEach(card => {
       const id = parseInt(card.dataset.wallId, 10);
-      card.querySelector('[data-action="edit"]').addEventListener("click", () => openEditor(id));
-      card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteWall(id));
+      card.querySelector('[data-action="edit"]')?.addEventListener("click", () => openEditor(id));
+      card.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteWall(id));
     });
   }
 
   async function createWizard() {
     const playlists = await api("/playlists");
+    // Leaving an open editor for the wizard: stop its timers, drop its button.
+    if (mosaicTimer) { clearInterval(mosaicTimer); mosaicTimer = null; }
+    removeModeSwitchButton();
+    state.editing = null;
     const editor = document.getElementById("walls-editor");
     const body = document.getElementById("walls-editor-body");
     document.getElementById("walls-editor-title").textContent =
@@ -2768,18 +3399,40 @@ const Walls = (() => {
     }
   }
 
+  // The "Switch to …" button lives in the shared editor header and is bound to
+  // one wall. Left behind, it shows up in the next editor or the new-wall
+  // wizard -- and clicking it there changes the previous wall.
+  function removeModeSwitchButton() {
+    document.querySelectorAll(".walls-editor-header .walls-mode-switch-btn").forEach((b) => b.remove());
+  }
+
   function closeEditor() {
     if (mosaicTimer) { clearInterval(mosaicTimer); mosaicTimer = null; }
     if (pairTimer)   { clearInterval(pairTimer);   pairTimer   = null; }
     document.getElementById("walls-pair-modal")?.classList.add("hidden");
     state.pairing = null;
     document.getElementById("walls-editor").classList.add("hidden");
+    removeModeSwitchButton();
     state.editing = null;
+  }
+
+  function reset() {
+    closeEditor();
+    state.walls = [];
+    const root = document.getElementById("walls-list");
+    if (root) root.innerHTML = "";
+    // The last pair code (and its countdown) is the previous org's, and
+    // still redeemable until it expires.
+    const code = document.getElementById("walls-pair-code");
+    if (code) code.textContent = "—";
+    const countdown = document.getElementById("walls-pair-countdown");
+    if (countdown) countdown.textContent = Khan.t("walls.pair_expires_label", "Expires in —");
   }
 
   // openEditor and pair-flow are filled in by Task 9.
   async function openEditor(id) {
     state.editing = id;
+    removeModeSwitchButton();
     document.getElementById("walls-editor").classList.remove("hidden");
     document.getElementById("walls-editor-body").innerHTML =
       `<p>${Khan.t("walls.editor_loading", "Loading…")}</p>`;
@@ -2806,21 +3459,41 @@ const Walls = (() => {
     }
     const body = document.getElementById("walls-editor-body");
     document.getElementById("walls-editor-title").textContent = wall.name;
-    const playlists = wall.mirrored_mode === "synced_rotation" ? await api("/playlists") : [];
+    const synced = wall.mirrored_mode === "synced_rotation";
+    // Both sub-modes need the list: per-cell pickers for synced rotation, the
+    // wall's one playlist for same-playlist (which could not be changed
+    // after creation before).
+    const playlists = await api("/playlists");
+    const canEdit = canEditContent();
+    const samePlaylistPicker = synced ? "" : `
+      <label class="walls-mirrored-playlist">
+        ${Khan.t("walls.playlist", "Playlist")}
+        <select data-action="wall-playlist" ${canEdit ? "" : "disabled"}>
+          ${wall.mirrored_playlist_id ? "" : `<option value="" selected>${escHtml(Khan.t("walls.choose_playlist", "— Choose a playlist —"))}</option>`}
+          ${playlists.map(p =>
+            `<option value="${p.id}" ${p.id === wall.mirrored_playlist_id ? "selected" : ""}>${escHtml(p.name)}</option>`
+          ).join("")}
+        </select>
+      </label>
+      ${wall.mirrored_playlist_id ? "" : `<p class="helper-text">${escHtml(Khan.t("walls.no_playlist_warning",
+        "This wall has no playlist yet, so its screens have nothing to show. Choose one above."))}</p>`}`;
     body.innerHTML = `
       <div class="walls-editor-summary">
         <span class="walls-meta">
           ${wall.mode === "mirrored"
-            ? Khan.t("walls.mode_mirrored", "Mirrored") + (wall.mirrored_mode === "synced_rotation"
+            ? Khan.t("walls.mode_mirrored", "Mirrored") + (synced
                 ? " · " + Khan.t("walls.synced_rotation_short", "Synced rotation")
                 : " · " + Khan.t("walls.same_playlist_short", "Same playlist"))
             : Khan.t("walls.mode_spanned", "Spanned")}
-          · ${wall.rows}×${wall.cols}
+          · <bdi dir="ltr">${wall.rows}×${wall.cols}</bdi>
         </span>
+        ${samePlaylistPicker}
       </div>
-      <div class="walls-editor-grid"
-           style="grid-template-columns: repeat(${wall.cols}, 1fr);">
-        ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+      <div class="scroll-x">
+        <div class="walls-editor-grid"
+             style="grid-template-columns: repeat(${wall.cols}, 1fr);">
+          ${wall.cells.map(c => renderCellTile(c, wall, playlists)).join("")}
+        </div>
       </div>
     `;
     body.querySelectorAll(".walls-editor-cell").forEach(el => {
@@ -2830,12 +3503,38 @@ const Walls = (() => {
         () => openPairModal(wall.id, r, c));
       el.querySelector('[data-action="unpair"]')?.addEventListener("click",
         () => unpairCell(wall.id, r, c));
-      el.querySelector('select[data-action="cell-playlist"]')?.addEventListener("change", (ev) =>
-        patchCell(wall.id, r, c, {
-          playlist_id: ev.target.value === "" ? null : parseInt(ev.target.value, 10)
-        }));
+      const cellSelect = el.querySelector('select[data-action="cell-playlist"]');
+      const cell = wall.cells.find((x) => x.row_index === r && x.col_index === c);
+      cellSelect?.addEventListener("change", async () => {
+        const playlistId = cellSelect.value === "" ? null : parseInt(cellSelect.value, 10);
+        // Same as the wall's own picker: a refused change is undone on screen.
+        if (await patchCell(wall.id, r, c, { playlist_id: playlistId })) {
+          if (cell) cell.playlist_id = playlistId;
+        } else {
+          cellSelect.value = cell && cell.playlist_id ? String(cell.playlist_id) : "";
+        }
+      });
     });
-    mountModeSwitchButton(wall);
+    body.querySelector('select[data-action="wall-playlist"]')?.addEventListener("change", async (ev) => {
+      const select = ev.target;
+      if (!select.value) return;
+      const fields = { mirrored_playlist_id: parseInt(select.value, 10) };
+      if (!wall.mirrored_mode) fields.mirrored_mode = "same_playlist";
+      try {
+        await api(`/walls/${wall.id}`, { method: "PATCH", body: JSON.stringify(fields) });
+      } catch (err) {
+        // Put back what the wall is really playing: left on the new choice,
+        // the picker claims a change the server refused.
+        select.value = wall.mirrored_playlist_id ? String(wall.mirrored_playlist_id) : "";
+        toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update"), "error");
+        return;
+      }
+      // Saved. A failure re-reading the editor below must not undo the
+      // picker: the server is already playing the new playlist.
+      toast(Khan.t("walls.playlist_updated", "Wall playlist updated"), "success");
+      await renderEditor(wall.id);
+    });
+    if (canEdit) mountModeSwitchButton(wall);
     refreshMosaic(wall.id);
   }
 
@@ -2867,7 +3566,7 @@ const Walls = (() => {
     return `
       <div class="walls-editor-cell ${paired ? "paired" : "empty"}"
            data-row="${c.row_index}" data-col="${c.col_index}">
-        <strong>(${c.row_index},${c.col_index})</strong>
+        <strong dir="ltr">(${c.row_index},${c.col_index})</strong>
         ${paired
           ? `<span>${Khan.t("walls.cell_paired", "Paired")}</span>
              <button class="btn btn-ghost" data-action="unpair">${Khan.t("walls.cell_unpair", "Unpair")}</button>`
@@ -2939,8 +3638,10 @@ const Walls = (() => {
         body: JSON.stringify({ row_index: row, col_index: col, ...fields }),
       });
       toast(Khan.t("walls.cell_updated", "Cell updated"));
+      return true;
     } catch (err) {
       toast(err.message || Khan.t("walls.cell_update_failed", "Couldn't update cell"), "error");
+      return false;
     }
   }
 
@@ -2974,8 +3675,8 @@ const Walls = (() => {
       <div class="canvas-editor-summary">
         <span class="walls-meta">
           ${Khan.t("walls.mode_spanned", "Spanned")} ·
-          ${wall.canvas_width_px}×${wall.canvas_height_px} ·
-          ${wall.rows}×${wall.cols}
+          <bdi dir="ltr">${wall.canvas_width_px}×${wall.canvas_height_px}</bdi> ·
+          <bdi dir="ltr">${wall.rows}×${wall.cols}</bdi>
         </span>
       </div>
       <div class="canvas-editor-grid">
@@ -3011,9 +3712,15 @@ const Walls = (() => {
       </div>
     `;
     renderCanvasItemList(wall, list.items);
-    body.querySelector("#canvas-add-item").addEventListener("click",
-      () => openCanvasMediaPicker(wall));
-    mountModeSwitchButton(wall);
+    const addBtn = body.querySelector("#canvas-add-item");
+    if (canEditContent()) {
+      addBtn.addEventListener("click", () => openCanvasMediaPicker(wall));
+      mountModeSwitchButton(wall);
+    } else {
+      addBtn.remove();
+      body.querySelector("#canvas-item-save")?.remove();
+      body.querySelector("#canvas-item-delete")?.remove();
+    }
   }
 
   function renderCanvasItemList(wall, items) {
@@ -3025,7 +3732,7 @@ const Walls = (() => {
     root.innerHTML = items.map(it => `
       <li data-item-id="${it.id}">
         <span>${escHtml(it.media_name)}</span>
-        <small>${it.fit_mode} · ${it.duration_override_seconds || it.duration_seconds}s</small>
+        <small>${escHtml(Khan.t(`walls.fit_${it.fit_mode}`, it.fit_mode))} · ${escHtml(Khan.t("playlists.item_seconds", "{n}s").replace("{n}", it.duration_override_seconds || it.duration_seconds))}</small>
       </li>
     `).join("");
     root.querySelectorAll("[data-item-id]").forEach(li => {
@@ -3043,16 +3750,21 @@ const Walls = (() => {
     detail.querySelectorAll('input[name="fit"]').forEach(el => {
       el.checked = el.value === item.fit_mode;
     });
-    detail.querySelector("#canvas-item-save").onclick = () => saveCanvasItem(wall, item);
-    detail.querySelector("#canvas-item-delete").onclick = () => deleteCanvasItem(wall, item);
+    const saveBtn = detail.querySelector("#canvas-item-save");
+    const deleteBtn = detail.querySelector("#canvas-item-delete");
+    if (saveBtn) saveBtn.onclick = () => saveCanvasItem(wall, item);
+    if (deleteBtn) deleteBtn.onclick = () => deleteCanvasItem(wall, item);
     const preview = document.getElementById("canvas-preview-media");
+    // Uploads are served by the API, not by the dashboard's origin (where
+    // /uploads/... falls through to index.html and renders as a broken image).
+    const src = item.filename ? uploadUrl(item.filename) : "";
     if (item.mime_type.startsWith("video/")) {
-      preview.innerHTML = `<video src="${item.filename ? '/uploads/' + item.filename : ''}"
+      preview.innerHTML = `<video src="${escAttr(src)}"
         muted autoplay loop playsinline></video>`;
     } else if (item.mime_type === "application/pdf") {
       preview.innerHTML = `<div class="pdf-thumb">PDF — ${escHtml(item.media_name)}</div>`;
     } else {
-      preview.innerHTML = `<img src="/uploads/${item.filename || ''}" alt="" />`;
+      preview.innerHTML = `<img src="${escAttr(src)}" alt="" />`;
     }
   }
 
@@ -3083,7 +3795,7 @@ const Walls = (() => {
       await api(`/walls/${wall.id}/canvas-playlist/items/${item.id}`, {method: "DELETE"});
       await renderCanvasEditor(wall);
     } catch (err) {
-      toast(err.message || "delete failed", "error");
+      toast(err.message || Khan.t("walls.canvas_delete_failed", "Couldn't delete the item"), "error");
     }
   }
 
@@ -3111,11 +3823,14 @@ const Walls = (() => {
       toast(Khan.t("walls.canvas_added", "Item added"));
       await renderCanvasEditor(wall);
     } catch (err) {
-      toast(err.message || "add failed", "error");
+      toast(err.message || Khan.t("walls.canvas_add_failed", "Couldn't add the item"), "error");
     }
   }
 
-  function openModeChangeModal(wall, newMode) {
+  async function openModeChangeModal(wall, newMode) {
+    // A mirrored wall needs a sub-mode, and a same-playlist one needs its
+    // playlist: switching with neither left a wall that plays nothing.
+    const playlists = newMode === "mirrored" ? await api("/playlists") : [];
     const overlay = document.createElement("div");
     overlay.className = "modal";
     overlay.innerHTML = `
@@ -3124,6 +3839,21 @@ const Walls = (() => {
         <p>${Khan.t("walls.mode_change_confirm_body",
           "Switching this wall to {mode} will permanently delete its current playlist. Cell pairings stay.")
           .replace("{mode}", Khan.t(`walls.mode_${newMode}`, newMode))}</p>
+        ${newMode === "mirrored" ? `
+        <fieldset class="mirrored-fields">
+          <legend>${Khan.t("walls.mirrored_submode", "Mirrored sub-mode")}</legend>
+          <label><input type="radio" name="mode-change-submode" value="same_playlist" checked />
+            ${Khan.t("walls.same_playlist", "Same playlist on all screens")}</label>
+          <label><input type="radio" name="mode-change-submode" value="synced_rotation" />
+            ${Khan.t("walls.synced_rotation", "Different playlist per cell, synchronized rotation")}</label>
+          <label class="same-playlist-only">
+            ${Khan.t("walls.playlist", "Playlist")}
+            <select id="mode-change-playlist">
+              <option value="">${escHtml(Khan.t("walls.choose_playlist", "— Choose a playlist —"))}</option>
+              ${playlists.map(p => `<option value="${p.id}">${escHtml(p.name)}</option>`).join("")}
+            </select>
+          </label>
+        </fieldset>` : ""}
         <p>${Khan.t("walls.mode_change_type_name_to_confirm",
           "Type the wall name to confirm:")}</p>
         <input id="mode-change-typed" autocomplete="off" />
@@ -3137,8 +3867,19 @@ const Walls = (() => {
     document.body.appendChild(overlay);
     const typed = overlay.querySelector("#mode-change-typed");
     const switchBtn = overlay.querySelector("#mode-change-switch");
-    typed.addEventListener("input", () => {
-      switchBtn.disabled = typed.value !== wall.name;
+    const playlistSel = overlay.querySelector("#mode-change-playlist");
+    const subMode = () => overlay.querySelector('input[name="mode-change-submode"]:checked')?.value;
+    const refreshSwitchEnabled = () => {
+      const needsPlaylist = newMode === "mirrored" && subMode() === "same_playlist";
+      switchBtn.disabled = typed.value !== wall.name || (needsPlaylist && !playlistSel.value);
+    };
+    typed.addEventListener("input", refreshSwitchEnabled);
+    playlistSel?.addEventListener("change", refreshSwitchEnabled);
+    overlay.querySelectorAll('input[name="mode-change-submode"]').forEach((el) => {
+      el.addEventListener("change", () => {
+        overlay.querySelector(".same-playlist-only").style.display = subMode() === "same_playlist" ? "" : "none";
+        refreshSwitchEnabled();
+      });
     });
     overlay.querySelector("#mode-change-cancel").addEventListener("click",
       () => overlay.remove());
@@ -3150,7 +3891,11 @@ const Walls = (() => {
         payload.bezel_h_pct = 0;
         payload.bezel_v_pct = 0;
       } else {
-        payload.mirrored_mode = "same_playlist";
+        payload.mirrored_mode = subMode() || "same_playlist";
+        if (payload.mirrored_mode === "same_playlist") {
+          if (!playlistSel.value) return;
+          payload.mirrored_playlist_id = parseInt(playlistSel.value, 10);
+        }
       }
       try {
         await api(`/walls/${wall.id}`, {method: "PATCH", body: JSON.stringify(payload)});
@@ -3159,7 +3904,7 @@ const Walls = (() => {
         await loadList();
         openEditor(wall.id);
       } catch (err) {
-        toast(err.message || "mode change failed", "error");
+        toast(err.message || Khan.t("walls.mode_change_failed", "Couldn't change the wall mode"), "error");
       }
     });
   }
@@ -3167,10 +3912,10 @@ const Walls = (() => {
   return {
     onShow: loadList,
     state,
-    api,
     loadList,
     openEditor,
     closeEditor,
+    reset,
     renderList,
     renderEditor,
   };
@@ -3180,6 +3925,7 @@ const Walls = (() => {
 const Schedules = (() => {
   let cachedPlaylists = [];
   let currentSchedule = null;     // {id, name, rules} or null when creating new
+  let saving = false;             // a second Save before POST /schedules answers made a duplicate
 
   const DOW_LABELS = ["dow.mon", "dow.tue", "dow.wed", "dow.thu", "dow.fri", "dow.sat", "dow.sun"];
 
@@ -3216,28 +3962,33 @@ const Schedules = (() => {
       card.appendChild(name);
       const actions = document.createElement("div");
       actions.className = "schedule-card-actions";
-      const editBtn = document.createElement("button");
-      editBtn.className = "btn";
-      editBtn.textContent = Khan.t("schedules.editor.edit", "Edit");
-      editBtn.addEventListener("click", () => openEditor(s.id));
-      const delBtn = document.createElement("button");
-      delBtn.className = "btn btn-danger";
-      delBtn.textContent = Khan.t("schedules.editor.delete", "Delete");
-      delBtn.addEventListener("click", () => deleteSchedule(s.id, s.name));
-      actions.appendChild(editBtn);
-      actions.appendChild(delBtn);
-      card.appendChild(actions);
+      if (canEditContent()) {
+        const editBtn = document.createElement("button");
+        editBtn.className = "btn";
+        editBtn.textContent = Khan.t("schedules.editor.edit", "Edit");
+        editBtn.addEventListener("click", () => openEditor(s.id));
+        actions.appendChild(editBtn);
+      }
+      if (isAdmin()) {   // DELETE /schedules/{id} is admin-only
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn btn-danger";
+        delBtn.textContent = Khan.t("schedules.editor.delete", "Delete");
+        delBtn.addEventListener("click", () => deleteSchedule(s.id, s.name));
+        actions.appendChild(delBtn);
+      }
+      if (actions.children.length) card.appendChild(actions);
       container.appendChild(card);
     });
   }
 
   async function openEditor(id) {
-    if (!cachedPlaylists.length) {
-      try {
-        const pls = await api("/playlists");
-        cachedPlaylists = Array.isArray(pls) ? pls : (pls.items || []);
-      } catch (_) { cachedPlaylists = []; }
-    }
+    // Fetched on every open, never cached across opens: a cached list goes
+    // stale as soon as a playlist is created, and survives into the next
+    // org's session after a logout.
+    try {
+      const pls = await api("/playlists");
+      cachedPlaylists = Array.isArray(pls) ? pls : (pls.items || []);
+    } catch (_) { cachedPlaylists = []; }
     if (id) {
       try {
         currentSchedule = await api(`/schedules/${id}`);
@@ -3351,10 +4102,29 @@ const Schedules = (() => {
   }
 
   async function save() {
+    if (saving) return;
+    const btn = document.getElementById("schedule-save-btn");
+    saving = true;
+    try {
+      // withLoading disables the button before the first await, so the
+      // second click of a double-click never reaches this handler at all.
+      await (btn ? withLoading(btn, saveNow) : saveNow());
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function saveNow() {
     const nameEl = document.getElementById("schedule-editor-name");
     const name = nameEl.value.trim();
     if (!name) {
       toast(Khan.t("schedules.name_required", "Schedule name is required."), "error");
+      return;
+    }
+    // The backend needs at least one day per rule (1..127); without this
+    // check an all-unchecked row came back as a raw Pydantic error.
+    if (currentSchedule.rules.some((r) => !r.days_of_week)) {
+      toast(Khan.t("schedules.days_required", "Pick at least one day for every rule."), "error");
       return;
     }
     try {
@@ -3364,6 +4134,10 @@ const Schedules = (() => {
           method: "POST", body: JSON.stringify({ name }),
         });
         sid = created.id;
+        // Remember it now: if saving the rules below fails, the next Save
+        // must update this schedule rather than create a duplicate.
+        currentSchedule.id = sid;
+        refreshScheduleOptions();
       } else {
         await api(`/schedules/${sid}`, {
           method: "PUT", body: JSON.stringify({ name }),
@@ -3382,12 +4156,13 @@ const Schedules = (() => {
         }),
       });
       toast(Khan.t("toast.schedule_saved", "Schedule saved."), "success");
+      refreshScheduleOptions();
       await show();
     } catch (err) {
       const code = err.data?.detail?.code;
       const msg = code === "schedule.rule_overlap"
-        ? Khan.t("schedules.overlap_error", "Two rules overlap on the same day.")
-        : (err.message || Khan.t("schedules.error.save", "Failed to save schedule."));
+        ? Khan.t("schedules.overlap_error", "Two rules overlap in time (including rules that run past midnight).")
+        : ((err.isApiError && err.message) || Khan.t("schedules.error.save", "Failed to save schedule."));
       toast(msg, "error");
     }
   }
@@ -3405,6 +4180,7 @@ const Schedules = (() => {
     try {
       await api(`/schedules/${id}`, { method: "DELETE" });
       toast(Khan.t("toast.schedule_deleted", "Schedule deleted."), "success");
+      refreshScheduleOptions();
       await refreshList();
     } catch (err) {
       toast(err.message || Khan.t("schedules.error.delete", "Failed to delete."), "error");
@@ -3418,7 +4194,16 @@ const Schedules = (() => {
     document.getElementById("schedule-cancel-btn")?.addEventListener("click", () => show());
   }
 
-  return { show, init };
+  function reset() {
+    cachedPlaylists = [];
+    currentSchedule = null;
+    document.getElementById("schedule-editor")?.classList.add("hidden");
+    document.getElementById("schedules-list")?.classList.remove("hidden");
+    const list = document.getElementById("schedules-list");
+    if (list) list.innerHTML = "";
+  }
+
+  return { show, init, reset };
 })();
 
 Schedules.init();
@@ -3428,27 +4213,44 @@ const AuditLog = (() => {
   const PAGE_SIZE = 50;
   let offset = 0;
   let total = 0;
-  let actorFilterPopulated = false;
 
   async function show() {
-    if (!actorFilterPopulated) await populateActorFilter();
+    // Rebuilt on every visit: users come and go, and a list filled once
+    // would still show the previous org's usernames after a logout.
+    await populateActorFilter();
     offset = 0;
     await fetchPage();
+  }
+
+  function clearActorOptions(sel) {
+    // Keep the leading "All" option, drop every username.
+    while (sel.options.length > 1) sel.remove(1);
   }
 
   async function populateActorFilter() {
     const sel = document.getElementById("audit-filter-actor");
     if (!sel) return;
+    const previous = sel.value;
     try {
       const users = await api("/users");
+      clearActorOptions(sel);
       users.forEach(u => {
         const opt = document.createElement("option");
         opt.value = u.id;
         opt.textContent = u.username;
         sel.appendChild(opt);
       });
-      actorFilterPopulated = true;
-    } catch (_) { /* swallow — leave dropdown with just "All" */ }
+      sel.value = users.some((u) => String(u.id) === previous) ? previous : "";
+    } catch (_) { clearActorOptions(sel); /* leave dropdown with just "All" */ }
+  }
+
+  function reset() {
+    offset = 0;
+    total = 0;
+    const sel = document.getElementById("audit-filter-actor");
+    if (sel) { clearActorOptions(sel); sel.value = ""; }
+    const tbody = document.getElementById("audit-log-tbody");
+    if (tbody) tbody.innerHTML = "";
   }
 
   async function fetchPage() {
@@ -3506,11 +4308,7 @@ const AuditLog = (() => {
   }
 
   function formatWhen(iso) {
-    if (!iso) return "—";
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString();
-    } catch (_) { return iso; }
+    return formatDateTime(iso, { withSeconds: true });
   }
 
   function renderPagination() {
@@ -3540,7 +4338,7 @@ const AuditLog = (() => {
     });
   }
 
-  return { show, init };
+  return { show, init, reset };
 })();
 
 AuditLog.init();
@@ -3704,8 +4502,7 @@ const ApiKeys = (() => {
       c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   }
   function formatDate(iso) {
-    if (!iso) return "—";
-    try { return new Date(iso).toLocaleString(); } catch (_) { return iso; }
+    return escHtml(formatDateTime(iso));
   }
 
   function openCreateModal() {
@@ -3757,6 +4554,17 @@ const ApiKeys = (() => {
     document.getElementById("api-key-reveal-modal").classList.add("hidden");
   }
 
+  // Sign-out: a key just revealed belongs to the previous org -- left in the
+  // DOM it is one click away for whoever signs in next in this tab.
+  function reset() {
+    closeRevealModal();
+    document.getElementById("api-key-create-modal")?.classList.add("hidden");
+    const name = document.getElementById("api-key-name");
+    if (name) name.value = "";
+    const list = document.getElementById("api-keys-list");
+    if (list) list.innerHTML = "";
+  }
+
   async function revokeKey(id, name) {
     const ok = await confirmDialog({
       title:        Khan.t("api_keys.revoke_confirm.title", "Revoke API key?"),
@@ -3785,7 +4593,7 @@ const ApiKeys = (() => {
     document.getElementById("api-key-reveal-done")?.addEventListener("click", closeRevealModal);
   }
 
-  return { show, init };
+  return { show, init, reset };
 })();
 
 ApiKeys.init();

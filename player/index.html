@@ -21,11 +21,15 @@
       <div id="zones" class="zones-layout hidden"></div>
 
       <section id="pairing" class="pairing hidden" aria-live="polite">
-        <img class="pairing-face" src="assets/faces/v1_smile.png" alt="" width="160" height="160" />
-        <h1 class="pairing-brand">Khanshoof</h1>
+        <div class="pairing-header">
+          <img class="pairing-face" src="assets/faces/v1_smile.png" alt="" width="160" height="160" />
+          <h1 class="pairing-brand">Khanshoof</h1>
+        </div>
         <p class="pairing-intro" data-i18n="pairing.intro">Pair this display to your account</p>
-        <div class="pairing-code" id="pairing-code" data-i18n-aria-label="pairing.code_aria" aria-label="Pairing code">—</div>
-        <div class="pairing-qr" id="pairing-qr" data-i18n-aria-label="pairing.qr_aria" aria-label="QR code for pairing URL"></div>
+        <div class="pairing-row">
+          <div class="pairing-code" id="pairing-code" data-i18n-aria-label="pairing.code_aria" aria-label="Pairing code">—</div>
+          <div class="pairing-qr" id="pairing-qr" data-i18n-aria-label="pairing.qr_aria" aria-label="QR code for pairing URL"></div>
+        </div>
         <ol class="pairing-steps">
           <li><span data-i18n="pairing.step1_a">On your phone, open</span> <strong id="pairing-url">app.khanshoof.com/pair</strong></li>
           <li data-i18n="pairing.step2">Enter the code above, or scan the QR to jump there</li>

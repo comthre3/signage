@@ -26,8 +26,9 @@
           </label>
           <label>
             <input type="radio" name="scope" value="api:rw"
-                   {% if requested_scope == 'api:rw' %}checked{% endif %}>
+                   {% if not allow_rw %}disabled{% elif requested_scope == 'api:rw' %}checked{% endif %}>
             <strong>Read + write</strong> — full content management.
+            {% if not allow_rw %}<span class="muted">Your role is read-only, so you can only grant read access.</span>{% endif %}
           </label>
         </fieldset>
 

@@ -1,0 +1,9 @@
+# Runtime state is mounted from the host (docker-compose: ./data, ./uploads);
+# it must never be baked into the image, and a root-only file a test run left
+# here (data/setup-token.txt is 0600) makes the build fail outright.
+data/
+uploads/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+*.pyc

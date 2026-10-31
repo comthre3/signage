@@ -1,8 +1,9 @@
 const urlOverrides = new URLSearchParams(window.location.search);
-const API_BASE =
+const API_BASE = (
   urlOverrides.get("api_base") ||
   (window.API_BASE_URL || "").trim() ||
-  `${window.location.protocol}//${window.location.hostname}:8000`;
+  `${window.location.protocol}//${window.location.hostname}:8000`
+).replace(/\/+$/, "");
 
 const statusEl = document.getElementById("status");
 const contentEl = document.getElementById("content");
@@ -17,18 +18,87 @@ const pairingMetaEl = document.getElementById("pairing-meta");
 const APP_URL = (window.APP_URL || "").trim() || "https://app.khanshoof.com";
 const PAIR_POLL_INTERVAL_MS = 3000;
 
+// How often a healthy player re-reads its content/layout, and how it backs off
+// while the API is unreachable (it keeps showing the last content it had).
+const REFRESH_INTERVAL_MS = 15000;
+const RETRY_BACKOFF_MS = [2000, 4000, 8000, 15000, 30000, 60000];
+// A request that never answers must not stall the refresh loop forever.
+const API_TIMEOUT_MS = 15000;
+// Boot shows the cached content if the network has not answered by then.
+const BOOT_CACHE_FALLBACK_MS = 4000;
+// An item whose duration is 0/negative in a multi-item zone or playlist:
+// images and pages dwell this long, videos play to their end.
+const DEFAULT_DWELL_MS = 10000;
+const VIDEO_METADATA_TIMEOUT_MS = 60000;
+const VIDEO_END_GRACE_MS = 15000;
+// While the wall socket is up it drives playback; the API is only re-checked
+// this often, to notice the screen leaving the wall.
+const WALL_CHECK_INTERVAL_MS = 60000;
+// The server pings every 25s; a socket silent for longer than this is dead.
+const WALL_SILENCE_LIMIT_MS = 75000;
+const WALL_RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+// Deploys: how often to look for a new player version.
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const RELOAD_GUARD_MS = 60000;
+const CONTROLLER_RELOAD_DELAY_MS = 3000;
+const MANIFEST_RESEND_MS = 10 * 60 * 1000;
+
 let activePairCode = null;
 let pairPollTimer = null;
+let pairRetryTimer = null;
 
 let screenToken = null;
-let playbackTimer = null;
-let currentIndex = 0;
+let previewToken = null;
 let currentSignature = "";
 let currentItems = [];
-let previewToken = null;
-let zoneTimers = [];
 let layoutSignature = "";
+// What the screen is showing: "playlist" | "zones" | "wall" | "pairing" | null.
+let mode = null;
 const cachePrefix = "signage_cache_";
+
+// ── Connection indicator (Phase 2.5d) ─────────────────────────────────
+const ConnectionStatus = (() => {
+  let lastFrameAt = 0;     // Date.now() of last successful WS frame OR API success
+  let wsState = "none";    // "none" (no wall socket) | "open" | "connecting" | "closed"
+  let timer = null;
+  const dot = () => document.getElementById("connection-indicator");
+
+  function markFrame() { lastFrameAt = Date.now(); }
+  function setWs(s)    { wsState = s; }
+
+  function compute() {
+    const ageMs = Date.now() - lastFrameAt;
+    // Playlist and zones screens have no socket: the age of the last API
+    // answer is the whole signal. They poll every 15s, so green survives one
+    // slow or missed poll. Without this a healthy screen showed amber forever.
+    if (wsState === "none") {
+      if (ageMs < 45_000)    return "green";
+      if (ageMs < 5 * 60_000) return "amber";
+      return "red";
+    }
+    if (wsState === "open" && ageMs < 30_000)     return "green";
+    if (wsState === "open" && ageMs < 5 * 60_000) return "amber";
+    if (wsState === "connecting")                 return "amber";
+    if (ageMs > 30_000)                           return "red";
+    return "amber";
+  }
+
+  function render() {
+    const el = dot(); if (!el) return;
+    el.classList.remove("conn-green", "conn-amber", "conn-red");
+    el.classList.add(`conn-${compute()}`);
+  }
+
+  function show() { dot()?.classList.remove("hidden"); render(); }
+  function hide() { dot()?.classList.add("hidden"); }
+
+  function start() {
+    if (timer) return;
+    timer = setInterval(render, 5_000);
+  }
+
+  return { show, hide, markFrame, setWs, start };
+})();
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -38,13 +108,71 @@ function getParam(name) {
   return new URLSearchParams(window.location.search).get(name);
 }
 
-function getCacheKey(type) {
-  const key = previewToken ? `preview_${previewToken}` : `screen_${screenToken}`;
+// The key names the screen explicitly: a response that arrives after the
+// token changed (a "bye", a re-pair) must not be filed under the new one --
+// or under "screen_null".
+function getCacheKey(type, token = screenToken) {
+  const key = previewToken ? `preview_${previewToken}` : `screen_${token}`;
   return `${cachePrefix}${type}_${key}`;
 }
 
+function readCache(type, token = screenToken) {
+  try {
+    const raw = localStorage.getItem(getCacheKey(type, token));
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeCache(type, data, token = screenToken) {
+  if (!token && !previewToken) return;
+  try { localStorage.setItem(getCacheKey(type, token), JSON.stringify(data)); } catch (_) {}
+}
+
+/* Media URLs from the API are relative ("/uploads/x.png") and live on the API
+   host, not on the player's. Absolute URLs (website items, external images)
+   are used as they are. */
+function resolveMediaUrl(url) {
+  if (typeof url !== "string" || !url) return url;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//")) return url;
+  return `${API_BASE}${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
+/* fetch() plus the whole body, under one timeout. A response whose headers
+   arrive and whose body then stalls must not hang the caller (the refresh
+   loop stays "in flight" for good otherwise). Returns
+   { ok, status, headers, text, json() } with the body already read. */
+async function apiFetch(url, options = {}) {
+  const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (ctrl) ctrl.abort();
+      reject(new Error(`timeout after ${API_TIMEOUT_MS}ms: ${url}`));
+    }, API_TIMEOUT_MS);
+  });
+  const request = (async () => {
+    const res = await fetch(url, ctrl ? { ...options, signal: ctrl.signal } : options);
+    const text = await res.text();
+    return {
+      ok: res.ok,
+      status: res.status,
+      headers: res.headers,
+      text,
+      json() { return JSON.parse(text); },
+    };
+  })();
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    clearTimeout(timer);
+    request.catch(() => {});   // the loser of the race must not go unhandled
+  }
+}
+
 async function pairWithCode(code) {
-  const res = await fetch(`${API_BASE}/screens/pair`, {
+  const res = await apiFetch(`${API_BASE}/screens/pair`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pair_code: code }),
@@ -57,19 +185,55 @@ async function pairWithCode(code) {
 }
 
 function buildSignature(items) {
-  return items.map((item) => `${item.id}:${item.duration_seconds}`).join("|");
+  return items.map((item) => `${item.id}:${item.duration_seconds}:${item.url}`).join("|");
 }
 
-function clearPlayback() {
-  if (playbackTimer) {
-    clearTimeout(playbackTimer);
-    playbackTimer = null;
+/* ── Releasing media ───────────────────────────────────────────────────
+   A removed <video> keeps its decoder until its source is dropped; on a TV
+   that runs for weeks, cycling videos would exhaust the hardware decoders. */
+function releaseMedia(root) {
+  if (!root) return;
+  const videos = root.tagName === "VIDEO"
+    ? [root]
+    : Array.from(root.querySelectorAll ? root.querySelectorAll("video") : []);
+  videos.forEach((video) => {
+    video._released = true;
+    try {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    } catch (_) {}
+  });
+}
+
+function removeNode(node) {
+  releaseMedia(node);
+  node.remove();
+}
+
+function clearContainer(el) {
+  // Also invalidates any item still loading for this container (mountMedia).
+  el._mountSeq = (el._mountSeq || 0) + 1;
+  releaseMedia(el);
+  el.innerHTML = "";
+}
+
+/* Autoplay is not a promise: kiosk browsers reject or silently skip play()
+   (power saving, a decoder still busy, a policy change). Muted + playsinline
+   is what every TV browser allows; retry a few times with backoff. */
+function ensurePlaying(video, attempt = 0) {
+  if (video._released) return;
+  video.muted = true;
+  let result;
+  try { result = video.play(); } catch (_) { result = null; }
+  if (result && typeof result.catch === "function") {
+    result.catch(() => {
+      if (video._released || attempt >= 5) return;
+      setTimeout(() => {
+        if (video.isConnected && video.paused && !video.ended) ensurePlaying(video, attempt + 1);
+      }, 1000 * (attempt + 1));
+    });
   }
-}
-
-function clearZonePlayback() {
-  zoneTimers.forEach((timer) => clearTimeout(timer));
-  zoneTimers = [];
 }
 
 function showPairingView() {
@@ -102,7 +266,7 @@ function renderPairingCode(code) {
 }
 
 async function requestPairingCode() {
-  const res = await fetch(`${API_BASE}/screens/request_code`, {
+  const res = await apiFetch(`${API_BASE}/screens/request_code`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_agent: navigator.userAgent.slice(0, 500) }),
@@ -114,7 +278,7 @@ async function requestPairingCode() {
 }
 
 async function pollPairingCode(code) {
-  const res = await fetch(`${API_BASE}/screens/poll/${encodeURIComponent(code)}`);
+  const res = await apiFetch(`${API_BASE}/screens/poll/${encodeURIComponent(code)}`);
   if (!res.ok) {
     throw new Error(`poll failed: ${res.status}`);
   }
@@ -128,29 +292,21 @@ function stopPairPoll() {
   }
 }
 
-async function onPaired(screenToken) {
+/* Never throws and never waits on the network: the refresh loop loads the
+   content and keeps retrying with backoff if the first attempt fails, so a
+   single failed request right after pairing can no longer strand the TV on a
+   hidden "Loading content..." forever. */
+function onPaired(token) {
   stopPairPoll();
+  clearTimeout(pairRetryTimer);
   activePairCode = null;
-  localStorage.setItem("screen_token", screenToken);
+  try { localStorage.setItem("screen_token", token); } catch (_) {}
+  screenToken = token;
+  mode = null;
   hidePairingView();
   setStatus(Khan.t("status.loading_content", "Loading content..."));
-  // Re-run the same post-auth path boot() uses
-  await resumeAfterPair(screenToken);
-}
-
-async function resumeAfterPair(token) {
-  screenToken = token;
-  const layout = await fetchLayout();
-  if (layout?.zones && layout.zones.length > 0) {
-    layoutSignature = getLayoutSignature(layout.zones);
-    renderZonesLayout(layout.zones);
-  } else {
-    renderSingleLayout();
-    await fetchContent();
-  }
-  if (!refreshLoopStarted) {
-    startRefreshLoop();
-  }
+  refreshFailures = 0;
+  scheduleRefresh(0);
 }
 
 /* Last resort: mount the item even if its load event never arrives (a hung
@@ -160,7 +316,9 @@ async function resumeAfterPair(token) {
 const MOUNT_FALLBACK_MS = 5000;
 
 function mountMedia(container, node, enableFade, transitionMs = 600) {
-  const previous = container.firstElementChild;
+  // A newer mount, or the container being cleared, supersedes this one: a
+  // late load event must not drop a stale item on top of newer content.
+  const seq = (container._mountSeq = (container._mountSeq || 0) + 1);
   if (enableFade) {
     node.classList.add("fade-media");
     node.style.transitionDuration = `${transitionMs}ms`;
@@ -169,7 +327,15 @@ function mountMedia(container, node, enableFade, transitionMs = 600) {
   const showNode = () => {
     if (mounted) return;   // load and the fallback timer can both fire
     mounted = true;
+    // Superseded, cleared, or its zone re-rendered away while it loaded: a
+    // video played into a detached container would hold a decoder for good.
+    if (container._mountSeq !== seq || !container.isConnected) {
+      releaseMedia(node);
+      return;
+    }
+    const previous = Array.from(container.children);
     container.appendChild(node);
+    if (node.tagName === "VIDEO") ensurePlaying(node);
     if (enableFade) {
       /* Reveal on the next frame so the browser registers the opacity
          transition — but never depend on it alone: browsers throttle
@@ -179,11 +345,11 @@ function mountMedia(container, node, enableFade, transitionMs = 600) {
       const reveal = () => node.classList.add("visible");
       requestAnimationFrame(reveal);
       setTimeout(reveal, 50);
-      if (previous) {
-        setTimeout(() => previous.remove(), transitionMs + 50);
+      if (previous.length) {
+        setTimeout(() => previous.forEach(removeNode), transitionMs + 50);
       }
-    } else if (previous) {
-      previous.remove();
+    } else {
+      previous.forEach(removeNode);
     }
   };
   if (node.tagName === "IMG") {
@@ -213,39 +379,41 @@ function isImageUrl(url) {
   return typeof url === "string" && IMAGE_URL_RE.test(url);
 }
 
-function renderItem(item, durationMs) {
-  const url = `${API_BASE}${item.url}`;
-  let node = null;
-  if (item.mime_type.startsWith("video")) {
-    node = createVideoNode(url, durationMs > 0);
-  } else if (item.mime_type.startsWith("image")) {
+function createMediaNode(item, loop) {
+  const mime = item.mime_type || "";
+  const url = resolveMediaUrl(item.url);
+  let node;
+  if (mime.startsWith("video")) {
+    node = createVideoNode(url, loop);
+  } else if (mime.startsWith("image") || (mime === "text/url" && isImageUrl(item.url))) {
     node = document.createElement("img");
     node.src = url;
     node.decoding = "async";
-  } else if (item.mime_type === "application/pdf") {
+    node.alt = "";
+  } else if (mime === "application/pdf") {
     node = document.createElement("iframe");
     node.src = `${url}#toolbar=0&navpanes=0`;
-  } else if (item.mime_type === "text/url") {
-    if (isImageUrl(item.url)) {
-      node = document.createElement("img");
-      node.src = item.url;
-      node.decoding = "async";
-    } else {
-      node = document.createElement("iframe");
-      node.src = item.url;
-    }
+  } else if (mime === "text/url") {
+    node = document.createElement("iframe");
+    node.src = url;
   } else {
     node = document.createElement("div");
     node.textContent = `Unsupported media: ${item.name}`;
   }
-  mountMedia(contentEl, node, durationMs > 0, 600);
+  return node;
+}
+
+function renderMediaItem(container, item, { loop, fade, transitionMs }) {
+  const node = createMediaNode(item, loop);
+  mountMedia(container, node, fade, transitionMs);
+  return node;
 }
 
 function createVideoNode(url, loop) {
   const node = document.createElement("video");
-  node.src = url;
-  node.autoplay = true;
   node.muted = true;
+  node.setAttribute("muted", "");
+  node.autoplay = true;
   node.playsInline = true;
   node.loop = loop;
   node.preload = "auto";
@@ -256,89 +424,106 @@ function createVideoNode(url, loop) {
   // Hint browser to prefer hardware decode + GPU compositing
   node.style.willChange = "transform";
   node.style.transform = "translateZ(0)";
+  node.src = url;
   return node;
 }
 
-function scheduleNext() {
-  if (currentItems.length === 0) {
-    setStatus(Khan.t("status.no_content", "No content assigned"));
-    return;
-  }
-  const item = currentItems[currentIndex];
-  const durationMs = Number(item.duration_seconds ?? 10) * 1000;
-  renderItem(item, durationMs);
-  setStatus(`Playing ${item.name}`);
-  clearPlayback();
-  if (durationMs <= 0) {
-    return;
-  }
-  playbackTimer = setTimeout(() => {
-    currentIndex = (currentIndex + 1) % currentItems.length;
-    scheduleNext();
-  }, durationMs);
+function itemDurationMs(item) {
+  const raw = item ? item.duration_seconds : null;
+  if (raw === null || raw === undefined || raw === "") return 10000;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) ? seconds * 1000 : 10000;
 }
 
-function startPlayback(items) {
-  currentItems = items;
-  currentIndex = 0;
-  scheduleNext();
+/* ── Carousels: the main playlist and each zone ────────────────────────
+   One timer per carousel (replaced, never accumulated). Durations:
+   - > 0: show for that long (videos loop), crossfading to the next item.
+   - <= 0 on the only item: static, as documented — no fade, no advance; a
+     lone video loops instead of freezing on its last frame.
+   - <= 0 among several items: a video plays to its end, anything else dwells
+     DEFAULT_DWELL_MS. It used to stop the carousel for good, freezing a video
+     on its last frame. */
+const carousels = new Map();
+
+function stopCarousel(key) {
+  const run = carousels.get(key);
+  if (run) {
+    clearTimeout(run.timer);
+    carousels.delete(key);
+  }
 }
 
-function renderZoneItem(container, item, durationMs, transitionMs) {
-  const url = `${API_BASE}${item.url}`;
-  let node = null;
-  if (item.mime_type.startsWith("video")) {
-    node = createVideoNode(url, durationMs > 0);
-  } else if (item.mime_type.startsWith("image")) {
-    node = document.createElement("img");
-    node.src = url;
-    node.decoding = "async";
-  } else if (item.mime_type === "application/pdf") {
-    node = document.createElement("iframe");
-    node.src = `${url}#toolbar=0&navpanes=0`;
-  } else if (item.mime_type === "text/url") {
-    if (isImageUrl(item.url)) {
-      node = document.createElement("img");
-      node.src = item.url;
-      node.decoding = "async";
-    } else {
-      node = document.createElement("iframe");
-      node.src = item.url;
-    }
-  } else {
-    node = document.createElement("div");
-    node.textContent = `Unsupported media: ${item.name}`;
-  }
-  mountMedia(container, node, durationMs > 0, transitionMs);
+function clearPlayback() {
+  stopCarousel("main");
 }
 
-function startZonePlayback(zoneIndex, zone, container) {
-  if (!zone.items || zone.items.length === 0) {
-    return;
-  }
+function clearZonePlayback() {
+  Array.from(carousels.keys())
+    .filter((key) => key.startsWith("zone:"))
+    .forEach(stopCarousel);
+}
+
+function startCarousel(key, container, items, transitionMs, onItem) {
+  stopCarousel(key);
+  if (!items || items.length === 0) return;
+  const run = { timer: null };
+  carousels.set(key, run);
+  const alive = () => carousels.get(key) === run;
+  const later = (fn, ms) => {
+    clearTimeout(run.timer);
+    run.timer = setTimeout(fn, ms);
+  };
+  const single = items.length === 1;
   let index = 0;
   const playNext = () => {
-    const item = zone.items[index];
-    const durationMs = Number(item.duration_seconds ?? 10) * 1000;
-    const transitionMs = Number(zone.transition_ms ?? 600);
-    renderZoneItem(container, item, durationMs, transitionMs);
-    index = (index + 1) % zone.items.length;
-    if (durationMs <= 0) {
-      return;
+    if (!alive()) return;
+    clearTimeout(run.timer);
+    const item = items[index];
+    index = (index + 1) % items.length;
+    if (onItem) onItem(item);
+    const durationMs = itemDurationMs(item);
+    const isVideo = (item.mime_type || "").startsWith("video");
+    if (durationMs > 0) {
+      renderMediaItem(container, item, { loop: isVideo, fade: true, transitionMs });
+      later(playNext, durationMs);
+    } else if (single) {
+      renderMediaItem(container, item, { loop: true, fade: false, transitionMs });
+    } else if (isVideo) {
+      const node = renderMediaItem(container, item, { loop: false, fade: true, transitionMs });
+      let done = false;
+      const advance = () => {
+        if (done || !alive() || node._released) return;
+        done = true;
+        playNext();
+      };
+      node.addEventListener("ended", advance, { once: true });
+      node.addEventListener("error", () => later(advance, DEFAULT_DWELL_MS), { once: true });
+      node.addEventListener("loadedmetadata", () => {
+        if (Number.isFinite(node.duration) && node.duration > 0) {
+          later(advance, node.duration * 1000 + VIDEO_END_GRACE_MS);
+        }
+      }, { once: true });
+      later(advance, VIDEO_METADATA_TIMEOUT_MS);
+    } else {
+      renderMediaItem(container, item, { loop: false, fade: true, transitionMs });
+      later(playNext, DEFAULT_DWELL_MS);
     }
-    const timer = setTimeout(playNext, durationMs);
-    zoneTimers.push(timer);
   };
   playNext();
 }
 
+function startPlayback(items) {
+  currentItems = items;
+  startCarousel("main", contentEl, items, 600, (item) => setStatus(`Playing ${item.name}`));
+}
+
 function renderZonesLayout(zones) {
-  zonesEl.innerHTML = "";
+  clearZonePlayback();
+  clearContainer(zonesEl);
   zonesEl.classList.remove("hidden");
   ConnectionStatus.show();
   ConnectionStatus.start();
   contentEl.classList.add("hidden");
-  clearZonePlayback();
   zones.forEach((zone, index) => {
     const zoneEl = document.createElement("div");
     zoneEl.className = "zone-region";
@@ -350,7 +535,7 @@ function renderZonesLayout(zones) {
     content.className = "zone-content";
     zoneEl.appendChild(content);
     zonesEl.appendChild(zoneEl);
-    startZonePlayback(index, zone, content);
+    startCarousel(`zone:${index}`, content, zone.items || [], Number(zone.transition_ms ?? 600));
   });
 }
 
@@ -362,82 +547,74 @@ function getLayoutSignature(zones) {
       y: zone.y,
       width: zone.width,
       height: zone.height,
+      transition_ms: zone.transition_ms,
       items: (zone.items || []).map((item) => ({
         id: item.id,
         media_id: item.media_id,
         duration_seconds: item.duration_seconds,
+        url: item.url,
       })),
     }))
   );
 }
 
-function renderSingleLayout() {
+function showSingleContainer() {
   zonesEl.classList.add("hidden");
   contentEl.classList.remove("hidden");
-  clearZonePlayback();
-}
-async function handleAuthFailure() {
-  console.warn("Screen token rejected — returning to pairing view");
-  localStorage.removeItem("screen_token");
-  screenToken = null;
-  currentSignature = "";
-  currentItems = [];
-  clearPlayback();
-  clearZonePlayback();
-  contentEl.innerHTML = "";
-  zonesEl.innerHTML = "";
-  await startPairingFlow();
+  ConnectionStatus.show();
+  ConnectionStatus.start();
 }
 
-function prefetchPlaylistMedia(items) {
-  // Sequential, low-priority. Fire-and-forget — caller does NOT await.
-  // Each fetch is no-cors so the cross-origin /uploads/ response is opaque
-  // (good enough for the SW to cache and good enough for <img>/<video> to render).
-  return (async () => {
-    for (const item of items || []) {
-      const url = item && item.url;
-      if (!url) continue;
-      try {
-        await fetch(url, { mode: "no-cors", cache: "no-store" });
-      } catch (_) {
-        /* offline or 404 — swallow */
-      }
-    }
-  })();
+/* ── Modes ─────────────────────────────────────────────────────────────
+   The server decides what this screen is — a wall cell, a zoned layout or a
+   plain playlist — and can change its mind at any time. Every refresh goes
+   through applyState(), which switches modes cleanly; nothing else may touch
+   the containers of a mode it does not own. */
+function leaveMode() {
+  if (mode === "wall") {
+    leaveWallMode();
+  } else if (mode === "zones") {
+    clearZonePlayback();
+    clearContainer(zonesEl);
+    layoutSignature = "";
+  } else if (mode === "playlist") {
+    clearPlayback();
+    currentSignature = "";
+    currentItems = [];
+    clearContainer(contentEl);
+  }
+  zonesEl.classList.add("hidden");
+  contentEl.classList.remove("hidden");
+  mode = null;
 }
 
-async function fetchContent() {
-  if (!screenToken && !previewToken) return;
-  const endpoint = previewToken
-    ? `${API_BASE}/preview/${previewToken}/content`
-    : `${API_BASE}/screens/${screenToken}/content`;
-  const res = await fetch(endpoint);
-  if ((res.status === 401 || res.status === 404) && !previewToken) {
-    await handleAuthFailure();
-    return;
+function showZones(zones) {
+  const signature = getLayoutSignature(zones);
+  if (mode === "zones" && signature === layoutSignature) return;
+  if (mode !== "zones") leaveMode();
+  mode = "zones";
+  layoutSignature = signature;
+  renderZonesLayout(zones);
+}
+
+function showPlaylist(content) {
+  if (mode !== "playlist") {
+    leaveMode();
+    mode = "playlist";
+    showSingleContainer();
   }
-  if (!res.ok) {
-    const cached = localStorage.getItem(getCacheKey("content"));
-    if (!cached) {
-      throw new Error("Failed to load content");
-    }
-    const data = JSON.parse(cached);
-    return renderContentData(data);
-  }
-  const data = await res.json();
-  ConnectionStatus.markFrame();
-  localStorage.setItem(getCacheKey("content"), JSON.stringify(data));
-  prefetchPlaylistMedia(data.items);   // fire and forget
-  return renderContentData(data);
+  renderContentData(content);
 }
 
 function renderContentData(data) {
-  const items = data.items || [];
+  const items = (data && data.items) || [];
   if (items.length === 0) {
+    if (currentSignature !== "" || currentItems.length) {
+      clearPlayback();
+      clearContainer(contentEl);
+    }
     currentSignature = "";
     currentItems = [];
-    clearPlayback();
-    contentEl.innerHTML = "";
     setStatus(Khan.t("status.no_content", "No content assigned"));
     return;
   }
@@ -448,55 +625,290 @@ function renderContentData(data) {
   }
 }
 
-async function fetchLayout() {
-  if (!screenToken && !previewToken) return null;
-  const endpoint = previewToken
-    ? `${API_BASE}/preview/${previewToken}/layout`
-    : `${API_BASE}/screens/${screenToken}/layout`;
-  const res = await fetch(endpoint);
-  if ((res.status === 401 || res.status === 404) && !previewToken) {
-    await handleAuthFailure();
-    return null;
+function applyState(content, layout) {
+  if (!content && !layout) return;
+  // Unpaired meanwhile (a wall "bye", a rejected token): nothing to show,
+  // and entering a mode now would strand the pairing screen without a code.
+  if ((!screenToken && !previewToken) || mode === "pairing") return;
+  if (!previewToken && content && content.wall_id) {
+    enterWallMode(content.wall_id);
+    announceMedia(Array.from(wallSeen.values()));
+    return;
   }
-  if (!res.ok) {
-    const cached = localStorage.getItem(getCacheKey("layout"));
-    return cached ? JSON.parse(cached) : null;
+  const zones = layout && Array.isArray(layout.zones) ? layout.zones : [];
+  if (zones.length > 0) {
+    showZones(zones);
+    announceMedia(zones.flatMap((zone) => zone.items || []));
+    return;
   }
-  const data = await res.json();
-  ConnectionStatus.markFrame();
-  localStorage.setItem(getCacheKey("layout"), JSON.stringify(data));
-  const zoneItems = ((data && data.zones) || []).flatMap(z => z.items || []);
-  prefetchPlaylistMedia(zoneItems);   // fire and forget
-  return data;
+  if (!content) return;   // no zones, but the playlist is unknown: keep what is shown
+  showPlaylist(content);
+  announceMedia(content.items || []);
 }
 
+/* Tokens the API has rejected. A kiosk URL carrying ?token= would otherwise
+   win over the token this TV re-paired with, on every reboot or update
+   reload, and unpair it again. */
+const REJECTED_TOKENS_KEY = "khan_rejected_tokens";
+
+function rejectedTokens() {
+  try {
+    const list = JSON.parse(localStorage.getItem(REJECTED_TOKENS_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function rememberRejectedToken(token) {
+  try {
+    const list = rejectedTokens().filter((t) => t !== token);
+    list.push(token);
+    localStorage.setItem(REJECTED_TOKENS_KEY, JSON.stringify(list.slice(-5)));
+  } catch (_) {}
+}
+
+function stripPairingParamsFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    let changed = false;
+    ["token", "code"].forEach((name) => {
+      if (url.searchParams.has(name)) {
+        url.searchParams.delete(name);
+        changed = true;
+      }
+    });
+    if (changed) history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch (_) {}
+}
+
+async function handleAuthFailure() {
+  console.warn("Screen token rejected — returning to pairing view");
+  if (screenToken) rememberRejectedToken(screenToken);
+  try { localStorage.removeItem("screen_token"); } catch (_) {}
+  stripPairingParamsFromUrl();
+  screenToken = null;
+  leaveMode();
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
+  await startPairingFlow();
+}
+
+/* Only our API saying exactly "this screen does not exist" unpairs a TV --
+   the detail both /screens/{token}/content and /layout return. Not an HTML
+   404 from a proxy, and not any JSON 404: another FastAPI on the same host
+   answers {"detail": "Not Found"}, so a tunnel port typo would otherwise
+   unpair every TV at once. */
+const SCREEN_GONE_DETAIL = "Screen not found";
+
+function isAuthFailure(res) {
+  if (previewToken) return false;
+  if (res.status !== 401 && res.status !== 404) return false;
+  try {
+    const body = res.json();
+    return Boolean(body) && body.detail === SCREEN_GONE_DETAIL;
+  } catch (_) {
+    return false;
+  }
+}
+
+/* Reads content or layout. Any failure — a rejected fetch (network down,
+   tunnel outage without CORS headers), a timeout, an error status, a broken
+   body — falls back to the last good copy in localStorage. */
+async function loadEndpoint(kind, token) {
+  const endpoint = previewToken
+    ? `${API_BASE}/preview/${previewToken}/${kind}`
+    : `${API_BASE}/screens/${token}/${kind}`;
+  let res;
+  try {
+    res = await apiFetch(endpoint);
+  } catch (_) {
+    return { data: readCache(kind, token), live: false };
+  }
+  if (isAuthFailure(res)) return { authFailed: true };
+  if (!res.ok) return { data: readCache(kind, token), live: false };
+  let data;
+  try {
+    data = res.json();
+  } catch (_) {
+    return { data: readCache(kind, token), live: false };
+  }
+  if (screenToken !== token) return { stale: true };   // unpaired / re-paired meanwhile
+  writeCache(kind, data, token);
+  return { data, live: true };
+}
+
+/* ── Refresh loop ──────────────────────────────────────────────────────
+   A chain of timeouts rather than an interval: a slow request can never
+   overlap the next, and the delay adapts — every 15s while the API answers,
+   backing off to once a minute while it does not. */
+let refreshTimer = null;
+let refreshFailures = 0;
+let refreshInFlight = false;
+let refreshQueued = false;
+let lastWallCheckAt = 0;
+
+function scheduleRefresh(delayMs) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(runRefresh, delayMs);
+}
+
+function refreshSoon() {
+  if (mode === "pairing" || (!screenToken && !previewToken)) return;
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return;
+  }
+  scheduleRefresh(0);
+}
+
+async function runRefresh() {
+  refreshTimer = null;
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return;
+  }
+  refreshInFlight = true;
+  let ok = false;
+  try {
+    ok = await refresh();
+  } catch (err) {
+    console.error(err);
+  } finally {
+    refreshInFlight = false;
+  }
+  if (mode === "pairing" || (!screenToken && !previewToken)) return;
+  if (refreshQueued) {
+    refreshQueued = false;
+    scheduleRefresh(0);
+    return;
+  }
+  if (ok) {
+    refreshFailures = 0;
+    scheduleRefresh(REFRESH_INTERVAL_MS);
+  } else {
+    const delay = RETRY_BACKOFF_MS[Math.min(refreshFailures, RETRY_BACKOFF_MS.length - 1)];
+    refreshFailures += 1;
+    setStatus(Khan.t("status.connection_issue", "Connection issue"));
+    scheduleRefresh(delay);
+  }
+}
+
+// Returns true when the API answered (live), false while it is unreachable.
+async function refresh() {
+  const token = screenToken;
+  if (!token && !previewToken) return true;
+  if (mode === "wall" && wallSocket && wallSocket.readyState === WebSocket.OPEN) {
+    if (Date.now() - wallLastMessageAt > WALL_SILENCE_LIMIT_MS) {
+      // Half-open socket: the TV would wait forever for frames that never come.
+      closeWallSocket();
+      scheduleWallReconnect();
+    } else if (Date.now() - lastWallCheckAt < WALL_CHECK_INTERVAL_MS) {
+      return true;
+    }
+  }
+  const [content, layout] = await Promise.all([
+    loadEndpoint("content", token), loadEndpoint("layout", token),
+  ]);
+  // A wall "bye" or a re-pair landed while these were in flight: the answer
+  // is about a screen this TV no longer is. Applying it would put a token-less
+  // TV into wall mode and strand the pairing screen with no code and no poll.
+  if (screenToken !== token || mode === "pairing") return true;
+  if (content.authFailed || layout.authFailed) {
+    await handleAuthFailure();
+    return true;
+  }
+  const live = Boolean(content.live || layout.live);
+  if (live) ConnectionStatus.markFrame();
+  if (content.live) lastWallCheckAt = Date.now();
+  applyState(content.data, layout.data);
+  // Nothing on screen yet (e.g. layout answered but content did not): keep
+  // retrying on the short backoff rather than the normal 15s cadence.
+  return live && mode !== null;
+}
+
+function startRefreshLoop() {
+  scheduleRefresh(0);
+}
+
+/* ── Media manifest for the service worker ─────────────────────────────
+   The SW caches exactly what the current content references (plus a small
+   LRU of recent items) and evicts the rest, so offline playback works and the
+   cache cannot grow without bound over weeks of playlist changes. */
+let lastManifestKey = "";
+let lastManifestAt = 0;
+let lastManifestUrls = [];
+
+function announceMedia(items) {
+  // A dashboard preview must not make the operator's browser download and
+  // pin a screen's whole media set.
+  if (previewToken) return;
+  const urls = [];
+  (items || []).forEach((item) => {
+    if (!item || !item.url || item.mime_type === "text/url") return;
+    const url = resolveMediaUrl(item.url);
+    if (!urls.includes(url)) urls.push(url);
+  });
+  const key = urls.join("\n");
+  if (key === lastManifestKey && Date.now() - lastManifestAt < MANIFEST_RESEND_MS) return;
+  lastManifestKey = key;
+  lastManifestAt = Date.now();
+  lastManifestUrls = urls;
+  postToServiceWorker({ type: "media-manifest", urls });
+}
+
+function postToServiceWorker(message) {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const controller = navigator.serviceWorker.controller;
+    if (controller) {
+      controller.postMessage(message);
+      return;
+    }
+    navigator.serviceWorker.ready
+      .then((reg) => { if (reg.active) reg.active.postMessage(message); })
+      .catch(() => {});
+  } catch (_) {}
+}
+
+let pairingFlowGen = 0;
+
 async function startPairingFlow() {
+  const gen = ++pairingFlowGen;
+  clearTimeout(pairRetryTimer);
+  pairRetryTimer = null;
+  leaveMode();
+  mode = "pairing";
   showPairingView();
   stopPairPoll();
   try {
     const data = await requestPairingCode();
+    if (mode !== "pairing" || gen !== pairingFlowGen) return;
     activePairCode = data.code;
     renderPairingCode(data.code);
     pairingMetaEl.textContent = Khan.t("pairing.waiting", "Waiting for your phone…");
     schedulePairPoll();
   } catch (err) {
     console.error(err);
+    if (mode !== "pairing" || gen !== pairingFlowGen) return;
     pairingCodeEl.textContent = "—";
     pairingMetaEl.textContent = Khan.t("pairing.no_server", "Can't reach server. Retrying…");
-    setTimeout(startPairingFlow, 5000);
+    pairRetryTimer = setTimeout(startPairingFlow, 5000);
   }
 }
 
 function schedulePairPoll() {
+  stopPairPoll();
   pairPollTimer = setTimeout(runPairPoll, PAIR_POLL_INTERVAL_MS);
 }
 
 async function runPairPoll() {
+  pairPollTimer = null;
   if (!activePairCode) return;
   try {
     const data = await pollPairingCode(activePairCode);
     if (data.status === "paired" && data.screen_token) {
-      await onPaired(data.screen_token);
+      onPaired(data.screen_token);
       return;
     }
     if (data.status === "expired") {
@@ -512,53 +924,30 @@ async function runPairPoll() {
   }
 }
 
-let refreshLoopStarted = false;
-
-function startRefreshLoop() {
-  if (refreshLoopStarted) return;
-  refreshLoopStarted = true;
-  setInterval(() => {
-    if (wallSocket && wallSocket.readyState === WebSocket.OPEN) return; // WS drives playback
-    if (zonesEl && !zonesEl.classList.contains("hidden")) {
-      fetchLayout()
-        .then((nextLayout) => {
-          if (nextLayout?.zones) {
-            const nextSignature = getLayoutSignature(nextLayout.zones);
-            if (nextSignature !== layoutSignature) {
-              layoutSignature = nextSignature;
-              renderZonesLayout(nextLayout.zones);
-            }
-          }
-        })
-        .catch((err) => {
-          console.error(err);
-          setStatus(Khan.t("status.connection_issue", "Connection issue"));
-        });
-    } else {
-      fetchContent().catch((err) => {
-        console.error(err);
-        setStatus(Khan.t("status.connection_issue", "Connection issue"));
-      });
-    }
-  }, 15000);
-}
-
 async function boot() {
   const tokenParam = getParam("token");
   const codeParam = getParam("code");
   const previewParam = getParam("preview_token");
   const isPreview = Boolean(previewParam);
   previewToken = previewParam;
-  screenToken =
-    tokenParam ||
-    (isPreview ? null : localStorage.getItem("screen_token")) ||
-    screenToken;
+  let storedToken = null;
+  try { storedToken = isPreview ? null : localStorage.getItem("screen_token"); } catch (_) {}
+  // A ?token= the API already rejected must not override the token this TV
+  // has re-paired with since (the kiosk URL keeps carrying the dead one).
+  const urlToken = tokenParam && !rejectedTokens().includes(tokenParam) ? tokenParam : null;
+  if (tokenParam && !urlToken) stripPairingParamsFromUrl();
+  screenToken = urlToken || storedToken || screenToken;
 
   if (!screenToken && codeParam) {
     setStatus(Khan.t("status.pairing", "Pairing..."));
-    screenToken = await pairWithCode(codeParam);
-    if (!isPreview) {
-      localStorage.setItem("screen_token", screenToken);
+    try {
+      screenToken = await pairWithCode(codeParam);
+      if (!isPreview) {
+        try { localStorage.setItem("screen_token", screenToken); } catch (_) {}
+      }
+    } catch (err) {
+      console.error(err);
+      screenToken = null;
     }
   }
 
@@ -568,80 +957,123 @@ async function boot() {
   }
 
   setStatus(Khan.t("status.loading_content", "Loading content..."));
-  const layout = await fetchLayout();
-  let contentResp = null;
-  if (screenToken && !previewToken) {
-    try {
-      contentResp = await (await fetch(
-        `${API_BASE}/screens/${screenToken}/content`)).json();
-    } catch (_) { contentResp = null; }
-  }
-  if (contentResp?.wall_id) {
-    renderSingleLayout();
-    await enterWallMode(contentResp.wall_id);
-  } else if (layout?.zones && layout.zones.length > 0) {
-    layoutSignature = getLayoutSignature(layout.zones);
-    renderZonesLayout(layout.zones);
-  } else {
-    renderSingleLayout();
-    if (contentResp) {
-      try {
-        localStorage.setItem(getCacheKey("content"), JSON.stringify(contentResp));
-      } catch (_) {}
-      renderContentData(contentResp);
-    } else {
-      await fetchContent();
-    }
-  }
   startRefreshLoop();
+  // Network slow or down at boot: show what this screen last played rather
+  // than black, while the refresh loop keeps retrying.
+  setTimeout(() => {
+    if (mode === null && (screenToken || previewToken)) {
+      applyState(readCache("content"), readCache("layout"));
+    }
+  }, BOOT_CACHE_FALLBACK_MS);
 }
 
 // ====== Wall mode ======
 let wallSocket = null;
 let wallId = null;
 let wallReconnectAttempts = 0;
+let wallReconnectTimer = null;
+let wallLastMessageAt = 0;
 let wallClockOffsetMs = 0;
 let wallLastFrame = null;
+let wallNode = null;
 let wallDriftTimer = null;
 let wallSpannedGeometry = null;
-const WALL_RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+// Recently shown wall items, offered to the SW cache (bounded).
+const wallSeen = new Map();
+const WALL_SEEN_MAX = 30;
 
 function effectiveNowMs() { return Date.now() + wallClockOffsetMs; }
 
-async function enterWallMode(id) {
+function enterWallMode(id) {
+  if (mode === "wall" && wallId === id) {
+    if (!wallSocket && !wallReconnectTimer) openWallSocket();
+    return;
+  }
+  leaveMode();
+  mode = "wall";
+  showSingleContainer();
   wallId = id;
+  wallReconnectAttempts = 0;
+  lastWallCheckAt = Date.now();
   setStatus(Khan.t("wall.connecting", "Connecting to wall…"));
   openWallSocket();
 }
 
+function leaveWallMode() {
+  wallId = null;
+  clearTimeout(wallReconnectTimer);
+  wallReconnectTimer = null;
+  closeWallSocket();
+  ConnectionStatus.setWs("none");
+  clearWallPicture();
+  wallSpannedGeometry = null;
+}
+
+function closeWallSocket() {
+  const socket = wallSocket;
+  wallSocket = null;   // its close handler must not reconnect
+  if (socket) {
+    try { socket.close(); } catch (_) {}
+  }
+}
+
+function scheduleWallReconnect() {
+  clearTimeout(wallReconnectTimer);
+  const delay = WALL_RECONNECT_BACKOFF_MS[
+    Math.min(wallReconnectAttempts, WALL_RECONNECT_BACKOFF_MS.length - 1)
+  ];
+  wallReconnectAttempts += 1;
+  wallReconnectTimer = setTimeout(() => {
+    wallReconnectTimer = null;
+    openWallSocket();
+  }, delay);
+}
+
 function openWallSocket() {
+  clearTimeout(wallReconnectTimer);
+  wallReconnectTimer = null;
   if (!wallId || !screenToken) return;
   const wsBase = API_BASE.replace(/^http/, "ws");
   const url = `${wsBase}/walls/${wallId}/ws?screen_token=${encodeURIComponent(screenToken)}`;
-  try { wallSocket?.close(); } catch (_) {}
-  wallSocket = new WebSocket(url);
+  closeWallSocket();
+  let socket;
+  try {
+    socket = new WebSocket(url);
+  } catch (err) {
+    console.error(err);
+    scheduleWallReconnect();
+    return;
+  }
+  wallSocket = socket;
+  ConnectionStatus.setWs("connecting");
 
-  wallSocket.addEventListener("open", () => {
+  socket.addEventListener("open", () => {
+    if (wallSocket !== socket) return;
     ConnectionStatus.setWs("open");
     ConnectionStatus.markFrame();
     wallReconnectAttempts = 0;
+    wallLastMessageAt = Date.now();
   });
-  wallSocket.addEventListener("message", (ev) => {
+  socket.addEventListener("message", (ev) => {
+    if (wallSocket !== socket) return;
+    wallLastMessageAt = Date.now();
     ConnectionStatus.markFrame();
     let frame;
     try { frame = JSON.parse(ev.data); } catch (_) { return; }
     onWallFrame(frame);
   });
-  wallSocket.addEventListener("close", () => {
-    setStatus(Khan.t("wall.reconnecting", "Reconnecting to wall…"));
+  socket.addEventListener("close", (ev) => {
+    if (wallSocket !== socket) return;   // replaced, or closed on purpose
+    wallSocket = null;
     ConnectionStatus.setWs("closed");
-    const delay = WALL_RECONNECT_BACKOFF_MS[
-      Math.min(wallReconnectAttempts, WALL_RECONNECT_BACKOFF_MS.length - 1)
-    ];
-    wallReconnectAttempts += 1;
-    setTimeout(openWallSocket, delay);
+    if (!wallId) return;
+    setStatus(Khan.t("wall.reconnecting", "Reconnecting to wall…"));
+    // 4401: the server no longer counts this screen in the wall — ask the API
+    // what it is now instead of only knocking on the same door.
+    if (ev.code === 4401) refreshSoon();
+    scheduleWallReconnect();
   });
-  wallSocket.addEventListener("error", () => { /* close handler will retry */ });
+  socket.addEventListener("error", () => { /* close handler will retry */ });
 }
 
 function onWallFrame(frame) {
@@ -650,112 +1082,145 @@ function onWallFrame(frame) {
     wallClockOffsetMs = frame.server_now_ms - clientReceivedMs;
   }
   if (frame.type === "hello") {
-    if (frame.mode === "spanned") {
-      wallSpannedGeometry = {
-        canvas:        frame.canvas,
-        cell_geometry: frame.cell_geometry,
-        bezel:         frame.bezel,
-      };
-    }
-    if (frame.current_play) renderWallPlay(frame.current_play);
+    // Mode may have changed since the last hello (spanned <-> mirrored, a
+    // new grid or canvas): rebuild rather than crop with stale geometry.
+    const geometry = frame.mode === "spanned"
+      ? { canvas: frame.canvas, cell_geometry: frame.cell_geometry, bezel: frame.bezel }
+      : null;
+    const changed = JSON.stringify(geometry) !== JSON.stringify(wallSpannedGeometry);
+    wallSpannedGeometry = geometry;
+    if (frame.current_play) renderWallPlay(frame.current_play, changed);
+    else clearWallPicture();
   } else if (frame.type === "play") {
-    renderWallPlay(frame);
+    renderWallPlay(frame, false);
   } else if (frame.type === "ping") {
-    try { wallSocket?.send(JSON.stringify({
-      type: "pong", client_received_ms: clientReceivedMs, client_now_ms: Date.now(),
-    })); } catch (_) {}
+    try {
+      wallSocket?.send(JSON.stringify({
+        type: "pong", client_received_ms: clientReceivedMs, client_now_ms: Date.now(),
+      }));
+    } catch (_) {}
   } else if (frame.type === "bye") {
-    try { wallSocket?.close(); } catch (_) {}
-    wallId = null;
-    localStorage.removeItem("screen_token");
-    window.location.reload();
+    // This screen no longer exists as a wall cell: forget it, show a code.
+    leaveMode();
+    handleAuthFailure();
+  } else if (frame.type === "wall_left") {
+    // Still a screen, just not in this wall any more: play its own content.
+    leaveMode();
+    refreshSoon();
   } else if (frame.type === "playlist_change") {
-    fetchContent().catch(() => {});
+    refreshSoon();
   }
 }
 
-function renderWallPlay(frame) {
-  const item = frame.item;
+function clearWallPicture() {
+  stopWallDrift();
+  clearContainer(contentEl);
+  wallLastFrame = null;
+  wallNode = null;
+}
+
+function stopWallDrift() {
+  if (wallDriftTimer) {
+    clearInterval(wallDriftTimer);
+    wallDriftTimer = null;
+  }
+}
+
+function rememberWallMedia(item) {
+  if (!item || !item.url || item.mime_type === "text/url") return;
+  wallSeen.delete(item.url);
+  wallSeen.set(item.url, { url: item.url, mime_type: item.mime_type });
+  while (wallSeen.size > WALL_SEEN_MAX) wallSeen.delete(wallSeen.keys().next().value);
+  announceMedia(Array.from(wallSeen.values()));
+}
+
+function renderWallPlay(frame, force) {
+  const item = frame && frame.item;
   if (!item) return;
-  if (wallLastFrame && wallLastFrame.item.id === item.id
-      && wallLastFrame.started_at_ms === frame.started_at_ms) {
-    return;
+  const sameItem = !force && wallLastFrame && wallNode && wallNode.isConnected
+    && wallLastFrame.item.id === item.id && wallLastFrame.item.url === item.url
+    && (wallLastFrame.fit_mode || "fit") === (frame.fit_mode || "fit");
+  if (sameItem && wallLastFrame.started_at_ms === frame.started_at_ms) {
+    return;   // the same frame again (hello after a reconnect, a duplicate)
   }
   wallLastFrame = frame;
-  if (wallDriftTimer) { clearInterval(wallDriftTimer); wallDriftTimer = null; }
-  contentEl.innerHTML = "";
-  if (wallSpannedGeometry) {
-    renderSpannedFrame(frame);
+  rememberWallMedia(item);
+  if (sameItem) {
+    // The same item for another slot (a one-item playlist cycling): keep the
+    // picture up instead of flashing black, and restart a video in sync.
+    if (wallNode.tagName === "VIDEO") syncWallVideo(wallNode);
     return;
   }
-  const startedAtMs = frame.started_at_ms;
-  const expectedPositionMs = effectiveNowMs() - startedAtMs;
-  const node = createWallMediaNode(item);
-  contentEl.appendChild(node);
+  stopWallDrift();
+  clearContainer(contentEl);
+  const node = createWallMediaNode(item, frame.fit_mode);
+  if (wallSpannedGeometry) {
+    const { canvas, cell_geometry } = wallSpannedGeometry;
+    const wrap = document.createElement("div");
+    wrap.className = "cell-viewport";
+    wrap.innerHTML = `
+      <div class="wall-canvas"
+           style="--wall-w-px:${Number(canvas.w)}; --wall-h-px:${Number(canvas.h)};
+                  --cell-x-px:${Number(cell_geometry.x)}; --cell-y-px:${Number(cell_geometry.y)};">
+      </div>
+    `;
+    contentEl.appendChild(wrap);
+    node.classList.add("wall-media");
+    node.dataset.fit = frame.fit_mode || "fit";
+    // Inline: "#content img { object-fit: contain }" outranks the
+    // .wall-media[data-fit] rules, so fill/stretch never took effect.
+    const fit = WALL_FIT[frame.fit_mode] || "contain";
+    node.style.cssText = `position:absolute; inset:0; width:100%; height:100%; object-fit:${fit};`;
+    wrap.querySelector(".wall-canvas").appendChild(node);
+  } else {
+    contentEl.appendChild(node);
+  }
+  wallNode = node;
   if (node.tagName === "VIDEO") {
-    node.addEventListener("loadeddata", () => {
-      const t = Math.max(0, expectedPositionMs / 1000);
-      try { node.currentTime = t; } catch (_) {}
-      node.play().catch(() => {});
-    }, { once: true });
-    wallDriftTimer = setInterval(() => correctVideoDrift(node, frame), 2000);
+    node.addEventListener("loadeddata", () => syncWallVideo(node), { once: true });
+    ensurePlaying(node);
   }
 }
 
-function renderSpannedFrame(frame) {
-  const { canvas, cell_geometry } = wallSpannedGeometry;
-  const item = frame.item;
-  if (!item) return;
-  const wrap = document.createElement("div");
-  wrap.className = "cell-viewport";
-  wrap.innerHTML = `
-    <div class="wall-canvas"
-         style="--wall-w-px:${canvas.w}; --wall-h-px:${canvas.h};
-                --cell-x-px:${cell_geometry.x}; --cell-y-px:${cell_geometry.y};">
-    </div>
-  `;
-  contentEl.appendChild(wrap);
-  const wallCanvas = wrap.querySelector(".wall-canvas");
-  const node = createWallMediaNode(item);
-  node.classList.add("wall-media");
-  node.dataset.fit = frame.fit_mode || "fit";
-  node.style.cssText = "position:absolute; inset:0; width:100%; height:100%;";
-  wallCanvas.appendChild(node);
-  if (node.tagName === "VIDEO") {
-    node.addEventListener("loadeddata", () => {
-      const t = Math.max(0, (effectiveNowMs() - frame.started_at_ms) / 1000);
-      try { node.currentTime = t; } catch (_) {}
-      node.play().catch(() => {});
-    }, { once: true });
-    wallDriftTimer = setInterval(() => correctVideoDrift(node, frame), 2000);
-  }
+function syncWallVideo(node) {
+  if (node !== wallNode || !wallLastFrame) return;
+  const t = Math.max(0, (effectiveNowMs() - wallLastFrame.started_at_ms) / 1000);
+  try { node.currentTime = t; } catch (_) {}
+  ensurePlaying(node);
+  stopWallDrift();
+  wallDriftTimer = setInterval(() => correctVideoDrift(node), 2000);
 }
 
-function createWallMediaNode(item) {
+const WALL_FIT = { fit: "contain", fill: "cover", stretch: "fill" };
+
+function createWallMediaNode(item, fitMode) {
   const mime = item.mime_type || "";
+  const url = resolveMediaUrl(item.url);
+  const fit = WALL_FIT[fitMode] || "contain";
+  const fill = `position:fixed;inset:0;width:100%;height:100%;object-fit:${fit};background:#000;`;
   if (mime.startsWith("video/")) {
-    const v = document.createElement("video");
-    v.src = item.url; v.muted = true; v.autoplay = true; v.playsInline = true;
-    v.style.cssText = "position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;";
+    const v = createVideoNode(url, false);
+    v.style.cssText = `${fill}will-change:transform;transform:translateZ(0);`;
     return v;
   }
-  if (mime.startsWith("image/")) {
+  if (mime.startsWith("image/") || (mime === "text/url" && isImageUrl(item.url))) {
     const i = document.createElement("img");
-    i.src = item.url; i.alt = item.name || "";
-    i.style.cssText = "position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;";
+    i.src = url; i.alt = item.name || ""; i.decoding = "async";
+    i.style.cssText = fill;
     return i;
   }
   const f = document.createElement("iframe");
-  f.src = item.url; f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#000;";
+  f.src = mime === "application/pdf" ? `${url}#toolbar=0&navpanes=0` : url;
+  f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#000;";
   return f;
 }
 
-function correctVideoDrift(video, frame) {
-  if (!video.isConnected) {
-    if (wallDriftTimer) { clearInterval(wallDriftTimer); wallDriftTimer = null; }
+function correctVideoDrift(video) {
+  if (!video.isConnected || video !== wallNode || !wallLastFrame) {
+    stopWallDrift();
     return;
   }
-  const expectedSec = (effectiveNowMs() - frame.started_at_ms) / 1000;
+  const expectedSec = (effectiveNowMs() - wallLastFrame.started_at_ms) / 1000;
   const delta = (video.currentTime - expectedSec) * 1000;
   if (Math.abs(delta) > 200) {
     try { video.currentTime = Math.max(0, expectedSec); } catch (_) {}
@@ -764,11 +1229,79 @@ function correctVideoDrift(video, frame) {
     video.playbackRate = delta < 0 ? 1.02 : 0.98;
     setTimeout(() => { video.playbackRate = 1.0; }, 1000);
   }
+  if (video.paused && !video.ended) ensurePlaying(video);
 }
 
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
+/* ── Updates ───────────────────────────────────────────────────────────
+   TVs stay on for weeks without anyone touching them, so a deploy has to
+   reach them by itself. The SW version is stamped from PLAYER_VERSION plus a
+   hash of the shell files; a new one installs, takes over (skipWaiting +
+   clients.claim) and this page reloads into it from the new SW's cache — so
+   the reload works even offline. Guarded so it can never loop. */
+function safeReload() {
+  try {
+    const last = Number(sessionStorage.getItem("khan_reload_at") || 0);
+    if (Date.now() - last < RELOAD_GUARD_MS) {
+      setTimeout(safeReload, RELOAD_GUARD_MS);
+      return;
+    }
+    sessionStorage.setItem("khan_reload_at", String(Date.now()));
+  } catch (_) {}
+  window.location.reload();
 }
+
+// Without a service worker (insecure origin, blocked): compare the deployed
+// sw.js version with the one seen at startup.
+function startVersionPoll() {
+  let seen = null;
+  const check = async () => {
+    try {
+      const res = await apiFetch(`/sw.js?check=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const match = /PLAYER_VERSION\s*=\s*"([^"]*)"/.exec(res.text);
+      if (!match) return;
+      if (seen === null) seen = match[1];
+      else if (match[1] !== seen && navigator.onLine !== false) safeReload();
+    } catch (_) {}
+  };
+  check();
+  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+}
+
+function setupServiceWorker() {
+  // The dashboard's preview iframe is not a TV: no offline cache, no pinned
+  // media, no update reloads in the operator's browser.
+  if (getParam("preview_token")) return;
+  if (!("serviceWorker" in navigator)) {
+    startVersionPoll();
+    return;
+  }
+  let hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController) {
+      // First install claiming this page: nothing to reload, but hand the
+      // new worker what it should cache.
+      hadController = true;
+      if (lastManifestUrls.length) {
+        postToServiceWorker({ type: "media-manifest", urls: lastManifestUrls });
+      }
+      return;
+    }
+    // The new worker navigates its pages itself (so pages of older players,
+    // which have no handler like this one, update too). Reload only if that
+    // has not happened within a few seconds.
+    setTimeout(safeReload, CONTROLLER_RELOAD_DELAY_MS);
+  });
+  navigator.serviceWorker.register("/sw.js").then((reg) => {
+    setInterval(() => { reg.update().catch(() => {}); }, UPDATE_CHECK_INTERVAL_MS);
+  }).catch((err) => {
+    console.warn("service worker unavailable", err);
+    startVersionPoll();
+  });
+}
+
+setupServiceWorker();
+window.addEventListener("online", () => refreshSoon());
 
 (async function bootI18nThenBoot() {
   try {
@@ -783,6 +1316,8 @@ if ("serviceWorker" in navigator) {
   } catch (err) {
     console.error(err);
     setStatus(Khan.t("status.failed_to_start", "Failed to start player"));
+    // Never give up: try again as if freshly loaded.
+    setTimeout(() => { boot().catch((e) => console.error(e)); }, 10000);
   }
 })();
 
@@ -812,7 +1347,7 @@ if (adminCodeForm) {
     }
     if (submitBtn) submitBtn.disabled = true;
     try {
-      const res = await fetch(`${API_BASE}/walls/cells/redeem`, {
+      const res = await apiFetch(`${API_BASE}/walls/cells/redeem`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
       });
@@ -825,7 +1360,7 @@ if (adminCodeForm) {
         if (submitBtn) submitBtn.disabled = false;
         return;
       }
-      localStorage.setItem("screen_token", body.screen_token);
+      try { localStorage.setItem("screen_token", body.screen_token); } catch (_) {}
       stopPairPoll();
       window.location.reload();
     } catch (err) {
@@ -839,39 +1374,3 @@ if (adminCodeForm) {
 // no operator-facing chrome over it. Locale still comes from
 // Khan.detectInitialLocale() -- the khanshoof_lang cookie, else the device's
 // own browser language -- so an Arabic-configured TV still renders Arabic.
-
-// ── Connection indicator (Phase 2.5d) ─────────────────────────────────
-const ConnectionStatus = (() => {
-  let lastFrameAt = 0;     // Date.now() of last successful WS frame OR API success
-  let wsState = "closed";  // "open" | "connecting" | "closed"
-  let timer = null;
-  const dot = () => document.getElementById("connection-indicator");
-
-  function markFrame() { lastFrameAt = Date.now(); }
-  function setWs(s)    { wsState = s; }
-
-  function compute() {
-    const ageMs = Date.now() - lastFrameAt;
-    if (wsState === "open" && ageMs < 30_000)     return "green";
-    if (wsState === "open" && ageMs < 5 * 60_000) return "amber";
-    if (wsState === "connecting")                 return "amber";
-    if (ageMs > 30_000)                           return "red";
-    return "amber";
-  }
-
-  function render() {
-    const el = dot(); if (!el) return;
-    el.classList.remove("conn-green", "conn-amber", "conn-red");
-    el.classList.add(`conn-${compute()}`);
-  }
-
-  function show() { dot()?.classList.remove("hidden"); render(); }
-  function hide() { dot()?.classList.add("hidden"); }
-
-  function start() {
-    if (timer) return;
-    timer = setInterval(render, 5_000);
-  }
-
-  return { show, hide, markFrame, setWs, start };
-})();
