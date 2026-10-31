@@ -11,9 +11,9 @@ for the account and listing; this file is what to check and paste at review time
 - [ ] Privacy policy is live at https://khanshoof.com/privacy.html (checklist step 3).
 - [ ] The demo account works (section 2). Checked on production when it was
       created; check again just before submitting.
-- [ ] Production runs the player from this branch (scan-first steps, D-pad
-      focus ring, welcome animation). The review works on the older player too,
-      but this is the version the checklist was verified against.
+- [x] Production runs the player from this branch (scan-first steps, D-pad
+      focus ring, welcome animation). Deployed 2026-10-31, and the reviewer
+      path in section 2 was re-tested on it.
 - [ ] An **internal testing** release, installed from Play, runs on your own
       TV and a tablet.
 - [ ] **Pre-launch report** (Test and release → Pre-launch report) shows no
