@@ -654,3 +654,19 @@ def test_get_screen_unknown_id_is_not_found(mcp_client, mcp_bearer):
     assert r.get("isError") is True or "error" in body, body
     text = json.dumps(body).lower()
     assert "not found" in text, body
+
+
+def test_mcp_without_trailing_slash_is_served_not_redirected(mcp_client, mcp_bearer):
+    """AGENTS.md tells clients https://api.khanshoof.com/mcp. Starlette answered
+    that with a 307 to /mcp/, built from the scheme the backend sees -- http,
+    behind the tunnel -- so clients were bounced to plain http (and a POST can
+    be turned into a GET by the http->https hop that follows)."""
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": _INIT_PARAMS}
+    r = mcp_client.post("/mcp", json=body, headers=headers, follow_redirects=False)
+    _assert_401_with_resource_metadata(r, error=None)
+    r = mcp_client.post("/mcp", json=body, follow_redirects=False,
+                        headers={**headers, "Authorization": f"Bearer {mcp_bearer}"})
+    assert r.status_code == 200, r.text
+    assert r.json()["result"]["serverInfo"]["name"] == "khanshoof"

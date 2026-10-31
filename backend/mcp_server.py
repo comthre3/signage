@@ -469,3 +469,23 @@ def attach_mcp(app) -> None:
             await _cm.__aexit__(None, None, None)
 
     app.mount("/mcp", _RequireBearer(sub_app))
+    app.add_middleware(_ServeBareMcpPath)
+
+
+class _ServeBareMcpPath:
+    """Serve "/mcp" as "/mcp/" instead of redirecting to it.
+
+    The documented endpoint is https://api.khanshoof.com/mcp. Starlette's mount
+    answers it with a 307 to /mcp/ built from the scheme the backend sees --
+    http, behind the tunnel -- so MCP clients were bounced to plain http, and
+    the http->https hop after that can turn their POST into a GET. Rewriting
+    the path in place needs no redirect and no trust in forwarded headers.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope, path="/mcp/", raw_path=b"/mcp/")
+        await self.app(scope, receive, send)

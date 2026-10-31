@@ -374,7 +374,9 @@ fi
 workers="$($COMPOSE ps -q backend | head -1 | xargs -r docker top 2>/dev/null | grep -c 'multiprocessing-fork' || echo 0)"
 [ "$workers" -gt 0 ] && ok "backend running $workers workers" || warn "could not count backend workers"
 
-served="$(curl -s --max-time 10 "http://localhost:$P_PLAY/sw.js" 2>/dev/null | head -1)"
+# The version line follows a header comment, so match it wherever it is
+# (it now reads "<PLAYER_VERSION>-<shell hash>").
+served="$(curl -s --max-time 10 "http://localhost:$P_PLAY/sw.js" 2>/dev/null | grep -m1 'PLAYER_VERSION *=' || true)"
 case "$served" in
   *"$PLAYER_VERSION"*) ok "player cache stamped $PLAYER_VERSION" ;;
   *) warn "player sw.js does not carry $PLAYER_VERSION — TVs may serve a cached build" ;;
