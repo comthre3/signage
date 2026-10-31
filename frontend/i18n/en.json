@@ -627,5 +627,7 @@
   "error.api.insufficient_scope": "This key is read-only.",
   "error.menu.bad_language": "Unknown menu language.",
   "error.menu.bad_kind": "Unknown board type.",
-  "error.menu.bad_aspect": "Unknown aspect ratio."
+  "error.menu.bad_aspect": "Unknown aspect ratio.",
+  "toast.connection_locked": "This deployment only connects to {origin}; another address can't be used here.",
+  "toast.connection_bad_url": "Enter a full address that starts with http:// or https://."
 }

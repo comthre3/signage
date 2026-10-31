@@ -1,22 +1,68 @@
-const urlOverrides = new URLSearchParams(window.location.search);
+/* ── Where the API and the player live ───────────────────────────
+   config.js, written at container start from the deployment's own
+   API_BASE_URL / PLAYER_BASE_URL, is the source of truth; the CSP's
+   connect-src is generated from the same value.
+
+   There is deliberately no ?api_base= / ?player_base= override: any link
+   could set one, and sign-in navigates top-level to the API base carrying
+   the one-time sign-in nonce -- so https://app…/?api_base=https://evil
+   handed the visitor and the nonce to that host, which bounced them back
+   signed in to the attacker's organization.
+
+   The "Connection" panel (saved in this browser) may still move API calls,
+   but only within the configured API origin, which is all the CSP lets the
+   page reach anyway. Only with nothing configured (local development) does
+   it accept any http(s) URL. The navigations that carry secrets -- social
+   sign-in, the player link and preview -- never use it at all. */
 const CONNECTION_STORAGE_KEY = "signage_connection_mode";
 const CONNECTION_API_KEY     = "signage_connection_api";
 const CONNECTION_PLAYER_KEY  = "signage_connection_player";
 
-const savedMode       = localStorage.getItem(CONNECTION_STORAGE_KEY) || "local";
-const savedApiBase    = localStorage.getItem(CONNECTION_API_KEY)    || "";
-const savedPlayerBase = localStorage.getItem(CONNECTION_PLAYER_KEY) || "";
+const CONFIGURED_API_BASE    = String(window.API_BASE_URL || "").trim();
+const CONFIGURED_PLAYER_BASE = String(window.PLAYER_BASE_URL || "").trim();
 
-const API_BASE =
-  urlOverrides.get("api_base") ||
-  (savedMode === "external" ? savedApiBase : "") ||
-  (window.API_BASE_URL || "").trim() ||
+/** The API this deployment is configured for (local development falls back
+ *  to port 8000 of this host). Never influenced by anything the visitor or
+ *  a link can set. */
+const DEPLOYED_API_BASE = CONFIGURED_API_BASE ||
   `${window.location.protocol}//${window.location.hostname}:8000`;
 
-const PLAYER_BASE =
-  urlOverrides.get("player_base") ||
-  (savedMode === "external" ? savedPlayerBase : "") ||
-  (window.PLAYER_BASE_URL || "").trim() ||
+function httpOrigin(raw) {
+  try {
+    const url = new URL(raw);
+    return /^https?:$/.test(url.protocol) ? url.origin : null;
+  } catch (_) { return null; }
+}
+
+/** A saved Connection override, if this deployment allows it: an http(s)
+ *  URL on the configured origin, or any http(s) URL when nothing is
+ *  configured. Anything else is ignored (""). */
+function acceptedConnectionOverride(raw, configured) {
+  const value = String(raw || "").trim();
+  const origin = value ? httpOrigin(value) : null;
+  if (!origin) return "";
+  if (configured && origin !== httpOrigin(configured)) return "";
+  return value.replace(/\/+$/, "");
+}
+
+function readSetting(key) {
+  try { return localStorage.getItem(key) || ""; } catch (_) { return ""; }
+}
+
+const savedMode       = readSetting(CONNECTION_STORAGE_KEY) || "local";
+const savedApiBase    = readSetting(CONNECTION_API_KEY);
+const savedPlayerBase = readSetting(CONNECTION_PLAYER_KEY);
+
+/** Base URL for API calls (fetch). */
+const API_BASE =
+  (savedMode === "external" && acceptedConnectionOverride(savedApiBase, CONFIGURED_API_BASE)) ||
+  DEPLOYED_API_BASE;
+
+/** Base URL of the player, for the "Player URL" link and the preview frame.
+ *  The configured value always wins; a saved override only applies when no
+ *  player is configured (local development). */
+const PLAYER_BASE = CONFIGURED_PLAYER_BASE ||
+  (savedMode === "external" && acceptedConnectionOverride(savedPlayerBase, "")) ||
   `${window.location.protocol}//${window.location.hostname}:3001`;
 
 const AUTH_STORAGE_KEY = "signage_auth_token";
@@ -211,11 +257,13 @@ function buildPlayerUrl(base, params) {
 }
 
 function getPlayerBaseWithOverrides() {
-  const base = PLAYER_BASE || `${window.location.protocol}//${window.location.hostname}:3001`;
-  if (savedMode === "external" && savedApiBase && !savedPlayerBase) {
-    return buildPlayerUrl(base, { api_base: savedApiBase });
+  // Local development that points the dashboard at another API hands the
+  // player the same one. A configured deployment never does: its player has
+  // its own config.js, and a link must not carry a browser-local setting.
+  if (!CONFIGURED_API_BASE && API_BASE !== DEPLOYED_API_BASE) {
+    return buildPlayerUrl(PLAYER_BASE, { api_base: API_BASE });
   }
-  return base;
+  return PLAYER_BASE;
 }
 
 function getScreenResolutionInput() {
@@ -1628,7 +1676,9 @@ function startSocialAuth(provider) {
   const here = new URL(window.location.href);
   here.searchParams.set(SOCIAL_NONCE_PARAM, nonce);
   const params = new URLSearchParams({ intent, return_to: here.pathname + here.search });
-  window.location = `${API_BASE}/auth/${provider}/start?${params}`;
+  // DEPLOYED_API_BASE, never API_BASE: this navigation carries the nonce,
+  // so it may only ever go to the API the deployment is configured for.
+  window.location = `${DEPLOYED_API_BASE}/auth/${provider}/start?${params}`;
 }
 
 /** The sign-in this tab started, if any (consumed: one use only). */
@@ -2013,6 +2063,23 @@ const connectionReset  = document.getElementById("connection-reset");
 
 connectionToggle?.addEventListener("click", () => connectionPanel.classList.toggle("hidden"));
 
+/** Why a Connection field can't be saved, or null. `overridable`: whether a
+ *  configured deployment lets this browser move it within its own origin
+ *  (the API) or not at all (the player). */
+function connectionFieldProblem(raw, configured, overridable) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  if (configured && (!overridable || !acceptedConnectionOverride(value, configured))) {
+    return Khan.t("toast.connection_locked",
+      "This deployment only connects to {origin}; another address can't be used here.")
+      .replace("{origin}", httpOrigin(configured) || configured);
+  }
+  if (!acceptedConnectionOverride(value, configured)) {
+    return Khan.t("toast.connection_bad_url", "Enter a full address that starts with http:// or https://.");
+  }
+  return null;
+}
+
 if (connectionMode && connectionApi && connectionPlayer) {
   connectionMode.value   = savedMode;
   connectionApi.value    = savedApiBase;
@@ -2021,6 +2088,12 @@ if (connectionMode && connectionApi && connectionPlayer) {
 
 connectionForm?.addEventListener("submit", (e) => {
   e.preventDefault();
+  // Say so now rather than silently ignoring the value on the next load.
+  if (connectionMode.value === "external") {
+    const problem = connectionFieldProblem(connectionApi.value, CONFIGURED_API_BASE, true)
+                 || connectionFieldProblem(connectionPlayer.value, CONFIGURED_PLAYER_BASE, false);
+    if (problem) { toast(problem, "error", 6000); return; }
+  }
   localStorage.setItem(CONNECTION_STORAGE_KEY, connectionMode.value);
   localStorage.setItem(CONNECTION_API_KEY,     connectionApi.value.trim());
   localStorage.setItem(CONNECTION_PLAYER_KEY,  connectionPlayer.value.trim());
