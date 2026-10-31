@@ -1,3 +1,4 @@
+// The TV player's strings: like player.js, this must run on Chrome 66.
 (function () {
   const ALLOWED = ["en", "ar"];
   let _strings = {};

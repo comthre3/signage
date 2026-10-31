@@ -15,7 +15,9 @@
    seen) can never replace good media or the app shell. The page tells the
    worker which media its current content uses ("media-manifest"); those are
    prefetched and pinned, plus a small LRU of recent ones, and everything
-   else is evicted so the cache cannot grow for ever. */
+   else is evicted so the cache cannot grow for ever.
+
+   Like player.js, this must run on Chrome 66 (Android 9's stock WebView). */
 const PLAYER_VERSION = "__PLAYER_VERSION__";
 const API_BASE_HINT = "__API_BASE_URL__";
 const SHELL_CACHE = `signage-player-${PLAYER_VERSION}`;

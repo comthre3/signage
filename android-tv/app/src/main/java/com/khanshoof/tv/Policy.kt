@@ -9,8 +9,8 @@ object Policy {
     /** Waits between attempts to load the player while it can't be reached. */
     private val RETRY_DELAYS_MS = longArrayOf(5_000, 10_000, 20_000, 30_000, 60_000)
 
-    /** The player's JavaScript needs Chrome 80 (optional chaining). */
-    const val MIN_WEBVIEW_MAJOR = 80
+    /** The player runs on Chrome 66 and newer, Android 9's stock WebView (see player/player.js). */
+    const val MIN_WEBVIEW_MAJOR = 66
 
     fun retryDelayMs(failures: Int): Long =
         RETRY_DELAYS_MS[failures.coerceIn(0, RETRY_DELAYS_MS.lastIndex)]

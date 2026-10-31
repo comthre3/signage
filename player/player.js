@@ -1,3 +1,8 @@
+/* Runs on Chrome 66 and newer: the stock WebView of Android 9, which signage
+   panels without Play never update. A syntax error blanks the whole screen,
+   so no ?. or ??, no 1_000 separators and no { ...spread } in object
+   literals; an API newer than 66 only behind a feature check. The Android
+   app's MIN_WEBVIEW_MAJOR (android-tv/.../Policy.kt) holds the same number. */
 const urlOverrides = new URLSearchParams(window.location.search);
 const API_BASE = (
   urlOverrides.get("api_base") ||
@@ -75,14 +80,14 @@ const ConnectionStatus = (() => {
     // answer is the whole signal. They poll every 15s, so green survives one
     // slow or missed poll. Without this a healthy screen showed amber forever.
     if (wsState === "none") {
-      if (ageMs < 45_000)    return "green";
-      if (ageMs < 5 * 60_000) return "amber";
+      if (ageMs < 45000)          return "green";
+      if (ageMs < 5 * 60 * 1000) return "amber";
       return "red";
     }
-    if (wsState === "open" && ageMs < 30_000)     return "green";
-    if (wsState === "open" && ageMs < 5 * 60_000) return "amber";
-    if (wsState === "connecting")                 return "amber";
-    if (ageMs > 30_000)                           return "red";
+    if (wsState === "open" && ageMs < 30000)         return "green";
+    if (wsState === "open" && ageMs < 5 * 60 * 1000) return "amber";
+    if (wsState === "connecting")                    return "amber";
+    if (ageMs > 30000)                               return "red";
     return "amber";
   }
 
@@ -92,12 +97,12 @@ const ConnectionStatus = (() => {
     el.classList.add(`conn-${compute()}`);
   }
 
-  function show() { dot()?.classList.remove("hidden"); render(); }
-  function hide() { dot()?.classList.add("hidden"); }
+  function show() { const el = dot(); if (el) el.classList.remove("hidden"); render(); }
+  function hide() { const el = dot(); if (el) el.classList.add("hidden"); }
 
   function start() {
     if (timer) return;
-    timer = setInterval(render, 5_000);
+    timer = setInterval(render, 5000);
   }
 
   return { show, hide, markFrame, setWs, start };
@@ -156,7 +161,7 @@ async function apiFetch(url, options = {}) {
     }, API_TIMEOUT_MS);
   });
   const request = (async () => {
-    const res = await fetch(url, ctrl ? { ...options, signal: ctrl.signal } : options);
+    const res = await fetch(url, ctrl ? Object.assign({}, options, { signal: ctrl.signal }) : options);
     const text = await res.text();
     return {
       ok: res.ok,
@@ -537,7 +542,7 @@ function renderZonesLayout(zones) {
     content.className = "zone-content";
     zoneEl.appendChild(content);
     zonesEl.appendChild(zoneEl);
-    startCarousel(`zone:${index}`, content, zone.items || [], Number(zone.transition_ms ?? 600));
+    startCarousel(`zone:${index}`, content, zone.items || [], Number(zone.transition_ms != null ? zone.transition_ms : 600));
   });
 }
 
@@ -657,7 +662,7 @@ function applyState(content, layout) {
   const zones = layout && Array.isArray(layout.zones) ? layout.zones : [];
   if (zones.length > 0) {
     showZones(zones);
-    announceMedia(zones.flatMap((zone) => zone.items || []));
+    announceMedia(zones.reduce((all, zone) => all.concat(zone.items || []), []));
     return;
   }
   if (!content) return;   // no zones, but the playlist is unknown: keep what is shown
@@ -1114,7 +1119,7 @@ function onWallFrame(frame) {
     renderWallPlay(frame, false);
   } else if (frame.type === "ping") {
     try {
-      wallSocket?.send(JSON.stringify({
+      if (wallSocket) wallSocket.send(JSON.stringify({
         type: "pong", client_received_ms: clientReceivedMs, client_now_ms: Date.now(),
       }));
     } catch (_) {}
@@ -1189,7 +1194,7 @@ function renderWallPlay(frame, force) {
     // Inline: "#content img { object-fit: contain }" outranks the
     // .wall-media[data-fit] rules, so fill/stretch never took effect.
     const fit = WALL_FIT[frame.fit_mode] || "contain";
-    node.style.cssText = `position:absolute; inset:0; width:100%; height:100%; object-fit:${fit};`;
+    node.style.cssText = `position:absolute; top:0; left:0; width:100%; height:100%; object-fit:${fit};`;
     wrap.querySelector(".wall-canvas").appendChild(node);
   } else {
     contentEl.appendChild(node);
@@ -1216,7 +1221,7 @@ function createWallMediaNode(item, fitMode) {
   const mime = item.mime_type || "";
   const url = resolveMediaUrl(item.url);
   const fit = WALL_FIT[fitMode] || "contain";
-  const fill = `position:fixed;inset:0;width:100%;height:100%;object-fit:${fit};background:#000;`;
+  const fill = `position:fixed;top:0;left:0;width:100%;height:100%;object-fit:${fit};background:#000;`;
   if (mime.startsWith("video/")) {
     const v = createVideoNode(url, false);
     v.style.cssText = `${fill}will-change:transform;transform:translateZ(0);`;
@@ -1230,7 +1235,7 @@ function createWallMediaNode(item, fitMode) {
   }
   const f = document.createElement("iframe");
   f.src = mime === "application/pdf" ? `${url}#toolbar=0&navpanes=0` : url;
-  f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#000;";
+  f.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;border:0;background:#000;";
   return f;
 }
 
@@ -1350,7 +1355,7 @@ if (adminCodeToggle && adminCodeForm) {
   adminCodeToggle.addEventListener("click", () => {
     adminCodeForm.classList.toggle("hidden");
     if (!adminCodeForm.classList.contains("hidden")) {
-      adminCodeInput?.focus();
+      if (adminCodeInput) adminCodeInput.focus();
     }
   });
 }
@@ -1372,7 +1377,7 @@ if (adminCodeForm) {
       });
       const body = await res.json();
       if (!res.ok) {
-        const msgKey = body?.detail?.code === "wall.pair_code_expired"
+        const msgKey = body && body.detail && body.detail.code === "wall.pair_code_expired"
           ? "pairing.code_expired"
           : "pairing.code_invalid";
         adminCodeError.textContent = Khan.t(msgKey, "Code not recognized.");
