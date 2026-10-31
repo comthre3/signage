@@ -12,8 +12,9 @@
    The "Connection" panel (saved in this browser) may still move API calls,
    but only within the configured API origin, which is all the CSP lets the
    page reach anyway. Only with nothing configured (local development) does
-   it accept any http(s) URL. The navigations that carry secrets -- social
-   sign-in, the player link and preview -- never use it at all. */
+   it accept any http(s) URL. The navigations that carry secrets ignore it:
+   social sign-in always goes to DEPLOYED_API_BASE, and the player link and
+   preview always use the configured player when there is one. */
 const CONNECTION_STORAGE_KEY = "signage_connection_mode";
 const CONNECTION_API_KEY     = "signage_connection_api";
 const CONNECTION_PLAYER_KEY  = "signage_connection_player";
