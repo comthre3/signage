@@ -4158,7 +4158,7 @@ const Schedules = (() => {
     } catch (err) {
       const code = err.data?.detail?.code;
       const msg = code === "schedule.rule_overlap"
-        ? Khan.t("schedules.overlap_error", "Two rules overlap on the same day.")
+        ? Khan.t("schedules.overlap_error", "Two rules overlap in time (including rules that run past midnight).")
         : ((err.isApiError && err.message) || Khan.t("schedules.error.save", "Failed to save schedule."));
       toast(msg, "error");
     }

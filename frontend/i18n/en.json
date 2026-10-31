@@ -619,7 +619,7 @@
   "error.playlist.not_found": "Playlist not found.",
   "error.playlist_item.not_found": "That item is no longer in the playlist.",
   "error.schedule.not_found": "Schedule not found.",
-  "error.schedule.rule_overlap": "Two rules overlap on the same day.",
+  "error.schedule.rule_overlap": "Two rules overlap in time (including rules that run past midnight).",
   "error.media.not_found": "Media not found.",
   "error.api_key.not_found": "API key not found.",
   "error.site.timezone_invalid": "That timezone isn't recognised.",

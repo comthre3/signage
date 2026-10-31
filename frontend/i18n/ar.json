@@ -619,7 +619,7 @@
   "error.playlist.not_found": "قائمة التشغيل غير موجودة.",
   "error.playlist_item.not_found": "هذا العنصر لم يعد موجوداً في قائمة التشغيل.",
   "error.schedule.not_found": "الجدول غير موجود.",
-  "error.schedule.rule_overlap": "قاعدتان تتداخلان في اليوم نفسه.",
+  "error.schedule.rule_overlap": "تتداخل قاعدتان في الوقت (بما في ذلك القواعد التي تمتد بعد منتصف الليل).",
   "error.media.not_found": "الوسائط غير موجودة.",
   "error.api_key.not_found": "مفتاح API غير موجود.",
   "error.site.timezone_invalid": "المنطقة الزمنية هذه غير معروفة.",
