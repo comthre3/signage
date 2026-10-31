@@ -444,7 +444,12 @@ const Menus = (() => {
       toast(Khan.t("menus.render.playlist_done", 'Playlist "{name}" updated.').replace("{name}", pl.name), "success");
       playlistCreated = true;
       document.getElementById("menu-playlist-btn").textContent = Khan.t("menus.render.playlist_open", "Open playlist");
-    } catch (err) { toast(err.message, "error"); }
+    } catch (err) { toast(err.message, "error"); return; }
+    // The Playlists section, the playlist dropdowns and every screen card's
+    // picker are built from state.playlists, which knows nothing of the
+    // playlist just made -- "Open playlist" would land on a list without it.
+    try { await loadPlaylists(); }
+    catch (err) { console.warn("refreshing playlists after creating the menu's", err); }
   }
 
   document.getElementById("menu-new-btn")?.addEventListener("click", createMenu);
