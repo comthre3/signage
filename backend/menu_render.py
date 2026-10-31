@@ -100,7 +100,9 @@ def build_html(tree: dict, template_id: str, kind: str, language: str, aspect: s
         if language == "ar":
             return ar or en
         if language == "bi" and ar and ar != en:
-            return Markup(f"{escape(en or ar)}<span class=\"ar\">{escape(ar)}</span>")
+            # en may be empty (optional taglines/descriptions): the Arabic is
+            # then printed once, still in its .ar span for the RTL styling.
+            return Markup(f"{escape(en)}<span class=\"ar\">{escape(ar)}</span>")
         return en or ar
 
     def money(price) -> str:
@@ -252,7 +254,7 @@ def build_preview_html(org_id: int, menu_id: int, kind: str, language: str,
 
 async def run_render_job(org_id: int, menu_id: int, specs: list[RenderSpec], *, renderer_url: str,
                          renderer_token: str, upload_dir: str) -> None:
-    """Render each spec whose hash isn't already 'ready'. Rows go pending → ready/failed."""
+    """Render each spec whose slot isn't already showing it. Rows go pending → ready/failed."""
     from menus import get_menu_tree
     tree = get_menu_tree(org_id, menu_id)
     if not tree:
@@ -261,10 +263,18 @@ async def run_render_job(org_id: int, menu_id: int, specs: list[RenderSpec], *, 
     logo_url = resolve_logo_data_uri(org_id, menu_id, tree["brand"], upload_dir)
     async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as http:
         for spec in specs:
-            existing = query_one(
-                "SELECT id FROM menu_renders WHERE menu_id = ? AND render_hash = ? AND status = 'ready'",
-                (menu_id, spec.render_hash))
-            if existing:
+            # Skip only if the slot's NEWEST row -- the one _current_renders
+            # serves -- is this hash, ready, and still has its PNG. An older
+            # ready row with the hash is shadowed after a revert, and deleting
+            # the PNG nulls media_id (ON DELETE SET NULL) but leaves it 'ready'.
+            current = query_one(
+                "SELECT render_hash, status, media_id FROM menu_renders "
+                "WHERE menu_id = ? AND kind = ? AND COALESCE(category_id, 0) = ? "
+                "AND COALESCE(item_id, 0) = ? AND language = ? AND aspect = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (menu_id, spec.kind, spec.category_id or 0, spec.item_id or 0, spec.language, spec.aspect))
+            if (current and current["render_hash"] == spec.render_hash
+                    and current["status"] == "ready" and current["media_id"]):
                 continue
             row_id = execute(
                 "INSERT INTO menu_renders (menu_id, kind, category_id, item_id, language, aspect, status, "
