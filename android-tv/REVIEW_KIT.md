@@ -9,8 +9,11 @@ for the account and listing; this file is what to check and paste at review time
 ## 1. Before you press "Send for review"
 
 - [ ] Privacy policy is live at https://khanshoof.com/privacy.html (checklist step 3).
-- [ ] The demo account works: you paired a TV with it yourself and saw the
-      demo menu rotate (section 2).
+- [ ] The demo account works (section 2). Checked on production when it was
+      created; check again just before submitting.
+- [ ] Production runs the player from this branch (scan-first steps, D-pad
+      focus ring, welcome animation). The review works on the older player too,
+      but this is the version the checklist was verified against.
 - [ ] An **internal testing** release, installed from Play, runs on your own
       TV and a tablet.
 - [ ] **Pre-launch report** (Test and release → Pre-launch report) shows no
@@ -27,8 +30,15 @@ for the account and listing; this file is what to check and paste at review time
 
 ## 2. The demo account reviewers sign in with
 
+**Created on production 2026-10-31** and tested along the exact path below
+(menu on screen 3.5 s after Pair, all three slides rotating): organization
+"Khanshoof Review", username `play-review`, screen "Review TV", playlist
+"Demo menu". The password is in `android-tv/keystore/play-review-account.txt`
+on the server (gitignored, never committed); put it in your password manager.
+Delete the organization after approval if you like.
+
 Reviewers can't see anything past the pairing screen without an account
-(TV-G5). Make one that can't break during a review that may take two weeks:
+(TV-G5). It is set up so it can't break during a review that may take two weeks:
 
 | | |
 |---|---|
