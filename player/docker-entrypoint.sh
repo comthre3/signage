@@ -13,12 +13,19 @@ EOF
 # included -- and not only when PLAYER_VERSION was bumped, or TVs keep serving
 # the old shell for ever. The nginx config is included too: the cached
 # index.html carries its Content-Security-Policy, so a CSP-only change would
-# otherwise never reach a TV. Hashed before the placeholders below are filled
-# in, so a container restart (which re-runs this script) leaves it unchanged.
+# otherwise never reach a TV. The faces are included because the worker fetches
+# them as ?v=<version>, which nginx lets Cloudflare keep for a year. Hashed
+# before the placeholders below are filled in, so a container restart (which
+# re-runs this script) leaves it unchanged.
+#
+# The same version goes into index.html's stylesheet URL and nginx's cache
+# rule: Cloudflare keys its cache on the URL, so a stylesheet changed under the
+# plain name kept being served old for days after a deploy.
 shell_hash=$(cat "$html/index.html" "$html/player.js" "$html/styles.css" \
   "$html/config.js" "$html/i18n.js" "$html"/i18n/*.json "$html/vendor/qrcode.js" \
-  "$html/sw.js" /etc/nginx/conf.d/default.conf | md5sum | cut -c1-8)
-sed -i "s/__PLAYER_VERSION__/${PLAYER_VERSION:-dev}-${shell_hash}/g" "$html/sw.js"
+  "$html"/assets/faces/*.png "$html/sw.js" /etc/nginx/conf.d/default.conf | md5sum | cut -c1-8)
+sed -i "s/__PLAYER_VERSION__/${PLAYER_VERSION:-dev}-${shell_hash}/g" \
+  "$html/sw.js" "$html/index.html" /etc/nginx/conf.d/default.conf
 sed -i "s|__API_BASE_URL__|${API_BASE_URL:-}|g" "$html/sw.js"
 
 # Let the dashboard — and only the dashboard — frame the player, for the Screens

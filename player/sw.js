@@ -81,8 +81,8 @@ self.addEventListener("install", (event) => {
     try {
       // Fetched as ?v=<version> and stored under the plain URL: a URL unique
       // to this version cannot be answered from the browser's HTTP cache or
-      // from Cloudflare's edge, which keeps CSS and images for 7 days and
-      // would otherwise pin an old stylesheet to a new player.js.
+      // from Cloudflare's edge with an older build's bytes, which would pin an
+      // old stylesheet to a new player.js (nginx.conf, $khan_static_cache).
       await Promise.all(ASSETS.map(async (url) => {
         const res = await fetch(versioned(url), { cache: "reload" });
         if (!res.ok) throw new Error(`precache ${url}: ${res.status}`);
