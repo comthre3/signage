@@ -485,6 +485,24 @@ def _init_db_locked(conn) -> None:
         cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS pdf_pages_status TEXT")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS duration_override_seconds INTEGER")
         cursor.execute("ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS fit_mode TEXT NOT NULL DEFAULT 'fit' CHECK (fit_mode IN ('fit','fill','stretch'))")
+        # Phone-placed video walls. A 'free' wall (layout) is a spanned wall whose
+        # TVs each have a box over the video, stored as fractions of the canvas
+        # (place_*); the TV reports its own viewport size (screen_*_px), and an
+        # outline shows on it until highlight_until_ms (server clock, ms). Media
+        # rows get the probed size and length, at upload and after transcoding.
+        # IF NOT EXISTS skips the whole ADD COLUMN, CHECK included, once the
+        # column exists, so a second init_db adds no second constraint.
+        cursor.execute("ALTER TABLE walls          ADD COLUMN IF NOT EXISTS layout TEXT NOT NULL DEFAULT 'grid' CHECK (layout IN ('grid','free'))")
+        cursor.execute("ALTER TABLE wall_cells     ADD COLUMN IF NOT EXISTS place_x REAL")
+        cursor.execute("ALTER TABLE wall_cells     ADD COLUMN IF NOT EXISTS place_y REAL")
+        cursor.execute("ALTER TABLE wall_cells     ADD COLUMN IF NOT EXISTS place_w REAL")
+        cursor.execute("ALTER TABLE wall_cells     ADD COLUMN IF NOT EXISTS place_h REAL")
+        cursor.execute("ALTER TABLE wall_cells     ADD COLUMN IF NOT EXISTS screen_w_px INTEGER")
+        cursor.execute("ALTER TABLE wall_cells     ADD COLUMN IF NOT EXISTS screen_h_px INTEGER")
+        cursor.execute("ALTER TABLE wall_cells     ADD COLUMN IF NOT EXISTS highlight_until_ms BIGINT")
+        cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS duration_seconds REAL")
+        cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS width_px INTEGER")
+        cursor.execute("ALTER TABLE media          ADD COLUMN IF NOT EXISTS height_px INTEGER")
         # First-run setup. A deployment with no users publishes a one-time token
         # that must be presented to create the first administrator, so that
         # whoever merely reaches the URL first cannot claim the deployment.
