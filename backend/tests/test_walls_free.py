@@ -19,8 +19,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+import psycopg
+import ratelimit
+import redis
 import wall_layout
-from db import execute, query_all, query_one, utc_now_iso
+import walls as walls_mod
+from db import execute, get_dsn, query_all, query_one, utc_now_iso
+from psycopg.rows import dict_row
 from main import app, hash_password
 
 
@@ -537,3 +542,404 @@ def test_transcode_video_refreshes_free_walls_playing_it(client, tmp_path):
     assert (after["canvas_width_px"], after["canvas_height_px"]) == (3840, 720)
     assert [i["duration_seconds"] for i in _items(client, h, wall["id"])] == [
         max(1, math.ceil(media["duration_seconds"]))]
+
+
+# ---- PUT /walls/{id}/cells/{row}/{col}/placement ----
+
+
+@pytest.fixture
+def published(monkeypatch):
+    """Calls to walls.publish_geometry, recorded instead of sent."""
+    calls = []
+    monkeypatch.setattr(walls_mod, "publish_geometry",
+                        lambda wall_id, row, col: calls.append((wall_id, row, col)))
+    return calls
+
+
+def _place(client, headers, wall_id, box, row=0, col=0):
+    return client.put(f"/walls/{wall_id}/cells/{row}/{col}/placement", json=box,
+                      headers=headers)
+
+
+def _box(cell):
+    return {"x": cell["place_x"], "y": cell["place_y"],
+            "w": cell["place_w"], "h": cell["place_h"]}
+
+
+def _committed_cell(wall_id, row, col):
+    """The cell as another connection sees it: only what has been committed.
+    The handler's own connection would also see its open transaction (R5)."""
+    with psycopg.connect(get_dsn(), autocommit=True, row_factory=dict_row) as conn:
+        return conn.execute(
+            "SELECT * FROM wall_cells WHERE wall_id = %s AND row_index = %s AND col_index = %s",
+            (wall_id, row, col),
+        ).fetchone()
+
+
+def test_placement_is_saved_highlighted_and_published(client, monkeypatch, published):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    monkeypatch.setattr(walls_mod, "now_ms", lambda: 1_762_000_000_000)
+    # Partly above and below the video is fine: that part shows black.
+    res = _place(client, h, wall["id"], {"x": 0.25, "y": -0.1, "w": 0.4, "h": 1.2})
+    assert res.status_code == 204, res.text
+    assert res.content == b""
+    cell = _cells(wall["id"])[0]
+    assert _box(cell) == pytest.approx({"x": 0.25, "y": -0.1, "w": 0.4, "h": 1.2}, abs=1e-6)
+    assert cell["highlight_until_ms"] == 1_762_000_000_000 + walls_mod.HIGHLIGHT_SECONDS * 1000
+    assert published == [(wall["id"], 0, 0)]
+
+
+def test_done_clears_the_highlight(client, published):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    box = {"x": 0.0, "y": 0.0, "w": 0.3, "h": 1.0}
+    assert _place(client, h, wall["id"], box).status_code == 204
+    assert _cells(wall["id"])[0]["highlight_until_ms"] is not None
+    assert _place(client, h, wall["id"], {**box, "highlight": False}).status_code == 204
+    assert _cells(wall["id"])[0]["highlight_until_ms"] is None
+    assert published == [(wall["id"], 0, 0), (wall["id"], 0, 0)]
+
+
+@pytest.mark.parametrize("box", [
+    {"x": 1.0, "y": 0.0, "w": 0.5, "h": 1.0},      # right of the video
+    {"x": 0.0, "y": -1.0, "w": 0.5, "h": 1.0},     # above it
+    {"x": 0.99, "y": 0.0, "w": 1.0, "h": 1.0},     # 1% on it (< 5%)
+    {"x": 0.0, "y": 0.0, "w": 0.0, "h": 1.0},      # w must be > 0
+    {"x": 0.0, "y": 0.0, "w": -0.3, "h": 1.0},     # ... so not negative either
+    {"x": 0.0, "y": 0.0, "w": 5.0, "h": 1.0},      # w must be <= 4
+    {"x": 0.0, "y": 0.0, "w": 0.3, "h": 4.5},      # h must be <= 4
+])
+def test_invalid_boxes_are_422_and_change_nothing(client, published, box):
+    """R2: WallPlacement has plain floats, so validate_box decides and every
+    refusal carries the code the phone translates (no Pydantic list detail)."""
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    before = _cells(wall["id"])[0]
+    res = _place(client, h, wall["id"], box)
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["code"] == "wall.placement_invalid"
+    after = _cells(wall["id"])[0]
+    assert _box(after) == _box(before)
+    assert after["highlight_until_ms"] == before["highlight_until_ms"]
+    assert published == []
+
+
+@pytest.mark.parametrize("body", [
+    b'{"x": NaN, "y": 0, "w": 0.3, "h": 1}',
+    b'{"x": 0, "y": 0, "w": Infinity, "h": 1}',
+])
+def test_a_non_finite_box_is_refused(client, published, body):
+    # Python's json, and so FastAPI, accepts NaN and Infinity, and Pydantic
+    # lets them into a float: validate_box refuses them, with the same code (R2).
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    res = client.put(f"/walls/{wall['id']}/cells/0/0/placement", content=body,
+                     headers={**h, "Content-Type": "application/json"})
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["code"] == "wall.placement_invalid"
+    assert published == []
+
+
+@pytest.mark.parametrize("body", [
+    pytest.param(b'{"x": 0, "y": 0, "w": 1' + b"0" * 400 + b', "h": 1}', id="huge-int-w"),
+    pytest.param(b'{"x": -1' + b"0" * 400 + b', "y": 0, "w": 0.3, "h": 1}', id="huge-negative-int-x"),
+    pytest.param(b'{"x": 0, "y": 0, "w": 1e999, "h": 1}', id="float-overflowing-to-inf"),
+])
+def test_a_box_beyond_float_range_is_refused_with_the_same_code(client, published, body):
+    """R2: a JSON integer too big for a float is refused like any other box
+    that is not on the video (422 wall.placement_invalid), not with Pydantic's
+    own list-detail 422 and not with a 500 from validate_box."""
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    before = _cells(wall["id"])[0]
+    res = client.put(f"/walls/{wall['id']}/cells/0/0/placement", content=body,
+                     headers={**h, "Content-Type": "application/json"})
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["code"] == "wall.placement_invalid"
+    assert _box(_cells(wall["id"])[0]) == _box(before)
+    assert published == []
+
+
+def test_whole_number_coordinates_are_accepted(client, published):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    res = _place(client, h, wall["id"], {"x": 0, "y": 0, "w": 1, "h": 1})
+    assert res.status_code == 204, res.text
+    assert _box(_cells(wall["id"])[0]) == {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+    assert published == [(wall["id"], 0, 0)]
+
+
+def test_placement_keeps_the_tvs_reported_shape(client, published):
+    """R8: once the TV has reported its screen, a box from a phone that has not
+    caught up (16:9 here, for a portrait TV) is stored in the TV's shape, with
+    the same width and centre. An invalid request is still refused: fitting it
+    first would nudge it back onto the video."""
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)                      # 5760x1080
+    execute("UPDATE wall_cells SET screen_w_px = 1080, screen_h_px = 1920 WHERE wall_id = ?",
+            (wall["id"],))
+    res = _place(client, h, wall["id"], {"x": 0.25, "y": 0.0, "w": 1 / 3, "h": 1.0})
+    assert res.status_code == 204, res.text
+    stored = _box(_cells(wall["id"])[0])
+    assert stored["w"] == pytest.approx(1 / 3, rel=1e-5)
+    assert stored["x"] == pytest.approx(0.25, rel=1e-5)
+    assert stored["y"] + stored["h"] / 2 == pytest.approx(0.5, abs=1e-5)
+    assert (stored["w"] * 5760) / (stored["h"] * 1080) == pytest.approx(1080 / 1920, rel=1e-4)
+    assert published == [(wall["id"], 0, 0)]
+    # Wholly right of the video. Fitted first, it would be nudged back to 5% on it.
+    res = _place(client, h, wall["id"], {"x": 1.0, "y": 0.0, "w": 0.5, "h": 1.0})
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"]["code"] == "wall.placement_invalid"
+    assert _box(_cells(wall["id"])[0]) == stored
+    assert published == [(wall["id"], 0, 0)]
+
+
+def test_geometry_is_published_once_the_box_is_committed(client, monkeypatch):
+    """R5: the local push and the other workers re-read the box from the
+    database, so publish_geometry runs only after the write has committed."""
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    seen = []
+    monkeypatch.setattr(walls_mod, "publish_geometry",
+                        lambda wall_id, row, col: seen.append(_committed_cell(wall_id, row, col)))
+    box = {"x": 0.5, "y": 0.0, "w": 0.3, "h": 1.0}
+    assert _place(client, h, wall["id"], box).status_code == 204
+    assert len(seen) == 1
+    assert _box(seen[0]) == pytest.approx(box, abs=1e-6)
+    assert seen[0]["highlight_until_ms"] is not None
+
+
+def test_placement_is_refused_on_grid_walls_other_orgs_and_missing_cells(client, published):
+    oid, h = _org()
+    _other, other_h = _org()
+    wall = _free_wall(client, h, oid)
+    grid = _grid_wall(client, h)
+    before = _cells(wall["id"])[0]
+    box = {"x": 0.5, "y": 0.0, "w": 0.3, "h": 1.0}
+    for url, headers, status, code in (
+        (f"/walls/{grid['id']}/cells/0/0/placement", h, 409, "wall.not_free"),
+        (f"/walls/{wall['id']}/cells/0/0/placement", other_h, 404, "wall.not_found"),
+        (f"/walls/{wall['id']}/cells/0/5/placement", h, 404, "wall.cell_not_found"),
+    ):
+        res = client.put(url, json=box, headers=headers)
+        assert (res.status_code, res.json()["detail"]["code"]) == (status, code), url
+    # Nothing changed: not the free wall's box or highlight, not the grid's cells.
+    after = _cells(wall["id"])[0]
+    assert _box(after) == _box(before)
+    assert after["highlight_until_ms"] == before["highlight_until_ms"]
+    assert all(c["place_x"] is None and c["highlight_until_ms"] is None
+               for c in _cells(grid["id"]))
+    assert published == []
+
+
+class _DeadRedis:
+    """What ratelimit.get_redis() hands back while Redis is down: from_url
+    never connects, so the first command is the one that fails."""
+
+    def __init__(self):
+        self.publishes = 0
+
+    def publish(self, channel, message):
+        self.publishes += 1
+        raise redis.exceptions.ConnectionError("Error 111 connecting to redis:6379.")
+
+
+@pytest.fixture
+def fresh_redis_state():
+    # publish_geometry may mark Redis unhealthy for 10 s; later tests must not inherit that.
+    ratelimit.reset_for_tests()
+    yield
+    ratelimit.reset_for_tests()
+
+
+def test_placement_still_204_when_redis_is_down(client, monkeypatch, fresh_redis_state):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    dead = _DeadRedis()
+    monkeypatch.setattr(ratelimit, "get_redis", lambda: dead)
+    res = _place(client, h, wall["id"], {"x": 0.5, "y": 0.0, "w": 0.3, "h": 1.0})
+    assert res.status_code == 204, res.text
+    assert dead.publishes == 1          # the Redis path was tried, and its failure swallowed
+    assert _cells(wall["id"])[0]["place_x"] == pytest.approx(0.5, abs=1e-6)
+    # In the cooldown after a failure, get_redis() returns None: also fine.
+    monkeypatch.setattr(ratelimit, "get_redis", lambda: None)
+    res = _place(client, h, wall["id"], {"x": 0.6, "y": 0.0, "w": 0.3, "h": 1.0})
+    assert res.status_code == 204, res.text
+    assert _cells(wall["id"])[0]["place_x"] == pytest.approx(0.6, abs=1e-6)
+
+
+def test_placement_and_pairing_rate_limits():
+    # The phone keeps one PUT in flight while dragging: several a second.
+    assert _limits("put_wall_placement") == ["1800 per 1 minute"]
+    # Up to 8 TVs behind one venue NAT, each polling every 3 s while it waits
+    # (8 x 20 = 160 a minute), plus the phone's code checks from the same NAT.
+    assert _limits("poll_pair_code") == ["240 per 1 minute"]
+    assert _limits("request_pair_code") == ["30 per 1 minute"]
+
+
+# ---- PUT /walls/{id}/video and the canvas playlist ----
+
+
+def test_video_swap_replaces_the_item_and_follows_the_new_size(client):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid, width=5760, height=1080, duration=20.0)
+    [old_item] = _items(client, h, wall["id"])
+    new_mid = _media(oid, width=1920, height=1080, duration=12.5)
+    res = client.put(f"/walls/{wall['id']}/video", json={"media_id": new_mid}, headers=h)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert (body["canvas_width_px"], body["canvas_height_px"]) == (1920, 1080)
+    assert body["video"]["media_id"] == new_mid
+    [item] = _items(client, h, wall["id"])
+    # A new row, not an update: its new id makes the TVs switch at once.
+    assert item["id"] != old_item["id"]
+    assert (item["media_id"], item["duration_seconds"], item["fit_mode"]) == (new_mid, 13, "fit")
+    # Boxes are fractions of the canvas, so each TV keeps its part of the picture.
+    assert _box(body["cells"][0]) == _box(wall["cells"][0])
+
+
+def test_video_swap_refuses_foreign_media_pdfs_other_orgs_and_grid_walls(client):
+    oid, h = _org()
+    other, other_h = _org()
+    wall = _free_wall(client, h, oid)
+    url = f"/walls/{wall['id']}/video"
+    pdf = _media(oid, width=None, height=None, duration=None, mime="application/pdf")
+    for media_id, headers, status, code in (
+        (_media(other), h, 404, "media.not_found"),
+        (pdf, h, 400, "wall.media_type_blocked"),
+        (_media(other), other_h, 404, "wall.not_found"),   # the other org, on this org's wall
+    ):
+        res = client.put(url, json={"media_id": media_id}, headers=headers)
+        assert (res.status_code, res.json()["detail"]["code"]) == (status, code)
+    grid = _grid_wall(client, h)
+    res = client.put(f"/walls/{grid['id']}/video", json={"media_id": _media(oid)}, headers=h)
+    assert (res.status_code, res.json()["detail"]["code"]) == (409, "wall.not_free")
+    # Nothing changed: the same one item and the same canvas.
+    assert [i["media_id"] for i in _items(client, h, wall["id"])] == [wall["video"]["media_id"]]
+    after = query_one("SELECT canvas_width_px, canvas_height_px FROM walls WHERE id = ?",
+                      (wall["id"],))
+    assert (after["canvas_width_px"], after["canvas_height_px"]) == (5760, 1080)
+
+
+def test_canvas_item_edits_are_refused_on_free_walls(client):
+    """D8: a free wall plays exactly one item, which only PUT /walls/{id}/video
+    changes. Reading the canvas playlist stays allowed."""
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    [item] = _items(client, h, wall["id"])
+    base = f"/walls/{wall['id']}/canvas-playlist/items"
+    for res in (
+        client.post(base, json={"media_id": _media(oid), "position": 1}, headers=h),
+        client.patch(f"{base}/{item['id']}", json={"fit_mode": "fill"}, headers=h),
+        client.delete(f"{base}/{item['id']}", headers=h),
+    ):
+        assert res.status_code == 409, res.text
+        assert res.json()["detail"]["code"] == "wall.free_layout"
+    assert _items(client, h, wall["id"]) == [item]
+
+
+# ---- PATCH /walls/{id} and removing a TV ----
+
+
+def test_patch_renames_a_free_wall_but_refuses_layout_changes(client):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    url = f"/walls/{wall['id']}"
+    # A form that sends the unchanged values along still renames.
+    res = client.patch(url, json={"name": "Foyer", "mode": "spanned", "canvas_width_px": 5760,
+                                  "canvas_height_px": 1080, "bezel_h_pct": 0}, headers=h)
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "Foyer"
+    for change in ({"mode": "mirrored", "mirrored_mode": "synced_rotation"},
+                   {"canvas_width_px": 3840, "canvas_height_px": 2160},
+                   {"bezel_h_pct": 2.0},
+                   {"bezel_enabled": True}):
+        res = client.patch(url, json=change, headers=h)
+        assert res.status_code == 409, (change, res.text)
+        assert res.json()["detail"]["code"] == "wall.free_layout"
+    after = query_one("SELECT * FROM walls WHERE id = ?", (wall["id"],))
+    assert (after["name"], after["mode"], after["layout"], after["canvas_width_px"],
+            after["bezel_h_pct"], after["spanned_playlist_id"]) == (
+        "Foyer", "spanned", "free", 5760, 0, wall["spanned_playlist_id"])
+    assert query_one("SELECT id FROM playlists WHERE id = ?", (wall["spanned_playlist_id"],))
+
+
+def test_removing_tvs_deletes_cells_and_screens_and_frees_indexes(client):
+    oid, h = _org()
+    wid = _free_wall(client, h, oid, name="Lobby")["id"]
+    second = _add_tv(client, h, wid).json()
+    assert _add_tv(client, h, wid).status_code == 201
+    token = query_one("SELECT token FROM screens WHERE id = ?", (second["screen_id"],))["token"]
+
+    assert client.delete(f"/walls/{wid}/cells/0/1/pairing", headers=h).status_code == 204
+    assert [c["col_index"] for c in _cells(wid)] == [0, 2]
+    assert _cols(wid) == 3                      # highest index left + 1
+    assert query_one("SELECT id FROM screens WHERE id = ?", (second["screen_id"],)) is None
+    assert client.get(f"/screens/{token}/content").status_code == 404
+
+    code = _tv_code(client)
+    res = _add_tv(client, h, wid, code)
+    assert res.status_code == 201, res.text
+    assert res.json()["col_index"] == 1         # the freed index, and so "TV 2" again
+    assert client.get(f"/screens/poll/{code}").json()["screen_name"] == "Lobby · TV 2"
+
+    for col in (2, 1, 0):
+        assert client.delete(f"/walls/{wid}/cells/0/{col}/pairing", headers=h).status_code == 204
+    assert _cells(wid) == []
+    assert _cols(wid) == 1                      # walls.cols is CHECKed 1..8
+    assert _left_behind(oid)["screens"] == 0
+    # R18: the wall stays, empty, for the next TV a phone adds to it.
+    assert query_one("SELECT id FROM walls WHERE id = ?", (wid,)) is not None
+
+
+def test_bye_goes_out_once_the_cell_is_gone(client, monkeypatch):
+    """R5: broadcast_bye runs after the removal has committed, outside its
+    transaction, as publish_geometry does after a move."""
+    oid, h = _org()
+    wid = _free_wall(client, h, oid)["id"]
+    assert _add_tv(client, h, wid).status_code == 201
+    seen = []
+    monkeypatch.setattr(walls_mod, "broadcast_bye",
+                        lambda wall_id, row, col, reason: seen.append(
+                            (reason, _committed_cell(wall_id, row, col))))
+    assert client.delete(f"/walls/{wid}/cells/0/1/pairing", headers=h).status_code == 204
+    assert seen == [("cell_unpaired", None)]
+
+
+# ---- Roles and subscription on the four new endpoints (spec Section 2) ----
+
+
+def _session(oid, role):
+    uid = execute(
+        "INSERT INTO users (organization_id, username, password_hash, is_admin, role, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (oid, f"{role}_{secrets.token_hex(3)}@x.com", hash_password("pw"), 0, role, utc_now_iso()),
+    )
+    tok = uuid.uuid4().hex
+    execute("INSERT INTO sessions (user_id, token, created_at) VALUES (?, ?, ?)", (uid, tok, utc_now_iso()))
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def test_new_endpoints_need_an_editor_and_a_live_subscription(client):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    mid = _media(oid)
+    calls = [
+        ("post", "/walls/free", {"name": "X", "media_id": mid, "code": _tv_code(client)}),
+        ("post", f"/walls/{wall['id']}/tvs", {"code": _tv_code(client)}),
+        ("put", f"/walls/{wall['id']}/cells/0/0/placement", {"x": 0.0, "y": 0.0, "w": 0.3, "h": 1.0}),
+        ("put", f"/walls/{wall['id']}/video", {"media_id": mid}),
+    ]
+    viewer = _session(oid, "viewer")
+    for method, path, body in calls:
+        res = getattr(client, method)(path, json=body, headers=viewer)
+        assert res.status_code == 403, (path, res.text)
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    execute("UPDATE organizations SET subscription_status = 'trialing', trial_ends_at = ? WHERE id = ?",
+            (past, oid))
+    for method, path, body in calls:
+        res = getattr(client, method)(path, json=body, headers=h)
+        assert res.status_code == 402, (path, res.text)
+        assert res.json()["detail"]["code"] == "subscription.trial_expired"
+    assert len(_cells(wall["id"])) == 1
