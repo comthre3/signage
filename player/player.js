@@ -13,6 +13,8 @@ const API_BASE = (
 const statusEl = document.getElementById("status");
 const contentEl = document.getElementById("content");
 const zonesEl = document.getElementById("zones");
+const wallHighlightEl = document.getElementById("wall-highlight");
+const wallHighlightLabelEl = document.getElementById("wall-highlight-label");
 
 const pairingEl = document.getElementById("pairing");
 const pairingCodeEl = document.getElementById("pairing-code");
@@ -45,6 +47,16 @@ const WALL_CHECK_INTERVAL_MS = 60000;
 // The server pings every 25s; a socket silent for longer than this is dead.
 const WALL_SILENCE_LIMIT_MS = 75000;
 const WALL_RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+// The server's clock is estimated from the frames of the last 10 minutes, at
+// most 32 of them (see noteServerTime).
+const WALL_CLOCK_WINDOW_MS = 10 * 60 * 1000;
+const WALL_CLOCK_MAX_SAMPLES = 32;
+// A wall TV reports its screen size this long after the window stops resizing.
+const WALL_SCREEN_REPORT_DEBOUNCE_MS = 1000;
+// The server clamps a reported size to 100..10000 px. A window under 100 px
+// has no layout yet and is no screen: reporting it would be clamped to
+// 100x100 and square this TV's default box, so it is not reported.
+const WALL_SCREEN_MIN_PX = 100;
 // Deploys: how often to look for a new player version.
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const RELOAD_GUARD_MS = 60000;
@@ -997,16 +1009,45 @@ let wallId = null;
 let wallReconnectAttempts = 0;
 let wallReconnectTimer = null;
 let wallLastMessageAt = 0;
-let wallClockOffsetMs = 0;
+// The server's clock minus performance.now(). Until the first frame arrives
+// it is this TV's own clock, as before.
+let wallClockOffsetMs = Date.now() - performance.now();
+// Recent clock samples: { at: performance.now() on arrival, offset }.
+let wallClockSamples = [];
 let wallLastFrame = null;
 let wallNode = null;
 let wallDriftTimer = null;
 let wallSpannedGeometry = null;
+let wallHighlightTimer = null;
+let wallScreenReportTimer = null;
 // Recently shown wall items, offered to the SW cache (bounded).
 const wallSeen = new Map();
 const WALL_SEEN_MAX = 30;
 
-function effectiveNowMs() { return Date.now() + wallClockOffsetMs; }
+/* Every frame carries server_now_ms. Each sample (server_now_ms minus
+   performance.now() on arrival) is the true offset minus that frame's network
+   delay, so the largest sample of the last 10 minutes is the least delayed
+   one. The offset used to be the latest frame's, delay and all. The samples
+   use performance.now(), which never jumps: a TV whose own clock is stepped
+   (NTP after boot) keeps a valid estimate, where Date.now()-based samples
+   would let a stale one win for ten minutes. */
+function noteServerTime(serverNowMs) {
+  if (typeof serverNowMs !== "number" || !isFinite(serverNowMs)) return;
+  const at = performance.now();
+  wallClockSamples.push({ at: at, offset: serverNowMs - at });
+  while (wallClockSamples.length > WALL_CLOCK_MAX_SAMPLES
+         || at - wallClockSamples[0].at > WALL_CLOCK_WINDOW_MS) {
+    wallClockSamples.shift();
+  }
+  let best = wallClockSamples[0].offset;
+  for (let i = 1; i < wallClockSamples.length; i += 1) {
+    if (wallClockSamples[i].offset > best) best = wallClockSamples[i].offset;
+  }
+  wallClockOffsetMs = best;
+}
+
+// The server's clock, in ms since the epoch.
+function effectiveNowMs() { return performance.now() + wallClockOffsetMs; }
 
 function enterWallMode(id) {
   if (mode === "wall" && wallId === id) {
@@ -1027,9 +1068,12 @@ function leaveWallMode() {
   wallId = null;
   clearTimeout(wallReconnectTimer);
   wallReconnectTimer = null;
+  clearTimeout(wallScreenReportTimer);
+  wallScreenReportTimer = null;
   closeWallSocket();
   ConnectionStatus.setWs("none");
   clearWallPicture();
+  hideWallHighlight();
   wallSpannedGeometry = null;
 }
 
@@ -1077,6 +1121,7 @@ function openWallSocket() {
     ConnectionStatus.markFrame();
     wallReconnectAttempts = 0;
     wallLastMessageAt = Date.now();
+    reportWallScreen();   // the phone shapes this TV's box from it
   });
   socket.addEventListener("message", (ev) => {
     if (wallSocket !== socket) return;
@@ -1102,19 +1147,24 @@ function openWallSocket() {
 
 function onWallFrame(frame) {
   const clientReceivedMs = Date.now();
-  if (typeof frame.server_now_ms === "number") {
-    wallClockOffsetMs = frame.server_now_ms - clientReceivedMs;
-  }
+  noteServerTime(frame.server_now_ms);
   if (frame.type === "hello") {
-    // Mode may have changed since the last hello (spanned <-> mirrored, a
-    // new grid or canvas): rebuild rather than crop with stale geometry.
+    // Spanned <-> mirrored rebuilds the picture: a cropped canvas and a plain
+    // full-screen node are built differently. Anything else (a moved box, a
+    // canvas of another size, another grid) only re-crops the picture that is
+    // up, so a playing video keeps playing. renderWallPlay still remounts
+    // when the item itself changed.
     const geometry = frame.mode === "spanned"
-      ? { canvas: frame.canvas, cell_geometry: frame.cell_geometry, bezel: frame.bezel }
+      ? { canvas: frame.canvas, cell_geometry: frame.cell_geometry }
       : null;
-    const changed = JSON.stringify(geometry) !== JSON.stringify(wallSpannedGeometry);
+    const rebuild = (geometry === null) !== (wallSpannedGeometry === null);
     wallSpannedGeometry = geometry;
-    if (frame.current_play) renderWallPlay(frame.current_play, changed);
+    applyWallTransform();
+    if (frame.current_play) renderWallPlay(frame.current_play, rebuild);
     else clearWallPicture();
+    showWallHighlight(frame.highlight_until_ms, frame.tv_number);
+  } else if (frame.type === "geometry") {
+    onWallGeometry(frame);
   } else if (frame.type === "play") {
     renderWallPlay(frame, false);
   } else if (frame.type === "ping") {
@@ -1135,6 +1185,96 @@ function onWallFrame(frame) {
     refreshSoon();
   }
 }
+
+/* Crops this TV's slice out of the wall canvas and scales it to fill the
+   screen. With the origin at the canvas's top-left corner,
+   scale(vw / cell.w, vh / cell.h) translate(-cell.x px, -cell.y px) maps the
+   slice exactly onto the viewport. The canvas used to be translated only,
+   which was right only when the slice happened to be the viewport's size. A
+   free wall's box has the TV's own shape, so both scales are equal there; a
+   grid cell of another shape is stretched to fill. Runs on hello, geometry,
+   mount and window resize, and never touches the media element. */
+function applyWallTransform() {
+  const canvasEl = contentEl.querySelector(".wall-canvas");
+  const g = wallSpannedGeometry;
+  if (!canvasEl || !g || !g.canvas || !g.cell_geometry) return;
+  const cw = Number(g.canvas.w);
+  const ch = Number(g.canvas.h);
+  const x = Number(g.cell_geometry.x) || 0;
+  const y = Number(g.cell_geometry.y) || 0;
+  const w = Number(g.cell_geometry.w);
+  const h = Number(g.cell_geometry.h);
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const vh = document.documentElement.clientHeight || window.innerHeight;
+  if (!(cw > 0 && ch > 0 && w > 0 && h > 0 && vw > 0 && vh > 0)) return;
+  canvasEl.style.setProperty("--wall-w-px", String(cw));
+  canvasEl.style.setProperty("--wall-h-px", String(ch));
+  canvasEl.style.transform = "scale(" + (vw / w) + "," + (vh / h) + ") translate("
+    + (-x) + "px," + (-y) + "px)";
+}
+
+/* A box moved on the phone, the TV reported another shape, or the wall got a
+   video of another size: re-crop, and show or hide the outline. Only a hello
+   switches between a cropped and a full-screen picture. The media element is
+   left alone, so a playing video keeps playing. */
+function onWallGeometry(frame) {
+  if (wallSpannedGeometry && frame.canvas && frame.cell_geometry) {
+    wallSpannedGeometry = { canvas: frame.canvas, cell_geometry: frame.cell_geometry };
+    applyWallTransform();
+  }
+  showWallHighlight(frame.highlight_until_ms, frame.tv_number);
+}
+
+/* The outline and "TV 2" a phone asks for while it places this TV's box.
+   untilMs is on the server's clock (highlight_until_ms). null, or a time
+   already past, hides it at once. */
+function showWallHighlight(untilMs, n) {
+  const remainingMs = typeof untilMs === "number" ? untilMs - effectiveNowMs() : 0;
+  if (!wallHighlightEl || !(remainingMs > 0)) {
+    hideWallHighlight();
+    return;
+  }
+  clearTimeout(wallHighlightTimer);
+  wallHighlightTimer = setTimeout(hideWallHighlight, remainingMs);
+  if (wallHighlightLabelEl) {
+    wallHighlightLabelEl.textContent = typeof n === "number"
+      ? Khan.t("wall.tv_label", "TV {n}").replace("{n}", String(n))
+      : "";
+  }
+  wallHighlightEl.classList.remove("hidden");
+}
+
+function hideWallHighlight() {
+  clearTimeout(wallHighlightTimer);
+  wallHighlightTimer = null;
+  if (wallHighlightEl) wallHighlightEl.classList.add("hidden");
+}
+
+/* This TV's screen size in CSS px, from which the phone gives the TV's box
+   the TV's own shape. Sent when the socket opens and once the window has
+   stopped resizing. */
+function reportWallScreen() {
+  const w = Math.round(document.documentElement.clientWidth || window.innerWidth || 0);
+  const h = Math.round(document.documentElement.clientHeight || window.innerHeight || 0);
+  if (!(w >= WALL_SCREEN_MIN_PX && h >= WALL_SCREEN_MIN_PX)) return;
+  try {
+    if (wallSocket && wallSocket.readyState === WebSocket.OPEN) {
+      wallSocket.send(JSON.stringify({ type: "screen", w: w, h: h }));
+    }
+  } catch (_) {}
+}
+
+// A rotated tablet, a resized window, a WebView that settles late: re-crop at
+// once, and report the new size when it has settled.
+window.addEventListener("resize", () => {
+  if (mode !== "wall") return;
+  applyWallTransform();
+  clearTimeout(wallScreenReportTimer);
+  wallScreenReportTimer = setTimeout(() => {
+    wallScreenReportTimer = null;
+    reportWallScreen();
+  }, WALL_SCREEN_REPORT_DEBOUNCE_MS);
+});
 
 function clearWallPicture() {
   stopWallDrift();
@@ -1179,15 +1319,11 @@ function renderWallPlay(frame, force) {
   clearContainer(contentEl);
   const node = createWallMediaNode(item, frame.fit_mode);
   if (wallSpannedGeometry) {
-    const { canvas, cell_geometry } = wallSpannedGeometry;
     const wrap = document.createElement("div");
     wrap.className = "cell-viewport";
-    wrap.innerHTML = `
-      <div class="wall-canvas"
-           style="--wall-w-px:${Number(canvas.w)}; --wall-h-px:${Number(canvas.h)};
-                  --cell-x-px:${Number(cell_geometry.x)}; --cell-y-px:${Number(cell_geometry.y)};">
-      </div>
-    `;
+    const canvasEl = document.createElement("div");
+    canvasEl.className = "wall-canvas";
+    wrap.appendChild(canvasEl);
     contentEl.appendChild(wrap);
     node.classList.add("wall-media");
     node.dataset.fit = frame.fit_mode || "fit";
@@ -1195,7 +1331,8 @@ function renderWallPlay(frame, force) {
     // .wall-media[data-fit] rules, so fill/stretch never took effect.
     const fit = WALL_FIT[frame.fit_mode] || "contain";
     node.style.cssText = `position:absolute; top:0; left:0; width:100%; height:100%; object-fit:${fit};`;
-    wrap.querySelector(".wall-canvas").appendChild(node);
+    canvasEl.appendChild(node);
+    applyWallTransform();   // canvas size and crop come from wallSpannedGeometry
   } else {
     contentEl.appendChild(node);
   }

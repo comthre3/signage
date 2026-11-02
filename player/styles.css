@@ -18,6 +18,7 @@ body {
 :lang(ar) .pairing-meta,
 :lang(ar) .pairing-fallback,
 :lang(ar) .empty-state,
+:lang(ar) .wall-highlight,
 :lang(ar) #status {
   font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
 }
@@ -143,21 +144,25 @@ body {
    written as aspect-ratio queries: the vh term is the smaller one from 16:9
    (landscape) or 5:8 (portrait) up, the vw term below that. */
 .pairing,
-.empty-state { --u: 0.5625vw; }
+.empty-state,
+.wall-highlight { --u: 0.5625vw; }
 
 @media (min-aspect-ratio: 16/9) {
   .pairing,
-  .empty-state { --u: 1vh; }
+  .empty-state,
+  .wall-highlight { --u: 1vh; }
 }
 
 @media (orientation: portrait) {
   .pairing,
-  .empty-state { --u: 1.2vw; }
+  .empty-state,
+  .wall-highlight { --u: 1.2vw; }
 }
 
 @media (orientation: portrait) and (min-aspect-ratio: 5/8) {
   .pairing,
-  .empty-state { --u: 0.75vh; }
+  .empty-state,
+  .wall-highlight { --u: 0.75vh; }
 }
 
 #pairing > * + * { margin-top: calc(var(--u) * 2.2); }
@@ -460,19 +465,54 @@ code, kbd, samp, pre,
 .cell-viewport {
   position: fixed; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; background: #000;
 }
+/* The whole wall picture at canvas size. player.js (applyWallTransform) sets
+   transform: scale(...) translate(...) inline: that crops this TV's slice and
+   scales it to fill the screen, which needs the origin at the canvas's
+   top-left corner and top/left set. Without them an RTL (Arabic) page puts
+   an absolute box's static position on the right. No will-change: a layer
+   promoted at one scale keeps that raster, so an image would stay soft after
+   its box was resized on the phone. A video is composited either way. */
 .wall-canvas {
   position: absolute;
+  top: 0;
+  left: 0;
   width:  calc(var(--wall-w-px) * 1px);
   height: calc(var(--wall-h-px) * 1px);
-  transform: translate(
-    calc(-1 * var(--cell-x-px) * 1px),
-    calc(-1 * var(--cell-y-px) * 1px)
-  );
-  will-change: transform;
+  transform-origin: 0 0;
 }
 .wall-media[data-fit="fit"]     { object-fit: contain; }
 .wall-media[data-fit="fill"]    { object-fit: cover;   }
 .wall-media[data-fit="stretch"] { object-fit: fill;    }
+
+/* While a phone places this TV's box: an outline around the screen and the
+   TV's number in the middle. It sits over the picture and under the
+   connection dot (5), the welcome view (5) and pairing (10). Sized in --u,
+   which is set with .pairing above, and kept to Chrome 66 CSS the same way. */
+.wall-highlight {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 4;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: calc(var(--u) * 1.2) solid #E09478;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+}
+.wall-highlight-label {
+  font-size: calc(var(--u) * 18);
+  font-weight: 700;
+  line-height: 1;
+  color: #FFFFFF;
+  background: rgba(0, 0, 0, 0.6);
+  padding: calc(var(--u) * 2) calc(var(--u) * 5);
+  border-radius: calc(var(--u) * 3);
+  white-space: nowrap;
+}
+.wall-highlight-label:empty { display: none; }
 
 /* Phase 2.5d — connection indicator */
 .conn-dot {

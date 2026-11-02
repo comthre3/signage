@@ -26,6 +26,7 @@
   "pairing.code_expired": "انتهت صلاحية الرمز. اطلب رمزاً جديداً من الأدمن.",
   "wall.connecting": "جاري الاتصال بالجدار…",
   "wall.reconnecting": "جاري إعادة الاتصال بالجدار…",
+  "wall.tv_label": "شاشة {n}",
   "lang.toggle_label": "EN",
   "nav.lang_toggle_aria": "تبديل اللغة",
   "empty.title": "تم الاتصال!",
