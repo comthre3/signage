@@ -384,3 +384,192 @@ def test_unregister_forgets_what_the_socket_was_sent():
     walls_mod._geom_sent[ws] = ("sig",)
     walls_mod._unregister(4343, (0, 0), ws)
     assert ws not in walls_mod._geom_sent
+
+
+# ---- the live path: push, publish, subscribe --------------------------------
+
+class _RecordingRedis:
+    """Stands in for ratelimit.get_redis()'s client; records what was published."""
+
+    def __init__(self):
+        self.published = []
+
+    def publish(self, channel, message):
+        self.published.append((channel, json.loads(message)))
+        return 0
+
+
+def test_push_geometry_sends_each_box_once():
+    wid, (cid,) = _free_wall([(0.0, 0.0, 1 / 3, 1.0)])
+    ws = FakeWS()
+    walls_mod._connections[wid][(0, 0)] = ws
+    asyncio.run(walls_mod._push_geometry(wid, 0, 0))
+    asyncio.run(walls_mod._push_geometry(wid, 0, 0))     # Redis echo of the local push
+    assert len(ws.of_type("geometry")) == 1
+    execute("UPDATE wall_cells SET place_x = ?, highlight_until_ms = ? WHERE id = ?",
+            (0.25, 1762000030000, cid))
+    asyncio.run(walls_mod._push_geometry(wid, 0, 0))
+    frames = ws.of_type("geometry")
+    assert len(frames) == 2
+    assert frames[1]["cell_geometry"]["x"] == pytest.approx(960.0)
+    assert frames[1]["highlight_until_ms"] == 1762000030000
+
+
+def test_push_geometry_reads_nothing_for_a_tv_held_elsewhere(monkeypatch):
+    def no_database(*args, **kwargs):
+        raise AssertionError("read the database for a socket this worker does not hold")
+
+    monkeypatch.setattr(walls_mod, "query_one", no_database)
+    asyncio.run(walls_mod._push_geometry(424242, 0, 0))
+
+
+def test_push_geometry_sends_nothing_on_grid_walls():
+    wid, cid = _grid_wall()
+    ws = FakeWS()
+    walls_mod._connections[wid][(0, 0)] = ws
+    asyncio.run(walls_mod._push_geometry(wid, 0, 0))
+    assert ws.frames == []
+
+
+def test_publish_geometry_from_a_rest_thread_reaches_a_local_tv_and_redis(monkeypatch):
+    fake = _RecordingRedis()
+    monkeypatch.setattr(ratelimit, "get_redis", lambda: fake)
+    wid, (cid,) = _free_wall([(0.0, 0.0, 1 / 3, 1.0)])
+    ws = FakeWS()
+
+    async def scenario():
+        walls_mod._connections[wid][(0, 0)] = ws
+        # REST handlers are sync endpoints, run in AnyIO worker threads.
+        await anyio.to_thread.run_sync(walls_mod.publish_geometry, wid, 0, 0)
+        for _ in range(100):
+            if ws.frames:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert len(ws.of_type("geometry")) == 1
+    assert fake.published == [
+        (walls_mod.geometry_channel(), {"wall_id": wid, "row": 0, "col": 0})]
+
+
+def test_publish_geometry_for_a_tv_held_elsewhere_only_publishes(monkeypatch):
+    fake = _RecordingRedis()
+    monkeypatch.setattr(ratelimit, "get_redis", lambda: fake)
+    scheduled = []
+
+    def record(coro):
+        scheduled.append(coro)
+        coro.close()
+        return True
+
+    monkeypatch.setattr(walls_mod, "_run_on_server_loop", record)
+    walls_mod.publish_geometry(434343, 0, 1)
+    assert scheduled == []
+    assert fake.published == [
+        (walls_mod.geometry_channel(), {"wall_id": 434343, "row": 0, "col": 1})]
+
+
+def test_publish_geometry_never_raises_when_redis_is_down(monkeypatch):
+    marked = []
+
+    class _DownRedis:
+        def publish(self, channel, message):
+            raise redis.exceptions.ConnectionError("Error 111 connecting to redis:6379")
+
+    monkeypatch.setattr(ratelimit, "get_redis", lambda: _DownRedis())
+    monkeypatch.setattr(ratelimit, "_mark_unhealthy", marked.append)
+    walls_mod.publish_geometry(434343, 0, 0)
+    assert len(marked) == 1 and isinstance(marked[0], redis.exceptions.ConnectionError)
+
+    monkeypatch.setattr(ratelimit, "get_redis", lambda: None)   # in its cooldown
+    walls_mod.publish_geometry(434343, 0, 0)
+    assert len(marked) == 1
+
+
+def test_geometry_subscriber_starts_once_per_event_loop(monkeypatch):
+    loops = []
+
+    async def idle_subscriber():
+        loops.append(asyncio.get_running_loop())
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(walls_mod, "_geometry_subscriber", idle_subscriber)
+
+    async def two_sockets_connect():
+        walls_mod._ensure_geometry_subscriber()
+        first = walls_mod._geometry_task
+        walls_mod._ensure_geometry_subscriber()
+        assert walls_mod._geometry_task is first
+        await asyncio.sleep(0)                   # let it start
+        return first
+
+    first = asyncio.run(two_sockets_connect())
+    second = asyncio.run(two_sockets_connect())  # a new loop: the old task ended with its loop
+    assert first is not second
+    assert len(loops) == 2 and loops[0] is not loops[1]
+
+
+def test_subscriber_forwards_only_to_tvs_this_worker_holds(monkeypatch):
+    channel = f"khan:wall-geometry:test-{uuid.uuid4().hex}"   # nobody else listens here
+    monkeypatch.setattr(walls_mod, "geometry_channel", lambda: channel)
+    wid, _ = _free_wall([(0.0, 0.0, 1 / 3, 1.0), (1 / 3, 0.0, 1 / 3, 1.0)])
+    ws = FakeWS()
+    walls_mod._connections[wid][(0, 0)] = ws                 # only TV 1 is on this worker
+    pushed = []
+    real_push = walls_mod._push_geometry
+
+    async def spy_push(wall_id, row, col):
+        pushed.append((wall_id, row, col))
+        await real_push(wall_id, row, col)
+
+    monkeypatch.setattr(walls_mod, "_push_geometry", spy_push)
+    publisher = redis.Redis.from_url(ratelimit.REDIS_URL, decode_responses=True,
+                                     socket_connect_timeout=2, socket_timeout=2)
+
+    async def scenario():
+        task = asyncio.get_running_loop().create_task(walls_mod._geometry_subscriber())
+        try:
+            for _ in range(200):
+                if dict(publisher.pubsub_numsub(channel)).get(channel, 0) >= 1:
+                    break
+                await asyncio.sleep(0.025)
+            else:
+                raise AssertionError("the subscriber never subscribed")
+            publisher.publish(channel, "not json")
+            publisher.publish(channel, json.dumps({"wall_id": str(wid), "row": 0, "col": 0}))
+            publisher.publish(channel, json.dumps({"wall_id": wid, "row": 0, "col": 1}))
+            publisher.publish(channel, json.dumps({"wall_id": wid, "row": 0, "col": 0}))
+            for _ in range(200):
+                if ws.frames:
+                    break
+                await asyncio.sleep(0.01)
+            assert not task.done(), "a bad message ended the subscriber"
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    try:
+        asyncio.run(asyncio.wait_for(scenario(), timeout=15))
+    finally:
+        publisher.close()
+    assert pushed == [(wid, 0, 0)]
+    frames = ws.of_type("geometry")
+    assert len(frames) == 1
+    assert frames[0]["cell_geometry"] == pytest.approx(
+        {"x": 0.0, "y": 0.0, "w": 1280.0, "h": 720.0})
+
+
+def test_subscriber_keeps_retrying_while_redis_is_down(monkeypatch, caplog):
+    monkeypatch.setattr(ratelimit, "REDIS_URL", "redis://127.0.0.1:1/0")   # nothing listens
+    monkeypatch.setattr(walls_mod, "geometry_channel",
+                        lambda: f"khan:wall-geometry:test-{uuid.uuid4().hex}")
+    monkeypatch.setattr(walls_mod, "GEOMETRY_RETRY_MIN_S", 0.01)
+    caplog.set_level(logging.WARNING, logger="walls")
+    with pytest.raises(asyncio.TimeoutError):           # still running when cut off
+        asyncio.run(asyncio.wait_for(walls_mod._geometry_subscriber(), timeout=0.5))
+    failures = [r for r in caplog.records
+                if "wall_geometry_subscriber_failed" in r.getMessage()]
+    assert len(failures) >= 2

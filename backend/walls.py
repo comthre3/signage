@@ -16,6 +16,13 @@ other workers must agree on:
   re-reading the cell bindings from Postgres, so a "bye" reaches the TV no
   matter which worker handled the REST call. ``broadcast_bye`` remains the
   fast path when the socket happens to live on the same worker.
+* A free wall's box moves (a phone dragging one TV's crop) must arrive well
+  inside the tick interval, so they also travel by Redis pub/sub:
+  ``publish_geometry`` pushes to a local socket and publishes, and each
+  worker holding a free-wall TV runs a ``_geometry_subscriber`` that pushes
+  to the sockets it holds (grid walls never start one). Redis is
+  only the fast path: the tick loop compares each cell's stored box with what
+  its TV was last sent, so every move still arrives if Redis is down.
 """
 
 import asyncio
@@ -76,6 +83,10 @@ HIGHLIGHT_SECONDS = 30
 # Redis pub/sub channel for "the box of free-wall cell (row, col) changed";
 # geometry_channel() appends REDIS_URL's logical database.
 GEOMETRY_CHANNEL_BASE = "khan:wall-geometry"
+# The geometry subscriber's wait for one message, and its reconnect backoff.
+GEOMETRY_POLL_S = 5.0
+GEOMETRY_RETRY_MIN_S = 1.0
+GEOMETRY_RETRY_MAX_S = 30.0
 
 
 def now_ms() -> int:
@@ -349,6 +360,116 @@ async def _send_geometry_if_changed(wall_id: int, key: Tuple[int, int], ws,
     _geom_sent[ws] = sig
     if not await _send_safe(ws, _geometry_frame(wall, cell)):
         _unregister(wall_id, key, ws)
+
+
+async def _push_geometry(wall_id: int, row: int, col: int) -> None:
+    """Send cell (row, col) its stored box, if this worker holds its TV's socket."""
+    key = (row, col)
+    ws = _connections.get(wall_id, {}).get(key)
+    if ws is None:
+        return
+    loaded = _load_free_cell(wall_id, row, col)
+    if loaded is not None:
+        await _send_geometry_if_changed(wall_id, key, ws, *loaded)
+
+
+def publish_geometry(wall_id: int, row: int, col: int) -> None:
+    """Tell cell (row, col)'s TV that its box changed. Sync and best-effort: never raises.
+
+    For REST handlers. Call it only after the write that changed the box has
+    committed, outside any ``with transaction():`` block: the local push and
+    every other worker re-read the box, and inside the transaction they would
+    read the old one. The same goes for broadcast_bye.
+    The TV's socket may be on any worker: this one pushes at once if it holds
+    it, and a Redis publish reaches the others' _geometry_subscriber. If both
+    fail, the tick loop's fallback delivers the box within TICK_MAX_SLEEP_S.
+    """
+    try:
+        if _connections.get(wall_id, {}).get((row, col)) is not None:
+            _run_on_server_loop(_push_geometry(wall_id, row, col))
+    except Exception:
+        logger.exception("wall_geometry_push_failed wall_id=%s", wall_id)
+    try:
+        client = ratelimit.get_redis()
+        if client is None:
+            return                         # cooling down after a Redis failure
+        client.publish(geometry_channel(),
+                       json.dumps({"wall_id": wall_id, "row": row, "col": col}))
+    except Exception as exc:
+        ratelimit._mark_unhealthy(exc)
+        logger.warning("wall_geometry_publish_failed wall_id=%s err=%s", wall_id, exc)
+
+
+async def _on_geometry_message(data) -> None:
+    """One published {"wall_id", "row", "col"}: push it if the TV is on this worker."""
+    try:
+        note = json.loads(data)
+        wall_id, row, col = note["wall_id"], note["row"], note["col"]
+    except (TypeError, ValueError, KeyError):
+        return
+    if not all(type(v) is int for v in (wall_id, row, col)):
+        return
+    if _connections.get(wall_id, {}).get((row, col)) is None:
+        return                             # another worker holds that TV
+    try:
+        await _push_geometry(wall_id, row, col)
+    except Exception:
+        logger.exception("wall_geometry_push_failed wall_id=%s", wall_id)
+
+
+def _ensure_geometry_subscriber() -> None:
+    """Start this worker's geometry subscriber unless it already runs on this loop.
+
+    wall_ws calls it for free-wall sockets only: only a free wall's boxes
+    move live, so a worker holding only grid or mirrored TVs never opens the
+    Redis subscription. A task belongs to the loop that made it. Production
+    has one loop per worker; each TestClient websocket session has its own,
+    closed (and its tasks cancelled) when the session ends. The task outlives
+    the worker's last wall socket.
+    """
+    global _geometry_task
+    loop = asyncio.get_running_loop()
+    task = _geometry_task
+    if task is not None and not task.done() and task.get_loop() is loop:
+        return
+    _geometry_task = loop.create_task(_geometry_subscriber())
+
+
+async def _geometry_subscriber() -> None:
+    """Forward box changes published by any worker to the TVs this worker holds.
+
+    Its own redis.asyncio client, made on this loop: ratelimit's client is
+    sync, and its 0.25 s socket timeout would end an idle subscription.
+    get_message() returns None after GEOMETRY_POLL_S without a message. A
+    Redis error is logged and retried with backoff (1 s doubling to 30 s)
+    while the tick loops' fallback keeps TVs current. Ends only when cancelled.
+    """
+    import redis.asyncio as aredis
+    delay = GEOMETRY_RETRY_MIN_S
+    while True:
+        client = pubsub = None
+        try:
+            client = aredis.Redis.from_url(ratelimit.REDIS_URL, decode_responses=True,
+                                           socket_connect_timeout=2, health_check_interval=30)
+            pubsub = client.pubsub(ignore_subscribe_messages=True)
+            await pubsub.subscribe(geometry_channel())
+            delay = GEOMETRY_RETRY_MIN_S
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True,
+                                               timeout=GEOMETRY_POLL_S)
+                if msg is not None:
+                    await _on_geometry_message(msg.get("data"))
+        except Exception as exc:          # CancelledError is no Exception: it ends the task
+            logger.warning("wall_geometry_subscriber_failed err=%s retry_in_s=%s", exc, delay)
+        finally:
+            for closable in (pubsub, client):
+                if closable is not None:
+                    try:
+                        await closable.aclose()
+                    except Exception:
+                        pass
+        await asyncio.sleep(delay)
+        delay = min(GEOMETRY_RETRY_MAX_S, delay * 2)
 
 
 # ---- playlist loading -------------------------------------------------------
