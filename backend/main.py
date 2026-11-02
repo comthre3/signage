@@ -4039,23 +4039,28 @@ def unpair_wall_cell(wall_id: int, row: int, col: int,
         with transaction():
             query_one("SELECT id FROM walls WHERE id = ? FOR UPDATE", (wall_id,))
             cell = query_one("SELECT * FROM wall_cells WHERE id = ?", (cell["id"],))
-            if cell:
-                if cell["screen_id"]:
-                    execute(
-                        "DELETE FROM screens WHERE id = ? AND organization_id = ? "
-                        "AND wall_cell_id = ?",
-                        (cell["screen_id"], wall["organization_id"], cell["id"]),
-                    )
-                execute("DELETE FROM wall_cells WHERE id = ?", (cell["id"],))
+            if not cell:
+                # A double tap, or two phones: the other request already
+                # removed it. Nothing changed here, and no bye either -- the
+                # index may meanwhile belong to a new TV that must not be told
+                # to forget its token.
+                return None
+            if cell["screen_id"]:
                 execute(
-                    """UPDATE walls
-                          SET cols = GREATEST(1, COALESCE(
-                                  (SELECT MAX(col_index) + 1 FROM wall_cells
-                                    WHERE wall_id = ?), 1)),
-                              updated_at = ?
-                        WHERE id = ?""",
-                    (wall_id, utc_now_iso(), wall_id),
+                    "DELETE FROM screens WHERE id = ? AND organization_id = ? "
+                    "AND wall_cell_id = ?",
+                    (cell["screen_id"], wall["organization_id"], cell["id"]),
                 )
+            execute("DELETE FROM wall_cells WHERE id = ?", (cell["id"],))
+            execute(
+                """UPDATE walls
+                      SET cols = GREATEST(1, COALESCE(
+                              (SELECT MAX(col_index) + 1 FROM wall_cells
+                                WHERE wall_id = ?), 1)),
+                          updated_at = ?
+                    WHERE id = ?""",
+                (wall_id, utc_now_iso(), wall_id),
+            )
     else:
         if cell["screen_id"]:
             # The screen was created by redeem for this cell alone, and its TV is
@@ -4302,27 +4307,28 @@ def _refresh_free_walls_for_media(media_id: int) -> None:
         media = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
         if not media:
             return
-        playlist_ids = [r["spanned_playlist_id"] for r in query_all(
-            """SELECT DISTINCT w.spanned_playlist_id
-               FROM walls w JOIN playlist_items pi ON pi.playlist_id = w.spanned_playlist_id
-               WHERE w.layout = 'free' AND pi.media_id = ?""",
-            (media_id,),
-        )]
-        if not playlist_ids:
-            return
-        if media.get("width_px") and media.get("height_px"):
-            canvas_w, canvas_h = wall_layout.canvas_size_for(media["width_px"],
-                                                             media["height_px"])
+        # One transaction, and the walls UPDATE re-checks inside the statement
+        # that the wall's playlist still holds this media: a PUT /walls/{id}/video
+        # that swapped the wall to another video meanwhile must not get this
+        # file's canvas size written onto it (every box is a fraction of the
+        # canvas, and nothing would repair the crop).
+        with transaction():
+            if media.get("width_px") and media.get("height_px"):
+                canvas_w, canvas_h = wall_layout.canvas_size_for(media["width_px"],
+                                                                 media["height_px"])
+                execute(
+                    "UPDATE walls SET canvas_width_px = ?, canvas_height_px = ?, updated_at = ? "
+                    "WHERE layout = 'free' AND EXISTS ("
+                    "SELECT 1 FROM playlist_items pi "
+                    "WHERE pi.playlist_id = walls.spanned_playlist_id AND pi.media_id = ?)",
+                    (canvas_w, canvas_h, utc_now_iso(), media_id),
+                )
             execute(
-                "UPDATE walls SET canvas_width_px = ?, canvas_height_px = ?, updated_at = ? "
-                "WHERE layout = 'free' AND spanned_playlist_id = ANY(?)",
-                (canvas_w, canvas_h, utc_now_iso(), playlist_ids),
+                "UPDATE playlist_items SET duration_seconds = ? "
+                "WHERE media_id = ? AND playlist_id IN ("
+                "SELECT spanned_playlist_id FROM walls WHERE layout = 'free')",
+                (_free_wall_item_seconds(media), media_id),
             )
-        execute(
-            "UPDATE playlist_items SET duration_seconds = ? "
-            "WHERE media_id = ? AND playlist_id = ANY(?)",
-            (_free_wall_item_seconds(media), media_id, playlist_ids),
-        )
     except Exception:
         logger.exception("free_wall_refresh_failed media_id=%s", media_id)
 
@@ -5283,6 +5289,11 @@ def delete_media(
     )
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")
+    # Decision (final review, PR 1): deleting the video of a free wall empties
+    # its one-item canvas playlist, as it does any playlist; the wall reads
+    # video=null and PUT /walls/{id}/video recovers it. Not blocked here. PR 2
+    # must handle video=null in the editor and warn on delete when a wall uses
+    # the file.
     file_path = os.path.join(UPLOAD_DIR, media["filename"])
     if os.path.exists(file_path):
         os.remove(file_path)

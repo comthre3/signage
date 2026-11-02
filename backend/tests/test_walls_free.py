@@ -509,6 +509,51 @@ def test_transcode_refresh_resizes_the_canvas_and_item(client):
     assert [i["duration_seconds"] for i in _items(client, h, grid["id"])] == [5]
 
 
+def test_transcode_refresh_skips_a_wall_swapped_to_another_video_meanwhile(client, monkeypatch):
+    """The wall's video is swapped (PUT /video) after the refresh began but
+    before its UPDATE. The refresh must not write the old file's canvas onto
+    the wall that now plays another video: every box is a fraction of the
+    canvas, and nothing would repair the crop."""
+    oid, h = _org()
+    wall = _free_wall(client, h, oid, width=5760, height=1080, duration=19.2)
+    old_mid = wall["video"]["media_id"]
+    new_mid = _media(oid, width=1920, height=1080, duration=8.0)
+    execute("UPDATE media SET width_px = 3840, height_px = 720 WHERE id = ?", (old_mid,))
+    real = wall_layout.canvas_size_for
+
+    def swap_then_size(w, hh):
+        # Lands in the window between the refresh's reads and its writes.
+        execute("UPDATE playlist_items SET media_id = ?, duration_seconds = 8 "
+                "WHERE playlist_id = ?", (new_mid, wall["spanned_playlist_id"]))
+        return real(w, hh)
+
+    monkeypatch.setattr(wall_layout, "canvas_size_for", swap_then_size)
+    main._refresh_free_walls_for_media(old_mid)
+    row = query_one("SELECT canvas_width_px, canvas_height_px FROM walls WHERE id = ?",
+                    (wall["id"],))
+    assert (row["canvas_width_px"], row["canvas_height_px"]) == (5760, 1080)
+    assert [i["duration_seconds"] for i in _items(client, h, wall["id"])] == [8]
+
+
+def test_transcode_refresh_writes_both_updates_in_one_transaction(client, monkeypatch):
+    oid, h = _org()
+    wall = _free_wall(client, h, oid, width=5760, height=1080, duration=19.2)
+    mid = wall["video"]["media_id"]
+    execute("UPDATE media SET width_px = 3840, height_px = 720 WHERE id = ?", (mid,))
+    real_execute = main.execute
+
+    def failing_second(sql, params=()):
+        if sql.startswith("UPDATE playlist_items"):
+            raise RuntimeError("boom")
+        return real_execute(sql, params)
+
+    monkeypatch.setattr(main, "execute", failing_second)
+    main._refresh_free_walls_for_media(mid)       # best effort: logged, never raised
+    monkeypatch.setattr(main, "execute", real_execute)
+    row = query_one("SELECT canvas_width_px FROM walls WHERE id = ?", (wall["id"],))
+    assert row["canvas_width_px"] == 5760         # the canvas write rolled back with it
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg (in the backend image)")
 def test_transcode_video_refreshes_free_walls_playing_it(client, tmp_path):
     oid, h = _org()
@@ -954,6 +999,31 @@ def test_bye_goes_out_once_the_cell_is_gone(client, monkeypatch):
                             (reason, _committed_cell(wall_id, row, col))))
     assert client.delete(f"/walls/{wid}/cells/0/1/pairing", headers=h).status_code == 204
     assert seen == [("cell_unpaired", None)]
+
+
+def test_a_second_unpair_of_a_gone_cell_sends_no_bye(client, monkeypatch):
+    """A double tap or a second phone: the other request removed the cell
+    between this one's first read and its locked re-read. The index may by now
+    belong to a new TV, which must not be told 'cell_unpaired'."""
+    oid, h = _org()
+    wid = _free_wall(client, h, oid)["id"]
+    assert _add_tv(client, h, wid).status_code == 201
+    seen = []
+    monkeypatch.setattr(walls_mod, "broadcast_bye",
+                        lambda wall_id, row, col, reason: seen.append((row, col)))
+    real_tx = main.transaction
+
+    def tx_after_a_rival_delete():
+        # The rival request commits its removal just before this one locks.
+        execute("DELETE FROM wall_cells WHERE wall_id = ? AND col_index = 1", (wid,))
+        return real_tx()
+
+    monkeypatch.setattr(main, "transaction", tx_after_a_rival_delete)
+    assert client.delete(f"/walls/{wid}/cells/0/1/pairing", headers=h).status_code == 204
+    assert seen == []
+    monkeypatch.undo()
+    # A plain repeat is still a 404 and sends nothing either.
+    assert client.delete(f"/walls/{wid}/cells/0/1/pairing", headers=h).status_code == 404
 
 
 # ---- Roles and subscription on the four new endpoints (spec Section 2) ----
