@@ -839,6 +839,55 @@ def test_canvas_item_edits_are_refused_on_free_walls(client):
     assert _items(client, h, wall["id"]) == [item]
 
 
+def test_generic_playlist_endpoints_refuse_a_free_walls_canvas_playlist(client):
+    """D8 also holds through the generic playlist endpoints. GET /playlists
+    lists the wall's 'Canvas: <name>' playlist like any other, and the old
+    Playlists page and the MCP playlist tools act on it by id: adding a second
+    item, deleting the one video or deleting the playlist would leave the wall
+    rotating an extra item through the TVs' boxes or playing nothing."""
+    oid, h = _org()
+    wall = _free_wall(client, h, oid)
+    pid = wall["spanned_playlist_id"]
+    [item] = _items(client, h, wall["id"])
+    for res in (
+        client.post(f"/playlists/{pid}/items", json={"media_id": _media(oid)}, headers=h),
+        client.delete(f"/playlists/{pid}/items/{item['id']}", headers=h),
+        client.delete(f"/playlists/{pid}", headers=h),
+    ):
+        assert res.status_code == 409, res.text
+        assert res.json()["detail"]["code"] == "wall.free_layout"
+    # Nothing changed: the same one item, the playlist still there and still the wall's.
+    assert _items(client, h, wall["id"]) == [item]
+    assert query_one("SELECT spanned_playlist_id FROM walls WHERE id = ?",
+                     (wall["id"],))["spanned_playlist_id"] == pid
+    assert query_one("SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ?",
+                     (pid,))["n"] == 1
+    # Reading it stays allowed, and PUT /video still swaps the one item.
+    assert client.get(f"/playlists/{pid}", headers=h).status_code == 200
+    new_mid = _media(oid, width=1920, height=1080, duration=12.5)
+    assert client.put(f"/walls/{wall['id']}/video", json={"media_id": new_mid},
+                      headers=h).status_code == 200
+    assert [i["media_id"] for i in _items(client, h, wall["id"])] == [new_mid]
+
+
+def test_generic_playlist_endpoints_still_edit_grid_walls_and_plain_playlists(client):
+    """The free-wall guard keys on a free wall pointing at the playlist: a grid
+    wall's canvas playlist and an ordinary playlist behave as before."""
+    oid, h = _org()
+    grid = _grid_wall(client, h)
+    pid = grid["spanned_playlist_id"]
+    added = client.post(f"/playlists/{pid}/items", json={"media_id": _media(oid)}, headers=h)
+    assert added.status_code == 200, added.text
+    res = client.delete(f"/playlists/{pid}/items/{added.json()['id']}", headers=h)
+    assert res.status_code == 200, res.text
+    plain = client.post("/playlists", json={"name": "Plain"}, headers=h).json()["id"]
+    added = client.post(f"/playlists/{plain}/items", json={"media_id": _media(oid)}, headers=h)
+    assert added.status_code == 200, added.text
+    assert client.delete(f"/playlists/{plain}/items/{added.json()['id']}",
+                         headers=h).status_code == 200
+    assert client.delete(f"/playlists/{plain}", headers=h).status_code == 200
+
+
 # ---- PATCH /walls/{id} and removing a TV ----
 
 

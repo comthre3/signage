@@ -4507,6 +4507,19 @@ def _refuse_free_wall_canvas_edit(wall: dict) -> None:
                          "change it with PUT /walls/{id}/video.")
 
 
+def _refuse_free_wall_playlist_edit(playlist_id: int) -> None:
+    """D8 through the generic playlist endpoints. GET /playlists lists a free
+    wall's 'Canvas: <name>' playlist like any other, and the Playlists page and
+    the MCP playlist tools act on it by id; adding or removing an item, or
+    deleting the playlist, would break 'one item, changed only by PUT /video'."""
+    wall = query_one(
+        "SELECT id, layout FROM walls WHERE spanned_playlist_id = ? AND layout = 'free'",
+        (playlist_id,),
+    )
+    if wall:
+        _refuse_free_wall_canvas_edit(wall)
+
+
 @app.get("/walls/{wall_id}/canvas-playlist")
 def get_canvas_playlist(
     wall_id: int,
@@ -4775,6 +4788,7 @@ def delete_playlist(
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
+    _refuse_free_wall_playlist_edit(playlist_id)
     execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
     execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
     execute("UPDATE screens SET playlist_id = NULL WHERE playlist_id = ?", (playlist_id,))
@@ -4816,6 +4830,7 @@ def add_playlist_item(
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
+    _refuse_free_wall_playlist_edit(playlist_id)
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
         (payload.media_id, oid),
@@ -5107,6 +5122,7 @@ def delete_playlist_item(
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
+    _refuse_free_wall_playlist_edit(playlist_id)
     item = query_one(
         "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, playlist_id),
