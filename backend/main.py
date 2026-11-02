@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.datastructures import Headers
 from starlette.responses import FileResponse, StreamingResponse
 import anyio
@@ -32,12 +32,14 @@ from slowapi.errors import RateLimitExceeded
 from billing import create_knet_request
 import ratelimit
 from db import advisory_lock, init_db, execute, query_all, query_one, transaction, utc_now_iso
+import media_probe
 import menu_render
 import menus as menus_domain
 from hibp import check_hibp_breach
 from email_utils import is_valid_email, send_via_resend
 from oauth import router as oauth_router
 from mcp_server import attach_mcp
+import wall_layout
 from walls import attach_walls
 
 logger = logging.getLogger("signage")
@@ -51,6 +53,11 @@ def transcode_video(input_path: str, media_id: int) -> None:
     load on signage clients. CRF 23 is visually lossless; +faststart puts the
     moov atom at the file head so the player starts immediately. Bitrate is
     capped at 12 Mbps to bound network use even on 4K source.
+
+    The long side is capped at media_probe.VIDEO_LONG_SIDE_MAX (3840 px): cheap
+    TV decoders often stop at 4096 px, and a video wall plays one file across
+    every TV. The cap can change the size, so the output is probed again and
+    the row gets the size and length of the file the TVs actually play.
     """
     if not shutil.which("ffmpeg"):
         logger.warning("ffmpeg not installed — skipping transcode for media %s", media_id)
@@ -59,6 +66,7 @@ def transcode_video(input_path: str, media_id: int) -> None:
     output_path = f"{base}.opt.mp4"
     cmd = [
         "ffmpeg", "-y", "-i", input_path,
+        "-vf", media_probe.TRANSCODE_SCALE_FILTER,
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "23",
@@ -86,9 +94,16 @@ def transcode_video(input_path: str, media_id: int) -> None:
         return
     new_filename = os.path.basename(output_path)
     new_size = os.path.getsize(output_path)
+    probed = media_probe.probe_media(output_path, "video/mp4")
+    # COALESCE: whatever this second probe cannot read keeps the upload's value.
     execute(
-        "UPDATE media SET filename = ?, mime_type = ?, size = ? WHERE id = ?",
-        (new_filename, "video/mp4", new_size, media_id),
+        "UPDATE media SET filename = ?, mime_type = ?, size = ?, "
+        "width_px = COALESCE(?::integer, width_px), "
+        "height_px = COALESCE(?::integer, height_px), "
+        "duration_seconds = COALESCE(?::real, duration_seconds) "
+        "WHERE id = ?",
+        (new_filename, "video/mp4", new_size,
+         probed["width_px"], probed["height_px"], probed["duration_seconds"], media_id),
     )
     if os.path.exists(input_path) and input_path != output_path:
         try:
@@ -96,6 +111,9 @@ def transcode_video(input_path: str, media_id: int) -> None:
         except OSError:
             pass
     logger.info("Transcoded media %s → %s (%d bytes)", media_id, new_filename, new_size)
+    # A free wall made while this ran was sized from the upload (5760x1080,
+    # say); the file it plays is now capped at 3840 px (3840x720).
+    _refresh_free_walls_for_media(media_id)
 
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
@@ -941,11 +959,48 @@ def sanitize_screen(screen: dict, include_token: bool = False) -> dict:
 def serialize_wall(wall: dict, include_cells: bool = True) -> dict:
     out = dict(wall)
     if include_cells:
-        out["cells"] = query_all(
+        cells = query_all(
             "SELECT * FROM wall_cells WHERE wall_id = ? ORDER BY row_index, col_index",
             (wall["id"],),
         )
+        online = _cell_online_map(wall["id"])
+        for cell in cells:
+            cell["online"] = online.get(cell["id"], False)
+        out["cells"] = cells
+    if wall.get("layout") == "free":
+        out["video"] = _free_wall_video(wall)
     return out
+
+
+def _cell_online_map(wall_id: int) -> dict:
+    """{cell id: whether its TV checked in within the last 90 s}. A wall TV
+    re-reads its content every 60 s, which keeps screens.last_seen fresh."""
+    rows = query_all(
+        "SELECT wc.id, s.last_seen FROM wall_cells wc "
+        "LEFT JOIN screens s ON s.id = wc.screen_id WHERE wc.wall_id = ?",
+        (wall_id,),
+    )
+    return {r["id"]: is_online(r["last_seen"]) for r in rows}
+
+
+def _free_wall_video(wall: dict) -> dict | None:
+    """The one item a free wall plays, as the phone's editor draws it."""
+    if not wall.get("spanned_playlist_id"):
+        return None
+    row = query_one(
+        """SELECT m.id, m.name, m.filename, m.mime_type, m.width_px, m.height_px
+           FROM playlist_items pi JOIN media m ON m.id = pi.media_id
+           WHERE pi.playlist_id = ?
+           ORDER BY pi.position ASC, pi.id ASC LIMIT 1""",
+        (wall["spanned_playlist_id"],),
+    )
+    if not row:
+        return None
+    return {
+        "media_id": row["id"], "name": row["name"],
+        "url": f"/uploads/{row['filename']}", "mime_type": row["mime_type"],
+        "width_px": row["width_px"], "height_px": row["height_px"],
+    }
 
 
 def cleanup_sessions() -> None:
@@ -3324,8 +3379,10 @@ class PairRequestStart(BaseModel):
     user_agent: str | None = Field(default=None, max_length=500)
 
 
+# Up to 8 TVs of one wall can sit behind one venue NAT (a single client IP),
+# each asking for a fresh code when its last one expires.
 @app.post("/screens/request_code")
-@limiter.limit("10/minute")
+@limiter.limit("30/minute")
 def request_pair_code(request: Request, payload: PairRequestStart | None = None) -> dict:
     now = datetime.now(timezone.utc)
     code = generate_unique_pair_code_v2()
@@ -3346,8 +3403,10 @@ def request_pair_code(request: Request, payload: PairRequestStart | None = None)
     }
 
 
+# The same 8 TVs each poll every 3 s while waiting to be scanned: 8 x 20 = 160
+# a minute, plus the phone's code checks (GET /screens/poll) from the same NAT.
 @app.get("/screens/poll/{code}")
-@limiter.limit("30/minute")
+@limiter.limit("240/minute")
 def poll_pair_code(request: Request, code: str) -> dict:
     row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (code,))
     if not row:
@@ -3594,6 +3653,17 @@ def patch_wall(wall_id: int, payload: WallUpdate,
         raise http_error(404, "wall.not_found", "Wall not found")
 
     fields = payload.model_dump(exclude_unset=True)
+    # A free wall's canvas is its video and its boxes are placed from the
+    # phone: mode, canvas and bezel settings mean nothing there, and a mode
+    # change would delete its canvas playlist. Values are compared, so a form
+    # that re-sends the unchanged ones can still rename the wall.
+    if wall.get("layout") == "free":
+        locked = ("mode", "mirrored_mode", "mirrored_playlist_id", "bezel_enabled",
+                  "bezel_h_pct", "bezel_v_pct", "canvas_width_px", "canvas_height_px")
+        if any(k in fields and fields[k] != wall.get(k) for k in locked):
+            raise http_error(409, "wall.free_layout",
+                             "A video wall set up from a phone keeps its layout; "
+                             "only its name can change here.")
     require_org_rows("playlists", [fields.get("mirrored_playlist_id")], org_id(user))
 
     # Mode change side effects: drop the outgoing mode's playlist reference,
@@ -3752,6 +3822,130 @@ def pair_wall_cell(wall_id: int, row: int, col: int,
             "expires_in_seconds": PAIR_CODE_TTL_SECONDS}
 
 
+# ---- Binding a TV to a wall cell ----
+#
+# Shared by /walls/cells/redeem (a TV typing a wall code) and the phone-driven
+# free-wall endpoints (a phone claiming the standalone code a TV shows in its
+# QR). Every caller holds one transaction and takes its locks in one order --
+# TV code claim, organization, wall, cells -- so concurrent requests queue
+# instead of deadlocking.
+
+
+def _tv_code_row_or_raise(code: str, now: datetime) -> dict:
+    """The pending standalone pairing code a TV is showing, or the refusal the
+    phone translates: unknown 404, already paired 409, expired 400.
+
+    Unlike /screens/claim, which re-binds a code to the screen it already
+    names, these callers have no screen yet, so any status but 'pending'
+    means another phone (or the Screens page) got there first.
+    """
+    row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (code,))
+    if not row:
+        raise http_error(404, "pair.code_unknown", "Pairing code not recognized.")
+    if row["status"] != "pending":
+        raise http_error(409, "pair.code_used", "This TV is already paired.")
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+    if now > expires_dt:
+        raise http_error(400, "pair.code_expired",
+                         "Pairing code expired. Ask the TV to show a new one.")
+    return row
+
+
+def _take_tv_code(row_id: int, now: datetime) -> None:
+    """Claim the code inside the caller's transaction.
+
+    The conditional UPDATE is /screens/claim's: of two phones claiming one TV
+    only one matches status 'pending', and the other gets 409. claimed_at is
+    tz-aware because /screens/poll compares it with an aware clock.
+    """
+    claimed = execute(
+        "UPDATE pairing_codes SET status = 'paired', claimed_at = ? "
+        "WHERE id = ? AND status = 'pending'",
+        (now.isoformat(), row_id),
+    )
+    if not claimed:
+        raise http_error(409, "pair.code_used", "This TV was just paired from another phone.")
+
+
+def _lock_org(oid: int) -> dict | None:
+    """Lock the organization row for the plan's screen-limit check.
+
+    Take it before any INSERT in the transaction: an INSERT that references
+    the organization takes a KEY SHARE lock on its row, and two requests that
+    each hold one and then ask for FOR UPDATE deadlock.
+    """
+    return query_one(
+        "SELECT id, screen_limit FROM organizations WHERE id = ? FOR UPDATE", (oid,)
+    )
+
+
+def _bind_screen_to_cell(wall: dict, cell: dict, org: dict | None, now: datetime,
+                         name: str) -> tuple[int, str]:
+    """Give the cell its screen and return (screen_id, screen_token).
+
+    A cell's screen is a screens row like any other, so a new one is subject
+    to the plan's screen_limit exactly as in create_screen. A cell that has a
+    screen reuses it and rotates its token, which unplugs the TV that held it,
+    instead of adding a second screen that would keep claiming the cell and
+    counting toward the limit. ``name`` names a new screen only.
+
+    Precondition: inside transaction(), with ``org`` locked by _lock_org.
+    """
+    oid = wall["organization_id"]
+    reuse = None
+    if cell["screen_id"]:
+        reuse = query_one(
+            "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+            (cell["screen_id"], oid),
+        )
+    # Screens an earlier re-pair left claiming this cell: their TVs lost
+    # the cell long ago, and they still count toward the limit.
+    execute(
+        "DELETE FROM screens WHERE wall_cell_id = ? AND id <> ?",
+        (cell["id"], reuse["id"] if reuse else 0),
+    )
+    pair_code = generate_unique_pair_code()
+    screen_token = generate_unique_token()
+    if reuse:
+        screen_id = reuse["id"]
+        execute(
+            "UPDATE screens SET token = ?, pair_code = ?, wall_cell_id = ? WHERE id = ?",
+            (screen_token, pair_code, cell["id"], screen_id),
+        )
+    else:
+        if org:
+            count_row = query_one(
+                "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?", (oid,)
+            )
+            current = int(count_row["n"] if count_row else 0)
+            limit = int(org["screen_limit"])
+            if current >= limit:
+                raise http_error(
+                    402,
+                    "plan_limit",
+                    f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+                )
+        screen_id = execute(
+            """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (oid, name, pair_code, screen_token, now.isoformat()),
+        )
+        execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
+    execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
+    return screen_id, screen_token
+
+
+def _attach_tv_code(row_id: int, screen_id: int) -> None:
+    """Point a claimed code at its new screen, so the TV's next poll collects
+    the token. Do it in the same transaction as _take_tv_code: a poll that
+    sees 'paired' with no screen answers 'expired', and the TV drops its code.
+    """
+    execute("UPDATE pairing_codes SET screen_id = ? WHERE id = ?", (screen_id, row_id))
+
+
 @app.post("/walls/cells/redeem")
 @limiter.limit("30/minute")
 def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
@@ -3798,9 +3992,7 @@ def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
         )
         if not claimed:
             raise http_error(409, "wall.pair_code_used", "This code was already used")
-        org = query_one(
-            "SELECT id, screen_limit FROM organizations WHERE id = ? FOR UPDATE", (oid,)
-        )
+        org = _lock_org(oid)
         cell = query_one(
             "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ? "
             "FOR UPDATE",
@@ -3808,47 +4000,10 @@ def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
         )
         if not cell:
             raise http_error(404, "wall.cell_not_found", "Cell not found")
-        reuse = None
-        if cell["screen_id"]:
-            reuse = query_one(
-                "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
-                (cell["screen_id"], oid),
-            )
-        # Screens an earlier re-pair left claiming this cell: their TVs lost
-        # the cell long ago, and they still count toward the limit.
-        execute(
-            "DELETE FROM screens WHERE wall_cell_id = ? AND id <> ?",
-            (cell["id"], reuse["id"] if reuse else 0),
+        _screen_id, screen_token = _bind_screen_to_cell(
+            wall, cell, org, now,
+            f"Wall {wall['name']} ({row['row_index']},{row['col_index']})",
         )
-        pair_code = generate_unique_pair_code()
-        screen_token = generate_unique_token()
-        if reuse:
-            screen_id = reuse["id"]
-            execute(
-                "UPDATE screens SET token = ?, pair_code = ?, wall_cell_id = ? WHERE id = ?",
-                (screen_token, pair_code, cell["id"], screen_id),
-            )
-        else:
-            if org:
-                count_row = query_one(
-                    "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?", (oid,)
-                )
-                current = int(count_row["n"] if count_row else 0)
-                limit = int(org["screen_limit"])
-                if current >= limit:
-                    raise http_error(
-                        402,
-                        "plan_limit",
-                        f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
-                    )
-            name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
-            screen_id = execute(
-                """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (oid, name, pair_code, screen_token, now.isoformat()),
-            )
-            execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
-        execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
     return {
         "status": "paired",
         "screen_token": screen_token,
@@ -3873,25 +4028,456 @@ def unpair_wall_cell(wall_id: int, row: int, col: int,
     )
     if not cell:
         raise http_error(404, "wall.cell_not_found", "Cell not found")
-    if cell["screen_id"]:
-        # The screen was created by redeem for this cell alone, and its TV is
-        # about to be told "bye" (it forgets the token and shows a pairing
-        # code). Kept, the row would have no device yet still count toward the
-        # plan's screen limit, so each unpair/re-pair leaked a screen.
-        execute(
-            "DELETE FROM screens WHERE id = ? AND organization_id = ? AND wall_cell_id = ?",
-            (cell["screen_id"], wall["organization_id"], cell["id"]),
-        )
-        execute("UPDATE screens SET wall_cell_id = NULL WHERE id = ?", (cell["screen_id"],))
-    execute("UPDATE wall_cells SET screen_id = NULL WHERE id = ?", (cell["id"],))
+    if wall.get("layout") == "free":
+        # A free wall's cell exists only for its TV (POST /walls/{id}/tvs made
+        # both), so removing the TV removes the cell. Its index, and with it the
+        # "TV n" label, is free for the next TV, and cols follows the highest
+        # index left (at least 1: walls.cols is CHECKed 1..8). The wall row is
+        # locked, as /tvs locks it, so a TV joining meanwhile sees a
+        # consistent set of cells. The wall itself stays, even with no TV
+        # left (R18).
+        with transaction():
+            query_one("SELECT id FROM walls WHERE id = ? FOR UPDATE", (wall_id,))
+            cell = query_one("SELECT * FROM wall_cells WHERE id = ?", (cell["id"],))
+            if not cell:
+                # A double tap, or two phones: the other request already
+                # removed it. Nothing changed here, and no bye either -- the
+                # index may meanwhile belong to a new TV that must not be told
+                # to forget its token.
+                return None
+            if cell["screen_id"]:
+                execute(
+                    "DELETE FROM screens WHERE id = ? AND organization_id = ? "
+                    "AND wall_cell_id = ?",
+                    (cell["screen_id"], wall["organization_id"], cell["id"]),
+                )
+            execute("DELETE FROM wall_cells WHERE id = ?", (cell["id"],))
+            execute(
+                """UPDATE walls
+                      SET cols = GREATEST(1, COALESCE(
+                              (SELECT MAX(col_index) + 1 FROM wall_cells
+                                WHERE wall_id = ?), 1)),
+                          updated_at = ?
+                    WHERE id = ?""",
+                (wall_id, utc_now_iso(), wall_id),
+            )
+    else:
+        if cell["screen_id"]:
+            # The screen was created by redeem for this cell alone, and its TV is
+            # about to be told "bye" (it forgets the token and shows a pairing
+            # code). Kept, the row would have no device yet still count toward the
+            # plan's screen limit, so each unpair/re-pair leaked a screen.
+            execute(
+                "DELETE FROM screens WHERE id = ? AND organization_id = ? AND wall_cell_id = ?",
+                (cell["screen_id"], wall["organization_id"], cell["id"]),
+            )
+            execute("UPDATE screens SET wall_cell_id = NULL WHERE id = ?", (cell["screen_id"],))
+        execute("UPDATE wall_cells SET screen_id = NULL WHERE id = ?", (cell["id"],))
     # Reaches the TV directly when its socket is on this worker; otherwise the
-    # wall's tick loop on the worker holding it notices within seconds.
+    # wall's tick loop on the worker holding it notices within seconds. Only
+    # after the removal has committed (R5): the tick loop re-reads the cells.
     try:
         from walls import broadcast_bye  # type: ignore
         broadcast_bye(wall_id, row, col, "cell_unpaired")
     except Exception:
         logger.exception("wall_bye_failed wall_id=%s cell=%s,%s", wall_id, row, col)
     return None
+
+
+# ---- Free walls: video walls set up from a phone ----
+#
+# A free wall (layout 'free', always mode 'spanned') is built TV by TV from a
+# phone standing in front of the screens. Its canvas is its one video, and
+# each TV's portion is a box placed by hand, stored in wall_cells.place_* as
+# fractions of the canvas. A cell exists only while a TV holds it: row 0,
+# col_index the lowest free 0..7, and walls.cols = highest used index + 1, so
+# code that walks range(cols) still finds every cell.
+
+
+class FreeWallCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    media_id: int
+    code: str = Field(..., min_length=PAIR_CODE_LENGTH, max_length=PAIR_CODE_LENGTH)
+
+
+class WallTvAdd(BaseModel):
+    code: str = Field(..., min_length=PAIR_CODE_LENGTH, max_length=PAIR_CODE_LENGTH)
+
+
+def _free_wall_or_404(wall_id: int, oid: int) -> dict:
+    wall = query_one("SELECT * FROM walls WHERE id = ? AND organization_id = ?",
+                     (wall_id, oid))
+    if not wall:
+        raise http_error(404, "wall.not_found", "Wall not found")
+    if wall.get("layout") != "free":
+        raise http_error(409, "wall.not_free", "This wall was not set up from a phone.")
+    return wall
+
+
+def _free_wall_media_or_raise(media_id: int, oid: int) -> dict:
+    """The organization's image or video. Stricter than the canvas playlist's
+    _is_allowed_canvas_mime, which also takes PDFs: a free wall's canvas is
+    the picture itself."""
+    media = query_one("SELECT * FROM media WHERE id = ? AND organization_id = ?",
+                      (media_id, oid))
+    if not media:
+        raise http_error(404, "media.not_found", "Media not found")
+    if _media_class(media["mime_type"] or "") not in ("image", "video"):
+        raise http_error(400, "wall.media_type_blocked",
+                         "A video wall plays one video or image.")
+    return media
+
+
+def _lock_free_wall_media(media_id: int, oid: int) -> dict:
+    """The media row read again FOR SHARE, inside the caller's transaction.
+
+    The canvas size and the item's length come from this read. A transcode
+    finishing meanwhile stores the new size with an UPDATE that waits for this
+    commit, and only then runs _refresh_free_walls_for_media (D3), which then
+    finds the wall. Read before the transaction, the size could be the
+    upload's while the refresh has already run and missed the new wall.
+    """
+    media = query_one("SELECT * FROM media WHERE id = ? AND organization_id = ? FOR SHARE",
+                      (media_id, oid))
+    if not media:
+        raise http_error(404, "media.not_found", "Media not found")
+    return media
+
+
+def _free_wall_item_seconds(media: dict) -> int:
+    """How long a free wall's single item lasts: the video's probed length,
+    so every loop restarts it on all TVs together. playlist_items stores whole
+    seconds. Images, and videos whose length is unknown, hold for 10 s."""
+    duration = media.get("duration_seconds")
+    if (_media_class(media.get("mime_type") or "") == "video"
+            and isinstance(duration, (int, float))
+            and math.isfinite(duration) and duration > 0):
+        return max(1, math.ceil(duration))
+    return 10
+
+
+@app.post("/walls/free", status_code=201)
+@limiter.limit("30/minute")
+def create_free_wall(request: Request, payload: FreeWallCreate,
+                     user: dict = Depends(require_roles("admin", "editor")),
+                     _sub: dict = Depends(require_active_subscription)) -> dict:
+    """Start a video wall from a phone: the wall, its video and its first TV.
+
+    ``code`` is the standalone pairing code the first TV shows in its QR. One
+    transaction claims it, creates the wall (canvas = the media's size, or
+    3840x2160 when unknown), its canvas playlist with the one item, and cell
+    (0, 0) with the TV's screen, then points the code at that screen so the
+    TV's next poll collects its token. A refused code, the wrong media or a
+    full plan leaves nothing behind, and the code keeps working. The limit
+    (R4) caps a script guessing codes: any pending TV code can be claimed.
+    """
+    oid = org_id(user)
+    now = datetime.now(timezone.utc)
+    code_row = _tv_code_row_or_raise(payload.code, now)
+    _free_wall_media_or_raise(payload.media_id, oid)    # refuse early, before any lock
+    stamp = now.isoformat()
+    with transaction():
+        _take_tv_code(code_row["id"], now)
+        org = _lock_org(oid)
+        media = _lock_free_wall_media(payload.media_id, oid)
+        canvas_w, canvas_h = wall_layout.canvas_size_for(media.get("width_px"),
+                                                         media.get("height_px"))
+        box = wall_layout.first_box(canvas_w, canvas_h)
+        playlist_id = execute(
+            "INSERT INTO playlists (organization_id, name, kind, created_at) "
+            "VALUES (?, ?, 'wall_canvas', ?)",
+            (oid, f"Canvas: {payload.name}", stamp),
+        )
+        wall_id = execute(
+            """INSERT INTO walls (organization_id, name, mode, layout, rows, cols,
+                   canvas_width_px, canvas_height_px, bezel_enabled,
+                   bezel_h_pct, bezel_v_pct, spanned_playlist_id,
+                   created_at, updated_at)
+               VALUES (?, ?, 'spanned', 'free', 1, 1, ?, ?, false, 0, 0, ?, ?, ?)""",
+            (oid, payload.name, canvas_w, canvas_h, playlist_id, stamp, stamp),
+        )
+        execute(
+            """INSERT INTO playlist_items
+                   (playlist_id, media_id, position, duration_seconds,
+                    duration_override_seconds, fit_mode, created_at)
+               VALUES (?, ?, 0, ?, NULL, 'fit', ?)""",
+            (playlist_id, media["id"], _free_wall_item_seconds(media), stamp),
+        )
+        cell_id = execute(
+            """INSERT INTO wall_cells (wall_id, row_index, col_index,
+                   place_x, place_y, place_w, place_h, created_at)
+               VALUES (?, 0, 0, ?, ?, ?, ?, ?)""",
+            (wall_id, box["x"], box["y"], box["w"], box["h"], stamp),
+        )
+        wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+        cell = query_one("SELECT * FROM wall_cells WHERE id = ?", (cell_id,))
+        screen_id, _token = _bind_screen_to_cell(wall, cell, org, now,
+                                                 f"{wall['name']} · TV 1")
+        _attach_tv_code(code_row["id"], screen_id)
+    audit(request, action="wall.create", actor=user,
+          target_type="wall", target_id=wall_id,
+          details={"name": payload.name, "mode": "spanned", "layout": "free",
+                   "media_id": media["id"]})
+    return serialize_wall(wall)
+
+
+@app.post("/walls/{wall_id}/tvs", status_code=201)
+@limiter.limit("30/minute")
+def add_wall_tv(request: Request, wall_id: int, payload: WallTvAdd,
+                user: dict = Depends(require_roles("admin", "editor")),
+                _sub: dict = Depends(require_active_subscription)) -> dict:
+    """Add the TV showing ``code`` to a free wall, at its lowest free index.
+
+    Its first box has the height of the most recently added TV's box in the
+    default 16:9 shape (R3), flush to that box's right edge and top-aligned:
+    for identical 16:9 TVs that is the previous box's size, and next to a TV
+    refit to portrait it is still 16:9, so this TV's own screen report can
+    refit it. If less than 5% of it would then be on the video, it moves back
+    until 5% is. The wall row is locked before the index is chosen, after the
+    organization (the order every wall transaction uses), so two phones
+    adding TVs at once get different indexes rather than a unique-constraint
+    500. Rate-limited like POST /walls/free (R4).
+    """
+    oid = org_id(user)
+    now = datetime.now(timezone.utc)
+    _free_wall_or_404(wall_id, oid)
+    code_row = _tv_code_row_or_raise(payload.code, now)
+    stamp = now.isoformat()
+    with transaction():
+        _take_tv_code(code_row["id"], now)
+        org = _lock_org(oid)
+        wall = query_one(
+            "SELECT * FROM walls WHERE id = ? AND organization_id = ? FOR UPDATE",
+            (wall_id, oid),
+        )
+        if not wall:
+            raise http_error(404, "wall.not_found", "Wall not found")
+        # A screen deleted from the Screens page leaves its cell behind with no
+        # screen (ON DELETE SET NULL): a box with no TV, holding its index
+        # forever. Clear such cells before choosing.
+        execute("DELETE FROM wall_cells WHERE wall_id = ? AND screen_id IS NULL", (wall_id,))
+        cells = query_all("SELECT * FROM wall_cells WHERE wall_id = ? ORDER BY id", (wall_id,))
+        index = wall_layout.lowest_free_index({c["col_index"] for c in cells})
+        if index is None:
+            raise http_error(409, "wall.full",
+                             f"A video wall holds up to {wall_layout.MAX_TVS} TVs.")
+        placed = [c for c in cells
+                  if None not in (c["place_x"], c["place_y"], c["place_w"], c["place_h"])]
+        canvas_w, canvas_h = wall_layout.canvas_size_for(wall["canvas_width_px"],
+                                                         wall["canvas_height_px"])
+        if placed:
+            last = placed[-1]          # cells are in id order: the most recently added
+            box = wall_layout.next_box({"x": last["place_x"], "y": last["place_y"],
+                                        "w": last["place_w"], "h": last["place_h"]},
+                                       canvas_w, canvas_h)
+        else:
+            box = wall_layout.first_box(canvas_w, canvas_h)
+        cell_id = execute(
+            """INSERT INTO wall_cells (wall_id, row_index, col_index,
+                   place_x, place_y, place_w, place_h, created_at)
+               VALUES (?, 0, ?, ?, ?, ?, ?, ?)""",
+            (wall_id, index, box["x"], box["y"], box["w"], box["h"], stamp),
+        )
+        cols = max([c["col_index"] for c in cells] + [index]) + 1
+        execute("UPDATE walls SET cols = ?, updated_at = ? WHERE id = ?",
+                (cols, stamp, wall_id))
+        cell = query_one("SELECT * FROM wall_cells WHERE id = ?", (cell_id,))
+        screen_id, _token = _bind_screen_to_cell(wall, cell, org, now,
+                                                 f"{wall['name']} · TV {index + 1}")
+        _attach_tv_code(code_row["id"], screen_id)
+    audit(request, action="wall.tv_add", actor=user,
+          target_type="wall", target_id=wall_id,
+          details={"col_index": index, "screen_id": screen_id})
+    out = query_one("SELECT * FROM wall_cells WHERE id = ?", (cell_id,))
+    out["online"] = _cell_online_map(wall_id).get(cell_id, False)
+    return out
+
+
+def _refresh_free_walls_for_media(media_id: int) -> None:
+    """Size the free walls that play this media to the file they now play.
+
+    Called when transcode_video finishes (D3). POST /walls/free usually runs
+    before that, so the canvas came from the upload's probe (5760x1080, say),
+    while the transcoded file is capped at 3840 px (3840x720). The item's
+    length likewise came from the original. Boxes are fractions of the canvas,
+    so they keep their place. Grid walls are not touched. Best effort: a
+    failure is logged and never undoes the finished transcode.
+    """
+    try:
+        media = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
+        if not media:
+            return
+        # One transaction, and the walls UPDATE re-checks inside the statement
+        # that the wall's playlist still holds this media: a PUT /walls/{id}/video
+        # that swapped the wall to another video meanwhile must not get this
+        # file's canvas size written onto it (every box is a fraction of the
+        # canvas, and nothing would repair the crop).
+        with transaction():
+            if media.get("width_px") and media.get("height_px"):
+                canvas_w, canvas_h = wall_layout.canvas_size_for(media["width_px"],
+                                                                 media["height_px"])
+                execute(
+                    "UPDATE walls SET canvas_width_px = ?, canvas_height_px = ?, updated_at = ? "
+                    "WHERE layout = 'free' AND EXISTS ("
+                    "SELECT 1 FROM playlist_items pi "
+                    "WHERE pi.playlist_id = walls.spanned_playlist_id AND pi.media_id = ?)",
+                    (canvas_w, canvas_h, utc_now_iso(), media_id),
+                )
+            execute(
+                "UPDATE playlist_items SET duration_seconds = ? "
+                "WHERE media_id = ? AND playlist_id IN ("
+                "SELECT spanned_playlist_id FROM walls WHERE layout = 'free')",
+                (_free_wall_item_seconds(media), media_id),
+            )
+    except Exception:
+        logger.exception("free_wall_refresh_failed media_id=%s", media_id)
+
+
+class WallPlacement(BaseModel):
+    # Plain floats (ruling R2): wall_layout.validate_box decides -- finite,
+    # 0 < w <= 4, 0 < h <= 4 and at least 5% on the video -- so every refusal
+    # is 422 wall.placement_invalid, the code the phone translates.
+    x: float
+    y: float
+    w: float
+    h: float
+    highlight: bool = True
+
+    @field_validator("x", "y", "w", "h", mode="before")
+    @classmethod
+    def _int_beyond_float_range(cls, value):
+        # Pydantic refuses a JSON integer too big for a float with its own
+        # list-detail 422. As an infinity it reaches validate_box and gets
+        # the same code as any other box that is not on the video.
+        if isinstance(value, int) and not isinstance(value, bool):
+            try:
+                return float(value)
+            except OverflowError:
+                return math.inf if value > 0 else -math.inf
+        return value
+
+
+class WallVideoUpdate(BaseModel):
+    media_id: int
+
+
+@app.put("/walls/{wall_id}/cells/{row}/{col}/placement", status_code=204)
+@limiter.limit("1800/minute")
+def put_wall_placement(request: Request, wall_id: int, row: int, col: int,
+                       payload: WallPlacement,
+                       user: dict = Depends(require_roles("admin", "editor")),
+                       _sub: dict = Depends(require_active_subscription)) -> None:
+    """Move or resize one TV's box while the phone drags it.
+
+    The phone keeps one request in flight and sends the newest box when it
+    returns, so a drag runs this several times a second: two short reads and
+    one UPDATE, with no transaction and no audit. Once the TV has reported its
+    screen size, the stored box is the requested one in the TV's shape (same
+    width and centre, R8), so a phone that has not seen the report yet cannot
+    stretch the picture. The TV hears of it through publish_geometry (Redis,
+    to whichever worker holds its socket), or from that worker's tick loop
+    within 5 s when Redis is down. ``highlight`` outlines the TV and shows its
+    number for HIGHLIGHT_SECONDS after the last move; the phone sends false on
+    Done, which clears it at once.
+    """
+    import walls as walls_mod
+
+    wall = _free_wall_or_404(wall_id, org_id(user))
+    cell = query_one(
+        "SELECT id, screen_w_px, screen_h_px FROM wall_cells "
+        "WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, row, col),
+    )
+    if not cell:
+        raise http_error(404, "wall.cell_not_found", "Cell not found")
+    box = {"x": payload.x, "y": payload.y, "w": payload.w, "h": payload.h}
+    # Validate what the phone sent first: fit_box_to_screen nudges a box back
+    # onto the video, which would turn an invalid request into a valid one.
+    if not wall_layout.validate_box(box):
+        raise http_error(422, "wall.placement_invalid",
+                         "At least 5% of the TV's box must be on the video.")
+    if cell["screen_w_px"] and cell["screen_h_px"]:
+        canvas_w, canvas_h = wall_layout.canvas_size_for(wall["canvas_width_px"],
+                                                         wall["canvas_height_px"])
+        box = wall_layout.fit_box_to_screen(box, cell["screen_w_px"], cell["screen_h_px"],
+                                            canvas_w, canvas_h)
+        if not wall_layout.validate_box(box):
+            raise http_error(422, "wall.placement_invalid",
+                             "At least 5% of the TV's box must be on the video.")
+    highlight_until_ms = (
+        (walls_mod.now_ms() + walls_mod.HIGHLIGHT_SECONDS * 1000) if payload.highlight else None
+    )
+    updated = execute(
+        "UPDATE wall_cells SET place_x = ?, place_y = ?, place_w = ?, place_h = ?, "
+        "highlight_until_ms = ? WHERE id = ?",
+        (box["x"], box["y"], box["w"], box["h"], highlight_until_ms, cell["id"]),
+    )
+    if not updated:
+        raise http_error(404, "wall.cell_not_found", "Cell not found")
+    # The UPDATE ran in autocommit, so it has committed: the local push and
+    # the other workers re-read the box from the database (R5).
+    walls_mod.publish_geometry(wall_id, row, col)
+    return None
+
+
+@app.put("/walls/{wall_id}/video")
+def put_wall_video(request: Request, wall_id: int, payload: WallVideoUpdate,
+                   user: dict = Depends(require_roles("admin", "editor")),
+                   _sub: dict = Depends(require_active_subscription)) -> dict:
+    """Swap a free wall's video.
+
+    The canvas takes the new media's size, and the boxes keep their fractions,
+    so each TV shows the same part of the new picture. The tick loop's config
+    check re-sends hello when the size changed. The item is deleted and
+    re-inserted rather than updated: its new id makes the TVs switch at their
+    next tick even when the new video has the old one's size and length (D8).
+    """
+    oid = org_id(user)
+    _free_wall_or_404(wall_id, oid)
+    _free_wall_media_or_raise(payload.media_id, oid)    # refuse early, before any lock
+    stamp = utc_now_iso()
+    with transaction():
+        # Same lock order as /tvs (organization, then wall). Recreating a
+        # missing canvas playlist below INSERTs a row that references the
+        # organization.
+        _lock_org(oid)
+        wall = query_one(
+            "SELECT * FROM walls WHERE id = ? AND organization_id = ? FOR UPDATE",
+            (wall_id, oid),
+        )
+        if not wall:
+            raise http_error(404, "wall.not_found", "Wall not found")
+        # Size and length from a FOR SHARE read: a transcode finishing now
+        # waits for this commit, and its refresh (D3) then finds this wall.
+        media = _lock_free_wall_media(payload.media_id, oid)
+        canvas_w, canvas_h = wall_layout.canvas_size_for(media.get("width_px"),
+                                                         media.get("height_px"))
+        playlist_id = wall.get("spanned_playlist_id")
+        if not playlist_id:
+            # Its canvas playlist was deleted (walls.spanned_playlist_id is
+            # ON DELETE SET NULL): give the wall a new one.
+            playlist_id = execute(
+                "INSERT INTO playlists (organization_id, name, kind, created_at) "
+                "VALUES (?, ?, 'wall_canvas', ?)",
+                (oid, f"Canvas: {wall['name']}", stamp),
+            )
+        execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
+        execute(
+            """INSERT INTO playlist_items
+                   (playlist_id, media_id, position, duration_seconds,
+                    duration_override_seconds, fit_mode, created_at)
+               VALUES (?, ?, 0, ?, NULL, 'fit', ?)""",
+            (playlist_id, media["id"], _free_wall_item_seconds(media), stamp),
+        )
+        execute(
+            "UPDATE walls SET canvas_width_px = ?, canvas_height_px = ?, "
+            "spanned_playlist_id = ?, updated_at = ? WHERE id = ?",
+            (canvas_w, canvas_h, playlist_id, stamp, wall_id),
+        )
+    audit(request, action="wall.video", actor=user,
+          target_type="wall", target_id=wall_id,
+          details={"media_id": media["id"]})
+    return serialize_wall(query_one("SELECT * FROM walls WHERE id = ?", (wall_id,)))
 
 
 # ---- Spanned-mode canvas playlists ----
@@ -3916,6 +4502,28 @@ def _load_spanned_wall_or_404(wall_id: int, owner_org_id: int) -> dict:
     if wall["mode"] != "spanned" or not wall.get("spanned_playlist_id"):
         raise http_error(404, "wall.not_spanned", "Wall is not spanned.")
     return wall
+
+
+def _refuse_free_wall_canvas_edit(wall: dict) -> None:
+    """A free wall's canvas playlist is its one video (D8): only
+    PUT /walls/{id}/video changes it. Reading it stays allowed."""
+    if wall.get("layout") == "free":
+        raise http_error(409, "wall.free_layout",
+                         "A video wall set up from a phone plays one video; "
+                         "change it with PUT /walls/{id}/video.")
+
+
+def _refuse_free_wall_playlist_edit(playlist_id: int) -> None:
+    """D8 through the generic playlist endpoints. GET /playlists lists a free
+    wall's 'Canvas: <name>' playlist like any other, and the Playlists page and
+    the MCP playlist tools act on it by id; adding or removing an item, or
+    deleting the playlist, would break 'one item, changed only by PUT /video'."""
+    wall = query_one(
+        "SELECT id, layout FROM walls WHERE spanned_playlist_id = ? AND layout = 'free'",
+        (playlist_id,),
+    )
+    if wall:
+        _refuse_free_wall_canvas_edit(wall)
 
 
 @app.get("/walls/{wall_id}/canvas-playlist")
@@ -3953,6 +4561,7 @@ def add_canvas_item(
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
+    _refuse_free_wall_canvas_edit(wall)
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
         (payload.media_id, principal.organization_id),
@@ -3995,6 +4604,7 @@ def patch_canvas_item(
     _sub: dict = Depends(require_active_subscription),
 ) -> dict:
     wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
+    _refuse_free_wall_canvas_edit(wall)
     item = query_one(
         "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, wall["spanned_playlist_id"]),
@@ -4019,6 +4629,7 @@ def delete_canvas_item(
     _sub: dict = Depends(require_active_subscription),
 ) -> None:
     wall = _load_spanned_wall_or_404(wall_id, principal.organization_id)
+    _refuse_free_wall_canvas_edit(wall)
     execute(
         "DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, wall["spanned_playlist_id"]),
@@ -4183,6 +4794,7 @@ def delete_playlist(
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
+    _refuse_free_wall_playlist_edit(playlist_id)
     execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
     execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
     execute("UPDATE screens SET playlist_id = NULL WHERE playlist_id = ?", (playlist_id,))
@@ -4195,11 +4807,11 @@ def _default_duration_seconds(media: dict) -> int:
     if mime.startswith("image/"):
         return 10
     if mime.startswith("video/"):
-        # forward-hook: media table has no duration_seconds column yet,
-        # so this currently always falls through to the 10s default.
-        stored = media.get("duration_seconds")
-        if isinstance(stored, (int, float)) and stored > 0:
-            return max(1, math.ceil(stored))
+        # Not media.duration_seconds, although uploads now store the probed
+        # length: standalone playlists keep the 10 s default they always had
+        # (a probed two-hour video would otherwise get a 7200 s item, past
+        # PlaylistItemCreate's own 3600 s cap). Only a free video wall's one
+        # canvas item plays for the probed length.
         return 10
     if mime == "application/pdf":
         return 30
@@ -4224,6 +4836,7 @@ def add_playlist_item(
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
+    _refuse_free_wall_playlist_edit(playlist_id)
     media = query_one(
         "SELECT * FROM media WHERE id = ? AND organization_id = ?",
         (payload.media_id, oid),
@@ -4515,6 +5128,7 @@ def delete_playlist_item(
     )
     if not playlist:
         raise HTTPException(status_code=404, detail="Playlist not found")
+    _refuse_free_wall_playlist_edit(playlist_id)
     item = query_one(
         "SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?",
         (item_id, playlist_id),
@@ -4605,11 +5219,16 @@ async def upload_media(
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as f:
         f.write(contents)
+    # Size and length before answering: a free video wall's canvas is its
+    # video's size. In a worker thread, since ffprobe may take up to 20 s and
+    # this worker's event loop also carries the wall sockets.
+    probed = await anyio.to_thread.run_sync(media_probe.probe_media, file_path, content_type)
 
     media_id = execute(
         """
-        INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO media (organization_id, name, filename, mime_type, size, created_at,
+                           width_px, height_px, duration_seconds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             principal.organization_id,
@@ -4618,9 +5237,15 @@ async def upload_media(
             content_type,
             len(contents),
             utc_now_iso(),
+            probed["width_px"],
+            probed["height_px"],
+            probed["duration_seconds"],
         ),
     )
-    if content_type.startswith("video"):
+    # _media_class, not startswith("video"): the stored claim keeps the
+    # client's case, and a "VIDEO/MP4" upload must still be transcoded (and
+    # capped at 3840 px).
+    if _media_class(content_type) == "video":
         background_tasks.add_task(transcode_video, file_path, media_id)
     item = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
     item["url"] = f"/uploads/{item['filename']}"
@@ -4664,6 +5289,11 @@ def delete_media(
     )
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")
+    # Decision (final review, PR 1): deleting the video of a free wall empties
+    # its one-item canvas playlist, as it does any playlist; the wall reads
+    # video=null and PUT /walls/{id}/video recovers it. Not blocked here. PR 2
+    # must handle video=null in the editor and warn on delete when a wall uses
+    # the file.
     file_path = os.path.join(UPLOAD_DIR, media["filename"])
     if os.path.exists(file_path):
         os.remove(file_path)

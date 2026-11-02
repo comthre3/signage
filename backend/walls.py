@@ -16,6 +16,13 @@ other workers must agree on:
   re-reading the cell bindings from Postgres, so a "bye" reaches the TV no
   matter which worker handled the REST call. ``broadcast_bye`` remains the
   fast path when the socket happens to live on the same worker.
+* A free wall's box moves (a phone dragging one TV's crop) must arrive well
+  inside the tick interval, so they also travel by Redis pub/sub:
+  ``publish_geometry`` pushes to a local socket and publishes, and each
+  worker holding a free-wall TV runs a ``_geometry_subscriber`` that pushes
+  to the sockets it holds (grid walls never start one). Redis is
+  only the fast path: the tick loop compares each cell's stored box with what
+  its TV was last sent, so every move still arrives if Redis is down.
 """
 
 import asyncio
@@ -29,6 +36,8 @@ from typing import Dict, Optional, Tuple
 import anyio
 from fastapi import APIRouter, FastAPI, Query, WebSocket, WebSocketDisconnect
 
+import ratelimit
+import wall_layout
 from db import query_one, query_all, execute, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -45,6 +54,12 @@ _tick_tasks: Dict[int, asyncio.Task] = {}
 _background: set = set()
 # The event loop serving this worker's sockets, for callers on other threads.
 _server_loop: Optional[asyncio.AbstractEventLoop] = None
+# WebSocket -> _geom_sig of the box it was last sent (in hello or geometry).
+# One record per socket, shared by the connect hello, the tick-loop fallback,
+# the Redis subscriber and the screen handler, so none repeats another.
+_geom_sent: Dict[object, tuple] = {}
+# This worker's Redis geometry subscriber (see _ensure_geometry_subscriber).
+_geometry_task: Optional[asyncio.Task] = None
 
 # An item with no usable duration (NULL, 0, negative) still holds its slot for
 # this long; a 0s slot would make the tick loop rebroadcast in a tight loop.
@@ -59,6 +74,24 @@ TICK_ERROR_BACKOFF_S = 2.0
 PING_INTERVAL_MS = 25_000
 # Every worker anchors timelines here, which is what makes them agree.
 TIMELINE_EPOCH_MS = 0
+# A placed TV shows its outline and number until this long after the phone's
+# last move: main's placement PUT stores now + HIGHLIGHT_SECONDS in
+# wall_cells.highlight_until_ms, so every worker and a reconnecting TV agree.
+# Frames carry that deadline as stored. Nothing is sent when it passes: the
+# TV hides the outline on its own timer, against the server clock.
+HIGHLIGHT_SECONDS = 30
+# Redis pub/sub channel for "the box of free-wall cell (row, col) changed";
+# geometry_channel() appends REDIS_URL's logical database.
+GEOMETRY_CHANNEL_BASE = "khan:wall-geometry"
+# The geometry subscriber's wait for one message, and its reconnect backoff.
+GEOMETRY_POLL_S = 5.0
+GEOMETRY_RETRY_MIN_S = 1.0
+GEOMETRY_RETRY_MAX_S = 30.0
+# A TV's reported viewport ("screen" message) is clamped to this, in CSS px.
+SCREEN_MIN_PX = 100
+SCREEN_MAX_PX = 10000
+# A TV whose shape is within this of its box's shape keeps the box as it is.
+SCREEN_SHAPE_TOLERANCE = 0.01
 
 
 def now_ms() -> int:
@@ -91,7 +124,17 @@ def _hello_frame(wall: dict, cell: dict, current_play: dict | None) -> dict:
         "current_play": current_play,
         "server_now_ms": now_ms(),
     }
-    if wall["mode"] == "spanned":
+    if _is_free_box(wall, cell):
+        # A free wall: the TV shows its own box, placed from a phone, so its
+        # geometry never depends on rows/cols. Bezel gaps are left by placing
+        # the boxes, never computed.
+        cw, ch = _free_canvas(wall)
+        base["canvas"] = {"w": cw, "h": ch}
+        base["bezel"] = {"h_pct": 0.0, "v_pct": 0.0}
+        base["cell_geometry"] = free_cell_geometry(wall, cell)
+        base["highlight_until_ms"] = _highlight_ms(cell)
+        base["tv_number"] = tv_number(cell)
+    elif wall["mode"] == "spanned":
         cw = wall["canvas_width_px"]
         ch = wall["canvas_height_px"]
         h_pct = float(wall.get("bezel_h_pct") or 0)
@@ -120,6 +163,88 @@ def _hello_config(wall: dict) -> tuple:
     ))
 
 
+# ---- free walls: geometry ---------------------------------------------------
+#
+# A free wall (layout 'free', mode 'spanned') is one video with a box per TV,
+# placed from a phone. Boxes are stored as fractions of the canvas
+# (wall_cells.place_x/y/w/h); TVs are sent them in canvas px.
+
+def geometry_channel() -> str:
+    """Redis channel for box changes: GEOMETRY_CHANNEL_BASE + ":db<N>".
+
+    N is the logical database in ratelimit.REDIS_URL, read at call time (0 when
+    the URL names none). Pub/sub ignores logical databases, and test runs use
+    production's Redis server on another database: without the suffix a
+    test's publish would reach production's subscribers.
+    """
+    from redis.connection import parse_url   # lazy, like ratelimit's own redis import
+    try:
+        db = int(parse_url(ratelimit.REDIS_URL).get("db") or 0)
+    except (TypeError, ValueError):
+        db = 0
+    return f"{GEOMETRY_CHANNEL_BASE}:db{db}"
+
+
+def tv_number(cell: dict) -> int:
+    """The number a free-wall TV is shown as ("TV 2"); fixed while it is in the wall."""
+    return int(cell["col_index"]) + 1
+
+
+def _cell_box(cell: dict) -> dict | None:
+    """The cell's stored box as fractions of the canvas, or None if it has none."""
+    values = [cell.get(k) for k in ("place_x", "place_y", "place_w", "place_h")]
+    if any(v is None for v in values):
+        return None
+    x, y, w, h = (float(v) for v in values)
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _free_canvas(wall: dict) -> tuple[int, int]:
+    return wall_layout.canvas_size_for(wall.get("canvas_width_px"),
+                                       wall.get("canvas_height_px"))
+
+
+def _is_free_box(wall: dict, cell: dict) -> bool:
+    """True when ``cell`` is a placed TV of a free wall: its geometry is its box."""
+    return (wall.get("mode") == "spanned" and wall.get("layout") == "free"
+            and _cell_box(cell) is not None)
+
+
+def _highlight_ms(cell: dict) -> int | None:
+    value = cell.get("highlight_until_ms")
+    return int(value) if value is not None else None
+
+
+def free_cell_geometry(wall: dict, cell: dict) -> dict | None:
+    """The cell's box in canvas px ({"x", "y", "w", "h"}), or None without a box."""
+    box = _cell_box(cell)
+    if box is None:
+        return None
+    cw, ch = _free_canvas(wall)
+    return wall_layout.box_to_px(box, cw, ch)
+
+
+def _geometry_frame(wall: dict, cell: dict) -> dict:
+    """Moves a free-wall TV's crop without touching what it plays."""
+    cw, ch = _free_canvas(wall)
+    return {
+        "type": "geometry",
+        "canvas": {"w": cw, "h": ch},
+        "cell_geometry": free_cell_geometry(wall, cell),
+        "highlight_until_ms": _highlight_ms(cell),
+        "tv_number": tv_number(cell),
+        "server_now_ms": now_ms(),
+    }
+
+
+def _geom_sig(wall: dict, cell: dict) -> tuple:
+    """Everything a geometry frame depends on: a TV is sent one when this changes."""
+    return (wall.get("canvas_width_px"), wall.get("canvas_height_px"),
+            cell.get("place_x"), cell.get("place_y"),
+            cell.get("place_w"), cell.get("place_h"),
+            cell.get("highlight_until_ms"))
+
+
 # ---- socket registry --------------------------------------------------------
 
 def _register(wall_id: int, key: Tuple[int, int], ws, screen_id: int, token: str) -> None:
@@ -133,6 +258,7 @@ def _unregister(wall_id: int, key: Tuple[int, int], ws) -> None:
     if conns is not None and conns.get(key) is ws:
         conns.pop(key, None)
     _conn_identity.pop(ws, None)
+    _geom_sent.pop(ws, None)
 
 
 async def _send_safe(ws: WebSocket, frame: dict) -> bool:
@@ -208,6 +334,147 @@ def broadcast_bye(wall_id: int, row: int, col: int, reason: str) -> None:
         await _close_quietly(ws, 4000)
 
     _run_on_server_loop(_say_bye())
+
+
+# ---- free walls: sending geometry -------------------------------------------
+
+def _load_free_cell(wall_id: int, row: int, col: int):
+    """(wall, cell) as stored now, if (row, col) is a cell of free wall ``wall_id``."""
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    if not wall or wall.get("layout") != "free":
+        return None
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, row, col),
+    )
+    if not cell:
+        return None
+    return wall, cell
+
+
+async def _send_geometry_if_changed(wall_id: int, key: Tuple[int, int], ws,
+                                    wall: dict, cell: dict) -> None:
+    """Send ``ws`` the cell's box unless it was already sent exactly this one."""
+    if not _is_free_box(wall, cell):
+        return
+    sig = _geom_sig(wall, cell)
+    if _geom_sent.get(ws) == sig:
+        return
+    # Recorded before the await: a newer box read while this frame is in
+    # flight differs from it, so it is sent too, after this one.
+    _geom_sent[ws] = sig
+    if not await _send_safe(ws, _geometry_frame(wall, cell)):
+        _unregister(wall_id, key, ws)
+
+
+async def _push_geometry(wall_id: int, row: int, col: int) -> None:
+    """Send cell (row, col) its stored box, if this worker holds its TV's socket."""
+    key = (row, col)
+    ws = _connections.get(wall_id, {}).get(key)
+    if ws is None:
+        return
+    loaded = _load_free_cell(wall_id, row, col)
+    if loaded is not None:
+        await _send_geometry_if_changed(wall_id, key, ws, *loaded)
+
+
+def publish_geometry(wall_id: int, row: int, col: int) -> None:
+    """Tell cell (row, col)'s TV that its box changed. Sync and best-effort: never raises.
+
+    For REST handlers. Call it only after the write that changed the box has
+    committed, outside any ``with transaction():`` block: the local push and
+    every other worker re-read the box, and inside the transaction they would
+    read the old one. The same goes for broadcast_bye.
+    The TV's socket may be on any worker: this one pushes at once if it holds
+    it, and a Redis publish reaches the others' _geometry_subscriber. If both
+    fail, the tick loop's fallback delivers the box within TICK_MAX_SLEEP_S.
+    """
+    try:
+        if _connections.get(wall_id, {}).get((row, col)) is not None:
+            _run_on_server_loop(_push_geometry(wall_id, row, col))
+    except Exception:
+        logger.exception("wall_geometry_push_failed wall_id=%s", wall_id)
+    try:
+        client = ratelimit.get_redis()
+        if client is None:
+            return                         # cooling down after a Redis failure
+        client.publish(geometry_channel(),
+                       json.dumps({"wall_id": wall_id, "row": row, "col": col}))
+    except Exception as exc:
+        ratelimit._mark_unhealthy(exc)
+        logger.warning("wall_geometry_publish_failed wall_id=%s err=%s", wall_id, exc)
+
+
+async def _on_geometry_message(data) -> None:
+    """One published {"wall_id", "row", "col"}: push it if the TV is on this worker."""
+    try:
+        note = json.loads(data)
+        wall_id, row, col = note["wall_id"], note["row"], note["col"]
+    except (TypeError, ValueError, KeyError):
+        return
+    if not all(type(v) is int for v in (wall_id, row, col)):
+        return
+    if _connections.get(wall_id, {}).get((row, col)) is None:
+        return                             # another worker holds that TV
+    try:
+        await _push_geometry(wall_id, row, col)
+    except Exception:
+        logger.exception("wall_geometry_push_failed wall_id=%s", wall_id)
+
+
+def _ensure_geometry_subscriber() -> None:
+    """Start this worker's geometry subscriber unless it already runs on this loop.
+
+    wall_ws calls it for free-wall sockets only: only a free wall's boxes
+    move live, so a worker holding only grid or mirrored TVs never opens the
+    Redis subscription. A task belongs to the loop that made it. Production
+    has one loop per worker; each TestClient websocket session has its own,
+    closed (and its tasks cancelled) when the session ends. The task outlives
+    the worker's last wall socket.
+    """
+    global _geometry_task
+    loop = asyncio.get_running_loop()
+    task = _geometry_task
+    if task is not None and not task.done() and task.get_loop() is loop:
+        return
+    _geometry_task = loop.create_task(_geometry_subscriber())
+
+
+async def _geometry_subscriber() -> None:
+    """Forward box changes published by any worker to the TVs this worker holds.
+
+    Its own redis.asyncio client, made on this loop: ratelimit's client is
+    sync, and its 0.25 s socket timeout would end an idle subscription.
+    get_message() returns None after GEOMETRY_POLL_S without a message. A
+    Redis error is logged and retried with backoff (1 s doubling to 30 s)
+    while the tick loops' fallback keeps TVs current. Ends only when cancelled.
+    """
+    import redis.asyncio as aredis
+    delay = GEOMETRY_RETRY_MIN_S
+    while True:
+        client = pubsub = None
+        try:
+            client = aredis.Redis.from_url(ratelimit.REDIS_URL, decode_responses=True,
+                                           socket_connect_timeout=2, health_check_interval=30)
+            pubsub = client.pubsub(ignore_subscribe_messages=True)
+            await pubsub.subscribe(geometry_channel())
+            delay = GEOMETRY_RETRY_MIN_S
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True,
+                                               timeout=GEOMETRY_POLL_S)
+                if msg is not None:
+                    await _on_geometry_message(msg.get("data"))
+        except Exception as exc:          # CancelledError is no Exception: it ends the task
+            logger.warning("wall_geometry_subscriber_failed err=%s retry_in_s=%s", exc, delay)
+        finally:
+            for closable in (pubsub, client):
+                if closable is not None:
+                    try:
+                        await closable.aclose()
+                    except Exception:
+                        pass
+        await asyncio.sleep(delay)
+        delay = min(GEOMETRY_RETRY_MAX_S, delay * 2)
 
 
 # ---- playlist loading -------------------------------------------------------
@@ -489,6 +756,25 @@ async def _drop_unbound(wall_id: int, conns: dict) -> None:
         await _close_quietly(ws, 4000)
 
 
+async def _geometry_fallback(wall_id: int, wall: dict, conns: dict, cells: dict) -> None:
+    """Send each local TV of a free wall its box if it changed since it was last sent.
+
+    publish_geometry normally gets there first; this catches what it missed
+    (Redis down, a lost publish) within TICK_MAX_SLEEP_S.
+    """
+    for key, ws in conns.items():
+        if _connections.get(wall_id, {}).get(key) is not ws:
+            continue                       # left or replaced during this pass
+        cell = cells.get(key)
+        if cell is None or _geom_sent.get(ws) == _geom_sig(wall, cell):
+            continue
+        # Re-read before sending: this pass has awaited since ``cells`` was
+        # loaded, and a box pushed meanwhile (through Redis) is newer than it.
+        fresh = _load_free_cell(wall_id, key[0], key[1])
+        if fresh is not None:
+            await _send_geometry_if_changed(wall_id, key, ws, *fresh)
+
+
 async def _tick_once(wall_id: int, state: dict) -> float | None:
     """One pass of the tick loop. Returns seconds to sleep, or None to stop."""
     wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
@@ -503,6 +789,13 @@ async def _tick_once(wall_id: int, state: dict) -> float | None:
     conns = dict(_connections.get(wall_id, {}))
     if not conns:
         return None
+    # A free wall's hello and geometry come from each cell's own box, so its
+    # stored cells are read once per pass. A grid wall's hello needs only
+    # (row, col), so grid passes skip the read and stay as they were.
+    cells = {}
+    if wall.get("layout") == "free":
+        cells = {(c["row_index"], c["col_index"]): c
+                 for c in query_all("SELECT * FROM wall_cells WHERE wall_id = ?", (wall_id,))}
 
     now = now_ms()
     plan = _wall_plan(wall, now)
@@ -513,8 +806,10 @@ async def _tick_once(wall_id: int, state: dict) -> float | None:
         # wall so they rebuild their geometry instead of mis-cropping.
         sent.clear()
         for (r, c), ws in conns.items():
-            hello = _hello_frame(wall, {"row_index": r, "col_index": c},
-                                 _frame_for(plan, (r, c)))
+            cell = cells.get((r, c)) or {"row_index": r, "col_index": c}
+            hello = _hello_frame(wall, cell, _frame_for(plan, (r, c)))
+            if _is_free_box(wall, cell):
+                _geom_sent[ws] = _geom_sig(wall, cell)
             if not await _send_safe(ws, hello):
                 _unregister(wall_id, (r, c), ws)
             elif hello["current_play"]:
@@ -533,6 +828,9 @@ async def _tick_once(wall_id: int, state: dict) -> float | None:
             sent[key] = mark
         else:
             _unregister(wall_id, key, ws)
+
+    if wall.get("layout") == "free":
+        await _geometry_fallback(wall_id, wall, conns, cells)
 
     if now - state.get("last_ping_ms", 0) >= PING_INTERVAL_MS:
         state["last_ping_ms"] = now
@@ -571,6 +869,75 @@ async def _ensure_tick_loop(wall_id: int) -> None:
     _tick_tasks[wall_id] = asyncio.create_task(_tick_loop(wall_id))
 
 
+def _screen_px(value) -> int | None:
+    """One side of a reported viewport, clamped; None unless it is an int."""
+    if type(value) is not int:             # bool is an int subclass: refused too
+        return None
+    return max(SCREEN_MIN_PX, min(SCREEN_MAX_PX, value))
+
+
+def _screen_fit(wall: dict, cell: dict, screen_w: int, screen_h: int) -> dict | None:
+    """The box a free-wall TV's reported screen gives its cell, or None to keep the box.
+
+    Only a box still at its 16:9 default takes the TV's shape (same width and
+    centre, new height). A box the phone has reshaped stays as it is, and so
+    does one already within SCREEN_SHAPE_TOLERANCE of the screen's shape.
+    """
+    if not _is_free_box(wall, cell):
+        return None
+    box = _cell_box(cell)
+    cw, ch = _free_canvas(wall)
+    if not (wall_layout.validate_box(box) and wall_layout.has_default_shape(box, cw, ch)):
+        return None
+    px = wall_layout.box_to_px(box, cw, ch)
+    if abs((screen_w / screen_h) / (px["w"] / px["h"]) - 1) <= SCREEN_SHAPE_TOLERANCE:
+        return None
+    fitted = wall_layout.fit_box_to_screen(box, screen_w, screen_h, cw, ch)
+    return fitted if wall_layout.validate_box(fitted) else None
+
+
+async def _on_screen_report(wall_id: int, key: tuple, ws, cell_id: int, msg: dict) -> None:
+    """{"type": "screen", "w", "h"}: the TV's viewport in CSS px, on open and after resizes.
+
+    The size is stored on the cell (the phone locks the TV's box to that
+    shape). A free-wall box still at its 16:9 default on a TV of another shape
+    takes the TV's shape here: same width and centre, new height. The TV is
+    then sent its box if that changed.
+
+    Like the rest of walls.py this runs its statements synchronously on the
+    event loop, so they stay short: two reads, at most one UPDATE (autocommit,
+    no transaction) and a re-read after it.
+    """
+    w, h = _screen_px(msg.get("w")), _screen_px(msg.get("h"))
+    if w is None or h is None:
+        return
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    cell = query_one("SELECT * FROM wall_cells WHERE id = ? AND wall_id = ?", (cell_id, wall_id))
+    if wall is None or cell is None:
+        return
+    size_changed = (cell.get("screen_w_px"), cell.get("screen_h_px")) != (w, h)
+    fitted = _screen_fit(wall, cell, w, h)
+    if fitted is not None:
+        execute(
+            "UPDATE wall_cells SET screen_w_px = ?, screen_h_px = ?, "
+            "place_x = ?, place_y = ?, place_w = ?, place_h = ? WHERE id = ?",
+            (w, h, fitted["x"], fitted["y"], fitted["w"], fitted["h"], cell_id),
+        )
+    elif size_changed:
+        execute("UPDATE wall_cells SET screen_w_px = ?, screen_h_px = ? WHERE id = ?",
+                (w, h, cell_id))
+    if fitted is not None or size_changed:
+        # Re-read: REAL columns round, and the sig must match later reads.
+        cell = query_one("SELECT * FROM wall_cells WHERE id = ? AND wall_id = ?",
+                         (cell_id, wall_id))
+        if cell is None:
+            return
+    if (cell["row_index"], cell["col_index"]) != tuple(key):
+        return                             # the socket's (row, col) is no longer this cell
+    if _connections.get(wall_id, {}).get(key) is ws:
+        await _send_geometry_if_changed(wall_id, key, ws, wall, cell)
+
+
 @router.websocket("/walls/{wall_id}/ws")
 async def wall_ws(websocket: WebSocket, wall_id: int,
                   screen_token: str = Query(..., min_length=8)):
@@ -594,7 +961,16 @@ async def wall_ws(websocket: WebSocket, wall_id: int,
     _register(wall_id, key, websocket, screen["id"], screen_token)
 
     await _ensure_tick_loop(wall_id)
-    await _send_safe(websocket, _hello_frame(wall, cell, current_play_for(wall_id, cell)))
+    if wall.get("layout") == "free":
+        # Only a free wall's boxes move live: a worker holding only grid or
+        # mirrored TVs never opens the Redis subscription.
+        _ensure_geometry_subscriber()
+    hello = _hello_frame(wall, cell, current_play_for(wall_id, cell))
+    if _is_free_box(wall, cell):
+        # Recorded before the await, so a tick pass or a pushed box that runs
+        # while the hello is in flight does not repeat it.
+        _geom_sent[websocket] = _geom_sig(wall, cell)
+    await _send_safe(websocket, hello)
 
     execute("UPDATE screens SET last_seen = ? WHERE id = ?", (utc_now_iso(), screen["id"]))
 
@@ -605,10 +981,15 @@ async def wall_ws(websocket: WebSocket, wall_id: int,
                 msg = json.loads(raw)
             except ValueError:
                 continue
-            if msg.get("type") == "pong":
+            if not isinstance(msg, dict):
                 continue
-            if msg.get("type") == "ready":
-                continue
+            if msg.get("type") == "screen":
+                try:
+                    await _on_screen_report(wall_id, key, websocket, cell["id"], msg)
+                except Exception:
+                    # A database hiccup must not cost the TV its socket.
+                    logger.exception("wall_screen_report_failed wall_id=%s", wall_id)
+            # "pong", "ready" and unknown types need no answer.
     except WebSocketDisconnect:
         pass
     finally:

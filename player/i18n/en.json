@@ -26,6 +26,7 @@
   "pairing.code_expired": "Code expired. Ask admin for a new one.",
   "wall.connecting": "Connecting to wall…",
   "wall.reconnecting": "Reconnecting to wall…",
+  "wall.tv_label": "TV {n}",
   "lang.toggle_label": "عربي",
   "nav.lang_toggle_aria": "Switch language",
   "empty.title": "You're connected!",
