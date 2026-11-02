@@ -87,6 +87,11 @@ GEOMETRY_CHANNEL_BASE = "khan:wall-geometry"
 GEOMETRY_POLL_S = 5.0
 GEOMETRY_RETRY_MIN_S = 1.0
 GEOMETRY_RETRY_MAX_S = 30.0
+# A TV's reported viewport ("screen" message) is clamped to this, in CSS px.
+SCREEN_MIN_PX = 100
+SCREEN_MAX_PX = 10000
+# A TV whose shape is within this of its box's shape keeps the box as it is.
+SCREEN_SHAPE_TOLERANCE = 0.01
 
 
 def now_ms() -> int:
@@ -864,6 +869,75 @@ async def _ensure_tick_loop(wall_id: int) -> None:
     _tick_tasks[wall_id] = asyncio.create_task(_tick_loop(wall_id))
 
 
+def _screen_px(value) -> int | None:
+    """One side of a reported viewport, clamped; None unless it is an int."""
+    if type(value) is not int:             # bool is an int subclass: refused too
+        return None
+    return max(SCREEN_MIN_PX, min(SCREEN_MAX_PX, value))
+
+
+def _screen_fit(wall: dict, cell: dict, screen_w: int, screen_h: int) -> dict | None:
+    """The box a free-wall TV's reported screen gives its cell, or None to keep the box.
+
+    Only a box still at its 16:9 default takes the TV's shape (same width and
+    centre, new height). A box the phone has reshaped stays as it is, and so
+    does one already within SCREEN_SHAPE_TOLERANCE of the screen's shape.
+    """
+    if not _is_free_box(wall, cell):
+        return None
+    box = _cell_box(cell)
+    cw, ch = _free_canvas(wall)
+    if not (wall_layout.validate_box(box) and wall_layout.has_default_shape(box, cw, ch)):
+        return None
+    px = wall_layout.box_to_px(box, cw, ch)
+    if abs((screen_w / screen_h) / (px["w"] / px["h"]) - 1) <= SCREEN_SHAPE_TOLERANCE:
+        return None
+    fitted = wall_layout.fit_box_to_screen(box, screen_w, screen_h, cw, ch)
+    return fitted if wall_layout.validate_box(fitted) else None
+
+
+async def _on_screen_report(wall_id: int, key: tuple, ws, cell_id: int, msg: dict) -> None:
+    """{"type": "screen", "w", "h"}: the TV's viewport in CSS px, on open and after resizes.
+
+    The size is stored on the cell (the phone locks the TV's box to that
+    shape). A free-wall box still at its 16:9 default on a TV of another shape
+    takes the TV's shape here: same width and centre, new height. The TV is
+    then sent its box if that changed.
+
+    Like the rest of walls.py this runs its statements synchronously on the
+    event loop, so they stay short: two reads, at most one UPDATE (autocommit,
+    no transaction) and a re-read after it.
+    """
+    w, h = _screen_px(msg.get("w")), _screen_px(msg.get("h"))
+    if w is None or h is None:
+        return
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    cell = query_one("SELECT * FROM wall_cells WHERE id = ? AND wall_id = ?", (cell_id, wall_id))
+    if wall is None or cell is None:
+        return
+    size_changed = (cell.get("screen_w_px"), cell.get("screen_h_px")) != (w, h)
+    fitted = _screen_fit(wall, cell, w, h)
+    if fitted is not None:
+        execute(
+            "UPDATE wall_cells SET screen_w_px = ?, screen_h_px = ?, "
+            "place_x = ?, place_y = ?, place_w = ?, place_h = ? WHERE id = ?",
+            (w, h, fitted["x"], fitted["y"], fitted["w"], fitted["h"], cell_id),
+        )
+    elif size_changed:
+        execute("UPDATE wall_cells SET screen_w_px = ?, screen_h_px = ? WHERE id = ?",
+                (w, h, cell_id))
+    if fitted is not None or size_changed:
+        # Re-read: REAL columns round, and the sig must match later reads.
+        cell = query_one("SELECT * FROM wall_cells WHERE id = ? AND wall_id = ?",
+                         (cell_id, wall_id))
+        if cell is None:
+            return
+    if (cell["row_index"], cell["col_index"]) != tuple(key):
+        return                             # the socket's (row, col) is no longer this cell
+    if _connections.get(wall_id, {}).get(key) is ws:
+        await _send_geometry_if_changed(wall_id, key, ws, wall, cell)
+
+
 @router.websocket("/walls/{wall_id}/ws")
 async def wall_ws(websocket: WebSocket, wall_id: int,
                   screen_token: str = Query(..., min_length=8)):
@@ -887,7 +961,16 @@ async def wall_ws(websocket: WebSocket, wall_id: int,
     _register(wall_id, key, websocket, screen["id"], screen_token)
 
     await _ensure_tick_loop(wall_id)
-    await _send_safe(websocket, _hello_frame(wall, cell, current_play_for(wall_id, cell)))
+    if wall.get("layout") == "free":
+        # Only a free wall's boxes move live: a worker holding only grid or
+        # mirrored TVs never opens the Redis subscription.
+        _ensure_geometry_subscriber()
+    hello = _hello_frame(wall, cell, current_play_for(wall_id, cell))
+    if _is_free_box(wall, cell):
+        # Recorded before the await, so a tick pass or a pushed box that runs
+        # while the hello is in flight does not repeat it.
+        _geom_sent[websocket] = _geom_sig(wall, cell)
+    await _send_safe(websocket, hello)
 
     execute("UPDATE screens SET last_seen = ? WHERE id = ?", (utc_now_iso(), screen["id"]))
 
@@ -898,10 +981,15 @@ async def wall_ws(websocket: WebSocket, wall_id: int,
                 msg = json.loads(raw)
             except ValueError:
                 continue
-            if msg.get("type") == "pong":
+            if not isinstance(msg, dict):
                 continue
-            if msg.get("type") == "ready":
-                continue
+            if msg.get("type") == "screen":
+                try:
+                    await _on_screen_report(wall_id, key, websocket, cell["id"], msg)
+                except Exception:
+                    # A database hiccup must not cost the TV its socket.
+                    logger.exception("wall_screen_report_failed wall_id=%s", wall_id)
+            # "pong", "ready" and unknown types need no answer.
     except WebSocketDisconnect:
         pass
     finally:

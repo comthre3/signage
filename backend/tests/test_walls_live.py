@@ -573,3 +573,137 @@ def test_subscriber_keeps_retrying_while_redis_is_down(monkeypatch, caplog):
     failures = [r for r in caplog.records
                 if "wall_geometry_subscriber_failed" in r.getMessage()]
     assert len(failures) >= 2
+
+
+# ---- the TV's socket and its screen report ----------------------------------
+
+def _report(wid, cid, ws, msg):
+    asyncio.run(walls_mod._on_screen_report(wid, _key(cid), ws, cid, msg))
+
+
+def test_free_wall_tv_gets_its_box_in_hello_and_no_repeat(client):
+    wid, (c0, c1) = _free_wall([(0.0, 0.0, 1 / 3, 1.0), (0.4, 0.1, 0.3, 0.9)])
+    execute("UPDATE wall_cells SET highlight_until_ms = ? WHERE id = ?", (1762000030000, c1))
+    _, token = _bind_tv(wid, c1)
+    with client.websocket_connect(f"/walls/{wid}/ws?screen_token={token}") as ws:
+        hello = _recv_until(ws, "hello")
+        assert hello is not None, "no hello"
+        assert hello["mode"] == "spanned"
+        assert hello["canvas"] == {"w": 3840, "h": 720}
+        assert hello["cell_geometry"] == pytest.approx(
+            {"x": 1536.0, "y": 72.0, "w": 1152.0, "h": 648.0}, rel=1e-5)
+        assert hello["tv_number"] == 2
+        assert hello["highlight_until_ms"] == 1762000030000
+        # The tick loop's first pass runs as soon as the handler waits for
+        # input; the hello already told this TV its box, so nothing repeats it.
+        assert _recv_until(ws, "geometry", timeout=0.5) is None
+        task = walls_mod._geometry_task
+        assert task is not None and not task.done(), "no geometry subscriber on this worker"
+
+
+def test_grid_wall_socket_starts_no_geometry_subscriber(client, monkeypatch):
+    """R7: only free walls get geometry, so a grid wall's TV opens no Redis subscription.
+
+    Guards the layout check in wall_ws; passes before and after this task.
+    """
+    monkeypatch.setattr(walls_mod, "_geometry_task", None)   # whatever an earlier file left
+    wid, cid = _grid_wall()
+    _, token = _bind_tv(wid, cid)
+    with client.websocket_connect(f"/walls/{wid}/ws?screen_token={token}") as ws:
+        hello = _recv_until(ws, "hello")
+        assert hello is not None, "no hello"
+        assert "tv_number" not in hello and "highlight_until_ms" not in hello
+        assert walls_mod._geometry_task is None
+
+
+def test_screen_message_over_the_socket_fits_the_box(client):
+    wid, (cid,) = _free_wall([(1 / 3, 0.0, 1 / 3, 1.0)])
+    _, token = _bind_tv(wid, cid)
+    with client.websocket_connect(f"/walls/{wid}/ws?screen_token={token}") as ws:
+        assert _recv_until(ws, "hello") is not None
+        ws.send_text("not json")
+        ws.send_text("[1, 2]")
+        ws.send_json({"type": "screen", "w": "1080", "h": 1920})
+        ws.send_json({"type": "screen", "w": 1080, "h": 1920})
+        geometry = _recv_until(ws, "geometry")
+        assert geometry is not None, "no geometry after a portrait screen report"
+        g = geometry["cell_geometry"]
+        assert g["w"] / g["h"] == pytest.approx(1080 / 1920, rel=1e-4)
+        assert g["x"] == pytest.approx(1280.0, rel=1e-5)
+        assert g["y"] + g["h"] / 2 == pytest.approx(360.0, abs=0.01)
+    cell = _cell(cid)
+    assert (cell["screen_w_px"], cell["screen_h_px"]) == (1080, 1920)
+
+
+def test_portrait_tv_turns_its_default_box_portrait_once():
+    wid, (cid,) = _free_wall([(1 / 3, 0.0, 1 / 3, 1.0)])     # 1280x720 px: the 16:9 default
+    ws = _held(wid, cid)
+    _report(wid, cid, ws, {"type": "screen", "w": 1080, "h": 1920})
+    cell = _cell(cid)
+    assert (cell["screen_w_px"], cell["screen_h_px"]) == (1080, 1920)
+    assert cell["place_x"] == pytest.approx(1 / 3, rel=1e-5)          # same width and centre
+    assert cell["place_w"] == pytest.approx(1 / 3, rel=1e-5)
+    assert cell["place_y"] + cell["place_h"] / 2 == pytest.approx(0.5, abs=1e-5)
+    assert (cell["place_w"] * 3840) / (cell["place_h"] * 720) == pytest.approx(
+        1080 / 1920, rel=1e-4)
+    frames = ws.of_type("geometry")
+    assert len(frames) == 1
+    assert frames[0]["cell_geometry"] == pytest.approx(walls_mod.free_cell_geometry(
+        {"canvas_width_px": 3840, "canvas_height_px": 720}, cell))
+
+    # Reported again (a resize, a reconnect): no longer 16:9, so the box stays.
+    _report(wid, cid, ws, {"type": "screen", "w": 1080, "h": 1920})
+    assert [_cell(cid)[k] for k in PLACE] == [cell[k] for k in PLACE]
+    assert len(ws.of_type("geometry")) == 1
+
+
+def test_landscape_tv_keeps_its_default_box():
+    wid, (cid,) = _free_wall([(1 / 3, 0.0, 1 / 3, 1.0)])
+    ws = _held(wid, cid)
+    before = [_cell(cid)[k] for k in PLACE]
+    _report(wid, cid, ws, {"type": "screen", "w": 1920, "h": 1080})
+    cell = _cell(cid)
+    assert (cell["screen_w_px"], cell["screen_h_px"]) == (1920, 1080)
+    assert [cell[k] for k in PLACE] == before
+    _report(wid, cid, ws, {"type": "screen", "w": 960, "h": 540})      # a high-DPR TV
+    cell = _cell(cid)
+    assert (cell["screen_w_px"], cell["screen_h_px"]) == (960, 540)
+    assert [cell[k] for k in PLACE] == before
+    assert ws.frames == []
+
+
+def test_screen_size_is_clamped():
+    wid, (cid,) = _free_wall([(1 / 3, 0.0, 1 / 3, 1.0)])
+    ws = _held(wid, cid)
+    _report(wid, cid, ws, {"type": "screen", "w": 5, "h": 50000})
+    cell = _cell(cid)
+    assert (cell["screen_w_px"], cell["screen_h_px"]) == (100, 10000)
+
+
+@pytest.mark.parametrize("msg", [
+    {"type": "screen"},
+    {"type": "screen", "w": 1080},
+    {"type": "screen", "w": True, "h": 1920},
+    {"type": "screen", "w": "1080", "h": "1920"},
+    {"type": "screen", "w": 1080.5, "h": 1920},
+    {"type": "screen", "w": None, "h": None},
+    {"type": "screen", "w": [1080], "h": 1920},
+])
+def test_bad_screen_reports_change_nothing(msg):
+    wid, (cid,) = _free_wall([(1 / 3, 0.0, 1 / 3, 1.0)])
+    ws = _held(wid, cid)
+    before = _cell(cid)
+    _report(wid, cid, ws, msg)
+    assert _cell(cid) == before
+    assert ws.frames == []
+
+
+def test_grid_wall_screen_report_only_stores_the_size():
+    wid, cid = _grid_wall()
+    ws = FakeWS()
+    walls_mod._connections[wid][(0, 0)] = ws
+    _report(wid, cid, ws, {"type": "screen", "w": 1080, "h": 1920})
+    cell = _cell(cid)
+    assert (cell["screen_w_px"], cell["screen_h_px"]) == (1080, 1920)
+    assert [cell[k] for k in PLACE] == [0.0, 0.0, 0.5, 1.0]
+    assert ws.frames == []
