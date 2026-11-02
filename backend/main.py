@@ -32,6 +32,7 @@ from slowapi.errors import RateLimitExceeded
 from billing import create_knet_request
 import ratelimit
 from db import advisory_lock, init_db, execute, query_all, query_one, transaction, utc_now_iso
+import media_probe
 import menu_render
 import menus as menus_domain
 from hibp import check_hibp_breach
@@ -51,6 +52,11 @@ def transcode_video(input_path: str, media_id: int) -> None:
     load on signage clients. CRF 23 is visually lossless; +faststart puts the
     moov atom at the file head so the player starts immediately. Bitrate is
     capped at 12 Mbps to bound network use even on 4K source.
+
+    The long side is capped at media_probe.VIDEO_LONG_SIDE_MAX (3840 px): cheap
+    TV decoders often stop at 4096 px, and a video wall plays one file across
+    every TV. The cap can change the size, so the output is probed again and
+    the row gets the size and length of the file the TVs actually play.
     """
     if not shutil.which("ffmpeg"):
         logger.warning("ffmpeg not installed — skipping transcode for media %s", media_id)
@@ -59,6 +65,7 @@ def transcode_video(input_path: str, media_id: int) -> None:
     output_path = f"{base}.opt.mp4"
     cmd = [
         "ffmpeg", "-y", "-i", input_path,
+        "-vf", media_probe.TRANSCODE_SCALE_FILTER,
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "23",
@@ -86,9 +93,16 @@ def transcode_video(input_path: str, media_id: int) -> None:
         return
     new_filename = os.path.basename(output_path)
     new_size = os.path.getsize(output_path)
+    probed = media_probe.probe_media(output_path, "video/mp4")
+    # COALESCE: whatever this second probe cannot read keeps the upload's value.
     execute(
-        "UPDATE media SET filename = ?, mime_type = ?, size = ? WHERE id = ?",
-        (new_filename, "video/mp4", new_size, media_id),
+        "UPDATE media SET filename = ?, mime_type = ?, size = ?, "
+        "width_px = COALESCE(?::integer, width_px), "
+        "height_px = COALESCE(?::integer, height_px), "
+        "duration_seconds = COALESCE(?::real, duration_seconds) "
+        "WHERE id = ?",
+        (new_filename, "video/mp4", new_size,
+         probed["width_px"], probed["height_px"], probed["duration_seconds"], media_id),
     )
     if os.path.exists(input_path) and input_path != output_path:
         try:
@@ -4195,11 +4209,11 @@ def _default_duration_seconds(media: dict) -> int:
     if mime.startswith("image/"):
         return 10
     if mime.startswith("video/"):
-        # forward-hook: media table has no duration_seconds column yet,
-        # so this currently always falls through to the 10s default.
-        stored = media.get("duration_seconds")
-        if isinstance(stored, (int, float)) and stored > 0:
-            return max(1, math.ceil(stored))
+        # Not media.duration_seconds, although uploads now store the probed
+        # length: standalone playlists keep the 10 s default they always had
+        # (a probed two-hour video would otherwise get a 7200 s item, past
+        # PlaylistItemCreate's own 3600 s cap). Only a free video wall's one
+        # canvas item plays for the probed length.
         return 10
     if mime == "application/pdf":
         return 30
@@ -4605,11 +4619,16 @@ async def upload_media(
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as f:
         f.write(contents)
+    # Size and length before answering: a free video wall's canvas is its
+    # video's size. In a worker thread, since ffprobe may take up to 20 s and
+    # this worker's event loop also carries the wall sockets.
+    probed = await anyio.to_thread.run_sync(media_probe.probe_media, file_path, content_type)
 
     media_id = execute(
         """
-        INSERT INTO media (organization_id, name, filename, mime_type, size, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO media (organization_id, name, filename, mime_type, size, created_at,
+                           width_px, height_px, duration_seconds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             principal.organization_id,
@@ -4618,9 +4637,15 @@ async def upload_media(
             content_type,
             len(contents),
             utc_now_iso(),
+            probed["width_px"],
+            probed["height_px"],
+            probed["duration_seconds"],
         ),
     )
-    if content_type.startswith("video"):
+    # _media_class, not startswith("video"): the stored claim keeps the
+    # client's case, and a "VIDEO/MP4" upload must still be transcoded (and
+    # capped at 3840 px).
+    if _media_class(content_type) == "video":
         background_tasks.add_task(transcode_video, file_path, media_id)
     item = query_one("SELECT * FROM media WHERE id = ?", (media_id,))
     item["url"] = f"/uploads/{item['filename']}"
