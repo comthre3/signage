@@ -3766,6 +3766,130 @@ def pair_wall_cell(wall_id: int, row: int, col: int,
             "expires_in_seconds": PAIR_CODE_TTL_SECONDS}
 
 
+# ---- Binding a TV to a wall cell ----
+#
+# Shared by /walls/cells/redeem (a TV typing a wall code) and the phone-driven
+# free-wall endpoints (a phone claiming the standalone code a TV shows in its
+# QR). Every caller holds one transaction and takes its locks in one order --
+# TV code claim, organization, wall, cells -- so concurrent requests queue
+# instead of deadlocking.
+
+
+def _tv_code_row_or_raise(code: str, now: datetime) -> dict:
+    """The pending standalone pairing code a TV is showing, or the refusal the
+    phone translates: unknown 404, already paired 409, expired 400.
+
+    Unlike /screens/claim, which re-binds a code to the screen it already
+    names, these callers have no screen yet, so any status but 'pending'
+    means another phone (or the Screens page) got there first.
+    """
+    row = query_one("SELECT * FROM pairing_codes WHERE code = ?", (code,))
+    if not row:
+        raise http_error(404, "pair.code_unknown", "Pairing code not recognized.")
+    if row["status"] != "pending":
+        raise http_error(409, "pair.code_used", "This TV is already paired.")
+    try:
+        expires_dt = datetime.fromisoformat(row["expires_at"])
+    except (TypeError, ValueError):
+        expires_dt = now - timedelta(seconds=1)
+    if now > expires_dt:
+        raise http_error(400, "pair.code_expired",
+                         "Pairing code expired. Ask the TV to show a new one.")
+    return row
+
+
+def _take_tv_code(row_id: int, now: datetime) -> None:
+    """Claim the code inside the caller's transaction.
+
+    The conditional UPDATE is /screens/claim's: of two phones claiming one TV
+    only one matches status 'pending', and the other gets 409. claimed_at is
+    tz-aware because /screens/poll compares it with an aware clock.
+    """
+    claimed = execute(
+        "UPDATE pairing_codes SET status = 'paired', claimed_at = ? "
+        "WHERE id = ? AND status = 'pending'",
+        (now.isoformat(), row_id),
+    )
+    if not claimed:
+        raise http_error(409, "pair.code_used", "This TV was just paired from another phone.")
+
+
+def _lock_org(oid: int) -> dict | None:
+    """Lock the organization row for the plan's screen-limit check.
+
+    Take it before any INSERT in the transaction: an INSERT that references
+    the organization takes a KEY SHARE lock on its row, and two requests that
+    each hold one and then ask for FOR UPDATE deadlock.
+    """
+    return query_one(
+        "SELECT id, screen_limit FROM organizations WHERE id = ? FOR UPDATE", (oid,)
+    )
+
+
+def _bind_screen_to_cell(wall: dict, cell: dict, org: dict | None, now: datetime,
+                         name: str) -> tuple[int, str]:
+    """Give the cell its screen and return (screen_id, screen_token).
+
+    A cell's screen is a screens row like any other, so a new one is subject
+    to the plan's screen_limit exactly as in create_screen. A cell that has a
+    screen reuses it and rotates its token, which unplugs the TV that held it,
+    instead of adding a second screen that would keep claiming the cell and
+    counting toward the limit. ``name`` names a new screen only.
+
+    Precondition: inside transaction(), with ``org`` locked by _lock_org.
+    """
+    oid = wall["organization_id"]
+    reuse = None
+    if cell["screen_id"]:
+        reuse = query_one(
+            "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
+            (cell["screen_id"], oid),
+        )
+    # Screens an earlier re-pair left claiming this cell: their TVs lost
+    # the cell long ago, and they still count toward the limit.
+    execute(
+        "DELETE FROM screens WHERE wall_cell_id = ? AND id <> ?",
+        (cell["id"], reuse["id"] if reuse else 0),
+    )
+    pair_code = generate_unique_pair_code()
+    screen_token = generate_unique_token()
+    if reuse:
+        screen_id = reuse["id"]
+        execute(
+            "UPDATE screens SET token = ?, pair_code = ?, wall_cell_id = ? WHERE id = ?",
+            (screen_token, pair_code, cell["id"], screen_id),
+        )
+    else:
+        if org:
+            count_row = query_one(
+                "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?", (oid,)
+            )
+            current = int(count_row["n"] if count_row else 0)
+            limit = int(org["screen_limit"])
+            if current >= limit:
+                raise http_error(
+                    402,
+                    "plan_limit",
+                    f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
+                )
+        screen_id = execute(
+            """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (oid, name, pair_code, screen_token, now.isoformat()),
+        )
+        execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
+    execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
+    return screen_id, screen_token
+
+
+def _attach_tv_code(row_id: int, screen_id: int) -> None:
+    """Point a claimed code at its new screen, so the TV's next poll collects
+    the token. Do it in the same transaction as _take_tv_code: a poll that
+    sees 'paired' with no screen answers 'expired', and the TV drops its code.
+    """
+    execute("UPDATE pairing_codes SET screen_id = ? WHERE id = ?", (screen_id, row_id))
+
+
 @app.post("/walls/cells/redeem")
 @limiter.limit("30/minute")
 def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
@@ -3812,9 +3936,7 @@ def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
         )
         if not claimed:
             raise http_error(409, "wall.pair_code_used", "This code was already used")
-        org = query_one(
-            "SELECT id, screen_limit FROM organizations WHERE id = ? FOR UPDATE", (oid,)
-        )
+        org = _lock_org(oid)
         cell = query_one(
             "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ? "
             "FOR UPDATE",
@@ -3822,47 +3944,10 @@ def redeem_wall_cell(request: Request, payload: WallRedeemRequest) -> dict:
         )
         if not cell:
             raise http_error(404, "wall.cell_not_found", "Cell not found")
-        reuse = None
-        if cell["screen_id"]:
-            reuse = query_one(
-                "SELECT id FROM screens WHERE id = ? AND organization_id = ?",
-                (cell["screen_id"], oid),
-            )
-        # Screens an earlier re-pair left claiming this cell: their TVs lost
-        # the cell long ago, and they still count toward the limit.
-        execute(
-            "DELETE FROM screens WHERE wall_cell_id = ? AND id <> ?",
-            (cell["id"], reuse["id"] if reuse else 0),
+        _screen_id, screen_token = _bind_screen_to_cell(
+            wall, cell, org, now,
+            f"Wall {wall['name']} ({row['row_index']},{row['col_index']})",
         )
-        pair_code = generate_unique_pair_code()
-        screen_token = generate_unique_token()
-        if reuse:
-            screen_id = reuse["id"]
-            execute(
-                "UPDATE screens SET token = ?, pair_code = ?, wall_cell_id = ? WHERE id = ?",
-                (screen_token, pair_code, cell["id"], screen_id),
-            )
-        else:
-            if org:
-                count_row = query_one(
-                    "SELECT COUNT(*) AS n FROM screens WHERE organization_id = ?", (oid,)
-                )
-                current = int(count_row["n"] if count_row else 0)
-                limit = int(org["screen_limit"])
-                if current >= limit:
-                    raise http_error(
-                        402,
-                        "plan_limit",
-                        f"Screen limit reached ({current}/{limit}). Upgrade your plan to add more.",
-                    )
-            name = f"Wall {wall['name']} ({row['row_index']},{row['col_index']})"
-            screen_id = execute(
-                """INSERT INTO screens (organization_id, name, pair_code, token, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (oid, name, pair_code, screen_token, now.isoformat()),
-            )
-            execute("UPDATE screens SET wall_cell_id = ? WHERE id = ?", (cell["id"], screen_id))
-        execute("UPDATE wall_cells SET screen_id = ? WHERE id = ?", (screen_id, cell["id"]))
     return {
         "status": "paired",
         "screen_token": screen_token,
