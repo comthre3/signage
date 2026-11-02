@@ -242,6 +242,7 @@ def _unregister(wall_id: int, key: Tuple[int, int], ws) -> None:
     if conns is not None and conns.get(key) is ws:
         conns.pop(key, None)
     _conn_identity.pop(ws, None)
+    _geom_sent.pop(ws, None)
 
 
 async def _send_safe(ws: WebSocket, frame: dict) -> bool:
@@ -317,6 +318,37 @@ def broadcast_bye(wall_id: int, row: int, col: int, reason: str) -> None:
         await _close_quietly(ws, 4000)
 
     _run_on_server_loop(_say_bye())
+
+
+# ---- free walls: sending geometry -------------------------------------------
+
+def _load_free_cell(wall_id: int, row: int, col: int):
+    """(wall, cell) as stored now, if (row, col) is a cell of free wall ``wall_id``."""
+    wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
+    if not wall or wall.get("layout") != "free":
+        return None
+    cell = query_one(
+        "SELECT * FROM wall_cells WHERE wall_id = ? AND row_index = ? AND col_index = ?",
+        (wall_id, row, col),
+    )
+    if not cell:
+        return None
+    return wall, cell
+
+
+async def _send_geometry_if_changed(wall_id: int, key: Tuple[int, int], ws,
+                                    wall: dict, cell: dict) -> None:
+    """Send ``ws`` the cell's box unless it was already sent exactly this one."""
+    if not _is_free_box(wall, cell):
+        return
+    sig = _geom_sig(wall, cell)
+    if _geom_sent.get(ws) == sig:
+        return
+    # Recorded before the await: a newer box read while this frame is in
+    # flight differs from it, so it is sent too, after this one.
+    _geom_sent[ws] = sig
+    if not await _send_safe(ws, _geometry_frame(wall, cell)):
+        _unregister(wall_id, key, ws)
 
 
 # ---- playlist loading -------------------------------------------------------
@@ -598,6 +630,25 @@ async def _drop_unbound(wall_id: int, conns: dict) -> None:
         await _close_quietly(ws, 4000)
 
 
+async def _geometry_fallback(wall_id: int, wall: dict, conns: dict, cells: dict) -> None:
+    """Send each local TV of a free wall its box if it changed since it was last sent.
+
+    publish_geometry normally gets there first; this catches what it missed
+    (Redis down, a lost publish) within TICK_MAX_SLEEP_S.
+    """
+    for key, ws in conns.items():
+        if _connections.get(wall_id, {}).get(key) is not ws:
+            continue                       # left or replaced during this pass
+        cell = cells.get(key)
+        if cell is None or _geom_sent.get(ws) == _geom_sig(wall, cell):
+            continue
+        # Re-read before sending: this pass has awaited since ``cells`` was
+        # loaded, and a box pushed meanwhile (through Redis) is newer than it.
+        fresh = _load_free_cell(wall_id, key[0], key[1])
+        if fresh is not None:
+            await _send_geometry_if_changed(wall_id, key, ws, *fresh)
+
+
 async def _tick_once(wall_id: int, state: dict) -> float | None:
     """One pass of the tick loop. Returns seconds to sleep, or None to stop."""
     wall = query_one("SELECT * FROM walls WHERE id = ?", (wall_id,))
@@ -612,6 +663,13 @@ async def _tick_once(wall_id: int, state: dict) -> float | None:
     conns = dict(_connections.get(wall_id, {}))
     if not conns:
         return None
+    # A free wall's hello and geometry come from each cell's own box, so its
+    # stored cells are read once per pass. A grid wall's hello needs only
+    # (row, col), so grid passes skip the read and stay as they were.
+    cells = {}
+    if wall.get("layout") == "free":
+        cells = {(c["row_index"], c["col_index"]): c
+                 for c in query_all("SELECT * FROM wall_cells WHERE wall_id = ?", (wall_id,))}
 
     now = now_ms()
     plan = _wall_plan(wall, now)
@@ -622,8 +680,10 @@ async def _tick_once(wall_id: int, state: dict) -> float | None:
         # wall so they rebuild their geometry instead of mis-cropping.
         sent.clear()
         for (r, c), ws in conns.items():
-            hello = _hello_frame(wall, {"row_index": r, "col_index": c},
-                                 _frame_for(plan, (r, c)))
+            cell = cells.get((r, c)) or {"row_index": r, "col_index": c}
+            hello = _hello_frame(wall, cell, _frame_for(plan, (r, c)))
+            if _is_free_box(wall, cell):
+                _geom_sent[ws] = _geom_sig(wall, cell)
             if not await _send_safe(ws, hello):
                 _unregister(wall_id, (r, c), ws)
             elif hello["current_play"]:
@@ -642,6 +702,9 @@ async def _tick_once(wall_id: int, state: dict) -> float | None:
             sent[key] = mark
         else:
             _unregister(wall_id, key, ws)
+
+    if wall.get("layout") == "free":
+        await _geometry_fallback(wall_id, wall, conns, cells)
 
     if now - state.get("last_ping_ms", 0) >= PING_INTERVAL_MS:
         state["last_ping_ms"] = now

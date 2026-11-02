@@ -291,3 +291,96 @@ def test_geometry_channel_is_per_redis_database(monkeypatch, url, channel):
 def test_test_runs_never_use_productions_channel():
     # scripts/test-backend-in-docker.sh refuses KHAN_TEST_REDIS_DB=0.
     assert walls_mod.geometry_channel() != f"{walls_mod.GEOMETRY_CHANNEL_BASE}:db0"
+
+
+# ---- tick-loop fallback -----------------------------------------------------
+
+def _tick(wid, state, ws):
+    """One tick-loop pass; returns the geometry frames it sent ``ws``."""
+    ws.frames.clear()
+    asyncio.run(walls_mod._tick_once(wid, state))
+    return ws.of_type("geometry")
+
+
+def test_tick_sends_geometry_once_per_change_of_box_or_highlight(monkeypatch):
+    wid, (cid,) = _free_wall([(0.0, 0.0, 1 / 3, 1.0)])
+    ws = _registered(wid, cid)
+    state = {}
+    first = _tick(wid, state, ws)          # no hello went through wall_ws: nothing recorded
+    assert len(first) == 1
+    assert first[0]["cell_geometry"] == pytest.approx(
+        {"x": 0.0, "y": 0.0, "w": 1280.0, "h": 720.0})
+    assert first[0]["tv_number"] == 1
+    assert _tick(wid, state, ws) == []     # unchanged: nothing
+
+    execute("UPDATE wall_cells SET place_x = ? WHERE id = ?", (0.5, cid))
+    moved = _tick(wid, state, ws)
+    assert len(moved) == 1
+    assert moved[0]["cell_geometry"]["x"] == pytest.approx(1920.0)
+    assert _tick(wid, state, ws) == []
+
+    execute("UPDATE wall_cells SET highlight_until_ms = ? WHERE id = ?", (1762000030000, cid))
+    assert [g["highlight_until_ms"] for g in _tick(wid, state, ws)] == [1762000030000]
+    # R9: the deadline passing changes nothing stored. The TV's own timer hides
+    # the outline, so the server sends nothing then.
+    monkeypatch.setattr(walls_mod, "now_ms", lambda: 1762000030000 + 60_000)
+    assert _tick(wid, state, ws) == []
+    assert ws.closed_with is None          # still the cell's TV: _drop_unbound kept it
+
+
+def test_tick_sends_the_stored_box_not_the_passs_older_copy(monkeypatch):
+    """A box pushed through Redis during a pass is newer than the pass's cell rows."""
+    wid, (cid,) = _free_wall([(0.0, 0.0, 1 / 3, 1.0)])
+    ws = _registered(wid, cid)
+    stale = _cell(cid)                     # what the pass's cell query will return
+    execute("UPDATE wall_cells SET place_x = ? WHERE id = ?", (0.5, cid))   # moved meanwhile
+    real_query_all = walls_mod.query_all
+
+    def cells_from_before_the_move(sql, params=()):
+        if sql.startswith("SELECT * FROM wall_cells WHERE wall_id"):
+            return [stale]
+        return real_query_all(sql, params)
+
+    monkeypatch.setattr(walls_mod, "query_all", cells_from_before_the_move)
+    state = {}
+    assert [g["cell_geometry"]["x"] for g in _tick(wid, state, ws)] == [pytest.approx(1920.0)]
+    # The TV has the newest box now; the pass's older copy must not undo it.
+    assert _tick(wid, state, ws) == []
+
+
+def test_re_hello_after_a_wall_change_carries_the_tvs_box():
+    wid, (c0, c1) = _free_wall([(0.0, 0.0, 1 / 3, 1.0), (0.4, 0.1, 0.3, 0.9)])
+    ws = _registered(wid, c1)
+    state = {}
+    _tick(wid, state, ws)                  # records the wall's config
+    execute("UPDATE walls SET cols = 3 WHERE id = ?", (wid,))     # a third TV joined
+    assert _tick(wid, state, ws) == []     # the hello carried the box: no geometry repeats it
+    hellos = ws.of_type("hello")
+    assert len(hellos) == 1
+    assert hellos[0]["cell_geometry"] == pytest.approx(
+        {"x": 1536.0, "y": 72.0, "w": 1152.0, "h": 648.0}, rel=1e-5)
+    assert hellos[0]["tv_number"] == 2
+
+
+def test_tick_sends_no_geometry_on_grid_walls(monkeypatch):
+    """Guards the layout check (R22: a grid pass is today's); passes before and after this task."""
+    wid, cid = _grid_wall()
+    ws = _registered(wid, cid)
+    queries = []
+    real_query_all = walls_mod.query_all
+
+    def recording_query_all(sql, params=()):
+        queries.append(sql)
+        return real_query_all(sql, params)
+
+    monkeypatch.setattr(walls_mod, "query_all", recording_query_all)
+    assert _tick(wid, {}, ws) == []
+    assert "SELECT * FROM wall_cells WHERE wall_id = ?" not in queries   # no box read for grid walls
+
+
+def test_unregister_forgets_what_the_socket_was_sent():
+    ws = FakeWS()
+    walls_mod._register(4343, (0, 0), ws, 1, "t" * 32)
+    walls_mod._geom_sent[ws] = ("sig",)
+    walls_mod._unregister(4343, (0, 0), ws)
+    assert ws not in walls_mod._geom_sent
