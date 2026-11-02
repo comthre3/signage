@@ -29,6 +29,8 @@ from typing import Dict, Optional, Tuple
 import anyio
 from fastapi import APIRouter, FastAPI, Query, WebSocket, WebSocketDisconnect
 
+import ratelimit
+import wall_layout
 from db import query_one, query_all, execute, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,12 @@ _tick_tasks: Dict[int, asyncio.Task] = {}
 _background: set = set()
 # The event loop serving this worker's sockets, for callers on other threads.
 _server_loop: Optional[asyncio.AbstractEventLoop] = None
+# WebSocket -> _geom_sig of the box it was last sent (in hello or geometry).
+# One record per socket, shared by the connect hello, the tick-loop fallback,
+# the Redis subscriber and the screen handler, so none repeats another.
+_geom_sent: Dict[object, tuple] = {}
+# This worker's Redis geometry subscriber (see _ensure_geometry_subscriber).
+_geometry_task: Optional[asyncio.Task] = None
 
 # An item with no usable duration (NULL, 0, negative) still holds its slot for
 # this long; a 0s slot would make the tick loop rebroadcast in a tight loop.
@@ -59,6 +67,15 @@ TICK_ERROR_BACKOFF_S = 2.0
 PING_INTERVAL_MS = 25_000
 # Every worker anchors timelines here, which is what makes them agree.
 TIMELINE_EPOCH_MS = 0
+# A placed TV shows its outline and number until this long after the phone's
+# last move: main's placement PUT stores now + HIGHLIGHT_SECONDS in
+# wall_cells.highlight_until_ms, so every worker and a reconnecting TV agree.
+# Frames carry that deadline as stored. Nothing is sent when it passes: the
+# TV hides the outline on its own timer, against the server clock.
+HIGHLIGHT_SECONDS = 30
+# Redis pub/sub channel for "the box of free-wall cell (row, col) changed";
+# geometry_channel() appends REDIS_URL's logical database.
+GEOMETRY_CHANNEL_BASE = "khan:wall-geometry"
 
 
 def now_ms() -> int:
@@ -91,7 +108,17 @@ def _hello_frame(wall: dict, cell: dict, current_play: dict | None) -> dict:
         "current_play": current_play,
         "server_now_ms": now_ms(),
     }
-    if wall["mode"] == "spanned":
+    if _is_free_box(wall, cell):
+        # A free wall: the TV shows its own box, placed from a phone, so its
+        # geometry never depends on rows/cols. Bezel gaps are left by placing
+        # the boxes, never computed.
+        cw, ch = _free_canvas(wall)
+        base["canvas"] = {"w": cw, "h": ch}
+        base["bezel"] = {"h_pct": 0.0, "v_pct": 0.0}
+        base["cell_geometry"] = free_cell_geometry(wall, cell)
+        base["highlight_until_ms"] = _highlight_ms(cell)
+        base["tv_number"] = tv_number(cell)
+    elif wall["mode"] == "spanned":
         cw = wall["canvas_width_px"]
         ch = wall["canvas_height_px"]
         h_pct = float(wall.get("bezel_h_pct") or 0)
@@ -118,6 +145,88 @@ def _hello_config(wall: dict) -> tuple:
         "mode", "mirrored_mode", "rows", "cols",
         "canvas_width_px", "canvas_height_px", "bezel_h_pct", "bezel_v_pct",
     ))
+
+
+# ---- free walls: geometry ---------------------------------------------------
+#
+# A free wall (layout 'free', mode 'spanned') is one video with a box per TV,
+# placed from a phone. Boxes are stored as fractions of the canvas
+# (wall_cells.place_x/y/w/h); TVs are sent them in canvas px.
+
+def geometry_channel() -> str:
+    """Redis channel for box changes: GEOMETRY_CHANNEL_BASE + ":db<N>".
+
+    N is the logical database in ratelimit.REDIS_URL, read at call time (0 when
+    the URL names none). Pub/sub ignores logical databases, and test runs use
+    production's Redis server on another database: without the suffix a
+    test's publish would reach production's subscribers.
+    """
+    from redis.connection import parse_url   # lazy, like ratelimit's own redis import
+    try:
+        db = int(parse_url(ratelimit.REDIS_URL).get("db") or 0)
+    except (TypeError, ValueError):
+        db = 0
+    return f"{GEOMETRY_CHANNEL_BASE}:db{db}"
+
+
+def tv_number(cell: dict) -> int:
+    """The number a free-wall TV is shown as ("TV 2"); fixed while it is in the wall."""
+    return int(cell["col_index"]) + 1
+
+
+def _cell_box(cell: dict) -> dict | None:
+    """The cell's stored box as fractions of the canvas, or None if it has none."""
+    values = [cell.get(k) for k in ("place_x", "place_y", "place_w", "place_h")]
+    if any(v is None for v in values):
+        return None
+    x, y, w, h = (float(v) for v in values)
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _free_canvas(wall: dict) -> tuple[int, int]:
+    return wall_layout.canvas_size_for(wall.get("canvas_width_px"),
+                                       wall.get("canvas_height_px"))
+
+
+def _is_free_box(wall: dict, cell: dict) -> bool:
+    """True when ``cell`` is a placed TV of a free wall: its geometry is its box."""
+    return (wall.get("mode") == "spanned" and wall.get("layout") == "free"
+            and _cell_box(cell) is not None)
+
+
+def _highlight_ms(cell: dict) -> int | None:
+    value = cell.get("highlight_until_ms")
+    return int(value) if value is not None else None
+
+
+def free_cell_geometry(wall: dict, cell: dict) -> dict | None:
+    """The cell's box in canvas px ({"x", "y", "w", "h"}), or None without a box."""
+    box = _cell_box(cell)
+    if box is None:
+        return None
+    cw, ch = _free_canvas(wall)
+    return wall_layout.box_to_px(box, cw, ch)
+
+
+def _geometry_frame(wall: dict, cell: dict) -> dict:
+    """Moves a free-wall TV's crop without touching what it plays."""
+    cw, ch = _free_canvas(wall)
+    return {
+        "type": "geometry",
+        "canvas": {"w": cw, "h": ch},
+        "cell_geometry": free_cell_geometry(wall, cell),
+        "highlight_until_ms": _highlight_ms(cell),
+        "tv_number": tv_number(cell),
+        "server_now_ms": now_ms(),
+    }
+
+
+def _geom_sig(wall: dict, cell: dict) -> tuple:
+    """Everything a geometry frame depends on: a TV is sent one when this changes."""
+    return (wall.get("canvas_width_px"), wall.get("canvas_height_px"),
+            cell.get("place_x"), cell.get("place_y"),
+            cell.get("place_w"), cell.get("place_h"),
+            cell.get("highlight_until_ms"))
 
 
 # ---- socket registry --------------------------------------------------------
